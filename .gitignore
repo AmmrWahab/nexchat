@@ -2,3 +2,7 @@
 node_modules/
 .DS_Store
 *.log
+out.txt
+err.txt
+_whichnode.js
+
