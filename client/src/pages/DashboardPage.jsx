@@ -5,7 +5,7 @@ import { createPortal } from 'react-dom';
 import { useNavigate, useLocation } from 'react-router-dom';
 import './dashboard.css';
 import { io } from 'socket.io-client';
-import { Search, X, CornerUpRight, CornerUpLeft, Phone, Video, Paperclip, Camera, Mic, User, FileText, Trash2, Copy, Forward, Reply, ArrowLeft, ChevronUp, ChevronDown, Info } from "lucide-react";   // (latest)
+import { Search, X, CornerUpRight, CornerUpLeft, Phone, Video, Paperclip, Camera, Mic, User, FileText, Trash2, Copy, Forward, Reply, ArrowLeft, ChevronUp, ChevronDown, Info, MessageCircle } from "lucide-react";   // (latest)
 import { API_URL } from '../config.js';
 
 
@@ -5613,22 +5613,22 @@ setContacts(prev => {
   setView('chats');
   setActiveTab('chats'); // ✅ Ensure Chats is selected
 }}>
-  <span>💬</span>
+  <MessageCircle size={24} strokeWidth={1.8} />
   <small>Chats</small>
 </button>
       <button onClick={() => setView('status')}>
-        <span>📷</span>
+        <Camera size={24} strokeWidth={1.8} />
         <small>Status</small>
       </button>
       <button onClick={() => {
   setView('calls');
   setActiveTab('calls');
 }}>
-  <span>📞</span>
+  <Phone size={24} strokeWidth={1.8} />
   <small>Calls</small>
 </button>
       <button onClick={() => {}}>
-        <span>📷</span>
+        <Video size={24} strokeWidth={1.8} />
         <small>Camera</small>
       </button>
     </nav>
