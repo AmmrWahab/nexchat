@@ -1,6 +1,6 @@
 // src/pages/SigninPage.jsx
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import './signup.css'; // Share the signup/auth layout styles
 import { API_URL } from '../config.js';
@@ -15,6 +15,23 @@ export default function SigninPage() {
   const [loading, setLoading] = useState(false);
 
   const navigate = useNavigate();
+
+  // If already logged in, go straight to the dashboard
+  useEffect(() => {
+    const token = localStorage.getItem('token');
+    if (token) {
+      try {
+        const payload = JSON.parse(atob(token.split('.')[1]));
+        if (payload.exp * 1000 > Date.now()) {
+          navigate('/dashboard', { replace: true });
+        } else {
+          localStorage.removeItem('token');
+        }
+      } catch {
+        navigate('/dashboard', { replace: true });
+      }
+    }
+  }, [navigate]);
 
   const handleChange = (e) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
