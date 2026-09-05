@@ -1586,6 +1586,40 @@ newSocket.on("receiveMessage", (data) => {
           }
         }, [navigate, location]);
 
+        // ===== Mobile system back button: navigate inside the app =====
+        // Opening a chat pushes a browser-history entry so that the device
+        // back button closes the chat instead of leaving the whole app.
+        const lastPushedNavKey = useRef(null);
+        useEffect(() => {
+          if (!isMobile) return;
+          const key = selectedChat?.id || selectedGroup?.id || null;
+          if (key) {
+            if (lastPushedNavKey.current !== key) {
+              window.history.pushState({ appNav: true }, '');
+              lastPushedNavKey.current = key;
+            }
+          } else {
+            lastPushedNavKey.current = null;
+          }
+        }, [selectedChat?.id, selectedGroup?.id, isMobile]);
+
+        useEffect(() => {
+          if (!isMobile) return;
+          const handlePopState = () => {
+            if (selectedChat || selectedGroup) {
+              setSelectedChat(null);
+              setSelectedGroup(null);
+              selectedGroupRef.current = null;
+              setMobileChatOpen(false);
+              setShowDropdown(false);
+              setGroupShowDropdown(false);
+              lastPushedNavKey.current = null;
+            }
+          };
+          window.addEventListener('popstate', handlePopState);
+          return () => window.removeEventListener('popstate', handlePopState);
+        }, [isMobile, selectedChat, selectedGroup]);
+
         const handleLogout = () => {
           localStorage.removeItem('token');
           navigate('/signin');
