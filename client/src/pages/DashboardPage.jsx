@@ -5,7 +5,7 @@ import { createPortal } from 'react-dom';
 import { useNavigate, useLocation } from 'react-router-dom';
 import './dashboard.css';
 import { io } from 'socket.io-client';
-import { Search, X, CornerUpRight, CornerUpLeft, Phone, Video, Paperclip, Camera, Mic, User, FileText, Trash2, Copy, Forward, Reply, ArrowLeft, ChevronUp, ChevronDown, Info, MessageCircle } from "lucide-react";   // (latest)
+import { Search, X, CornerUpRight, CornerUpLeft, Phone, Video, Paperclip, Camera, Mic, User, FileText, Trash2, Copy, Forward, Reply, ArrowLeft, ChevronUp, ChevronDown, Info, MessageCircle, Users, Settings, Menu, SquarePen, Images, Image, PencilLine } from "lucide-react";   // (latest)
 import { API_URL } from '../config.js';
 
 
@@ -598,18 +598,18 @@ const saveFile = async (fileUrl, fileName = "download", forceOpen = false) => {
   if (!fileType) {
     if (fileName?.endsWith('.jpg') || fileName?.endsWith('.jpeg') || 
         fileName?.endsWith('.png') || fileName?.endsWith('.gif')) {
-      return '🖼️';
+      return <Image size={20} strokeWidth={1.8} />;
     }
-    return '📎';
+    return <Paperclip size={20} strokeWidth={1.8} />;
   }
 
-  if (fileType.startsWith('image/')) return '🖼️';
-  if (fileType === 'application/pdf') return '📕';
-  if (fileType.includes('word') || fileName?.endsWith('.doc') || fileName?.endsWith('.docx')) return '📘';
-  if (fileType.includes('excel') || fileName?.endsWith('.xls') || fileName?.endsWith('.xlsx')) return '📊';
-  if (fileType.includes('powerpoint') || fileName?.endsWith('.ppt') || fileName?.endsWith('.pptx')) return '📈';
-  if (fileType === 'text/plain') return '📄';
-  return '📎';
+  if (fileType.startsWith('image/')) return <Image size={20} strokeWidth={1.8} />;
+  if (fileType === 'application/pdf') return <FileText size={20} strokeWidth={1.8} />;
+  if (fileType.includes('word') || fileName?.endsWith('.doc') || fileName?.endsWith('.docx')) return <FileText size={20} strokeWidth={1.8} />;
+  if (fileType.includes('excel') || fileName?.endsWith('.xls') || fileName?.endsWith('.xlsx')) return <FileText size={20} strokeWidth={1.8} />;
+  if (fileType.includes('powerpoint') || fileName?.endsWith('.ppt') || fileName?.endsWith('.pptx')) return <FileText size={20} strokeWidth={1.8} />;
+  if (fileType === 'text/plain') return <FileText size={20} strokeWidth={1.8} />;
+  return <Paperclip size={20} strokeWidth={1.8} />;
 };
 
   // Start camera
@@ -2046,7 +2046,7 @@ newSocket.on("receiveMessage", (data) => {
         if (activeTab === 'profile') {
           return (
             <div className="profile-view">
-              <h2>👤 Profile</h2>
+              <h2><User size={22} strokeWidth={1.8} style={{ marginRight: 8, verticalAlign: 'middle' }} /> Profile</h2>
               <p>Name: {user.name}</p>
               <p>Status: Online</p>
               <button onClick={handleLogout} className="btn-logout">Logout</button>
@@ -2760,7 +2760,7 @@ newSocket.on("receiveMessage", (data) => {
                           setShowGroupInfo(true);
                         }}
                       >
-                        <span>ℹ️</span>
+                        <Info size={18} strokeWidth={1.8} />
                         <span>Group info</span>
                       </button>
 
@@ -2801,7 +2801,7 @@ newSocket.on("receiveMessage", (data) => {
                           setGroupShowDropdown(false);
                         }}
                       >
-                        <span>🗑️</span>
+                        <Trash2 size={18} strokeWidth={1.8} />
                         <span>Clear chat</span>
                       </button>
                     </div>
@@ -3029,7 +3029,7 @@ newSocket.on("receiveMessage", (data) => {
                                 }}
                                 style={dropdownItemStyle}
                               >
-                                📋 Copy
+                                <Copy size={16} strokeWidth={1.8} style={{ marginRight: 6, verticalAlign: 'middle' }} /> Copy
                               </button>
                             )}
                             <button
@@ -3045,7 +3045,7 @@ newSocket.on("receiveMessage", (data) => {
                               }}
                               style={dropdownItemStyle}
                             >
-                              ↪ Reply
+                              <CornerUpRight size={16} strokeWidth={1.8} style={{ marginRight: 6, verticalAlign: 'middle' }} /> Reply
                             </button>
                             <button
                               onClick={() => {
@@ -3056,7 +3056,7 @@ newSocket.on("receiveMessage", (data) => {
                               }}
                               style={dropdownItemStyle}
                             >
-                              ➿ Forward
+                              <Forward size={16} strokeWidth={1.8} style={{ marginRight: 6, verticalAlign: 'middle' }} /> Forward
                             </button>
                             {isYou && (
                               <button
@@ -3066,7 +3066,7 @@ newSocket.on("receiveMessage", (data) => {
                                 }}
                                 style={{ ...dropdownItemStyle, color: 'red' }}
                               >
-                                🗑️ Delete
+                                <Trash2 size={16} strokeWidth={1.8} style={{ marginRight: 6, verticalAlign: 'middle' }} /> Delete
                               </button>
                             )}
                           </>
@@ -3243,7 +3243,7 @@ newSocket.on("receiveMessage", (data) => {
                       onClick={() => setGroupShowAttach((prev) => !prev)}
                       aria-label="Attach file"
                     >
-                      📎
+                      <Paperclip size={22} strokeWidth={1.8} />
                     </button>
 
                     <input
@@ -3280,7 +3280,7 @@ newSocket.on("receiveMessage", (data) => {
                         fileInputRef.current.click();
                       }}
                     >
-                      🖼️ Photos & Videos
+                      <Images size={16} strokeWidth={1.8} style={{ marginRight: 8, verticalAlign: 'middle' }} /> Photos & Videos
                     </button>
                     <button
                       onClick={() => {
@@ -3288,7 +3288,7 @@ newSocket.on("receiveMessage", (data) => {
                         handleOpenCamera();
                       }}
                     >
-                      📷 Camera
+                      <Camera size={16} strokeWidth={1.8} style={{ marginRight: 8, verticalAlign: 'middle' }} /> Camera
                     </button>
                     <button
                       onClick={() => {
@@ -3296,7 +3296,7 @@ newSocket.on("receiveMessage", (data) => {
                         fileInputRef.current.click();
                       }}
                     >
-                      📄 Document
+                      <FileText size={16} strokeWidth={1.8} style={{ marginRight: 8, verticalAlign: 'middle' }} /> Document
                     </button>
                   </div>
                 )}
@@ -3371,11 +3371,11 @@ newSocket.on("receiveMessage", (data) => {
                           setShowMobileAttach(false);
                         }}
                       >
-                        <span className="att-icon" style={{ background: '#dcf8c6', color: '#075e54' }}>🖼️</span>
+                        <span className="att-icon" style={{ background: '#dcf8c6', color: '#075e54' }}><Image size={20} strokeWidth={1.8} /></span>
                         Photos &amp; Videos
                       </button>
                       <button onClick={() => { handleOpenCamera(); setShowMobileAttach(false); }}>
-                        <span className="att-icon" style={{ background: '#fdeaca', color: '#e8a700' }}>📷</span>
+                        <span className="att-icon" style={{ background: '#fdeaca', color: '#e8a700' }}><Camera size={20} strokeWidth={1.8} /></span>
                         Camera
                       </button>
                       <button
@@ -3385,7 +3385,7 @@ newSocket.on("receiveMessage", (data) => {
                           setShowMobileAttach(false);
                         }}
                       >
-                        <span className="att-icon" style={{ background: '#d7e7fb', color: '#1a73e8' }}>📄</span>
+                        <span className="att-icon" style={{ background: '#d7e7fb', color: '#1a73e8' }}><FileText size={20} strokeWidth={1.8} /></span>
                         Document
                       </button>
                       <button className="att-close" onClick={() => setShowMobileAttach(false)}>✕ Close</button>
@@ -3648,7 +3648,7 @@ newSocket.on("receiveMessage", (data) => {
                 }}
                 aria-label="Delete selected messages"
               >
-                🗑️
+                <Trash2 size={22} strokeWidth={1.8} />
               </button>
               <button
                 onClick={() => {
@@ -3915,7 +3915,7 @@ newSocket.on("receiveMessage", (data) => {
                 setShowDropdown(false);
               }}
             >
-              <span>ℹ️</span>
+              <Info size={18} strokeWidth={1.8} />
               <span>Contact info</span>
             </button>
             <button
@@ -3925,7 +3925,7 @@ newSocket.on("receiveMessage", (data) => {
                 setShowDropdown(false);
               }}
             >
-              <span>📋</span>
+              <SquareCheckBig size={18} strokeWidth={1.8} />
               <span>Select messages</span>
             </button>
             <button
@@ -3946,7 +3946,7 @@ newSocket.on("receiveMessage", (data) => {
                 setShowDropdown(false);
               }}
             >
-              <span>🗑️</span>
+              <Trash2 size={18} strokeWidth={1.8} />
               <span>Clear chat</span>
             </button>
             <button
@@ -3966,7 +3966,7 @@ newSocket.on("receiveMessage", (data) => {
                 setShowDropdown(false);
               }}
             >
-              <span>❌</span>
+              <X size={18} strokeWidth={1.8} />
               <span>Delete chat</span>
             </button>
               </>
@@ -4201,7 +4201,7 @@ newSocket.on("receiveMessage", (data) => {
                       }}
                       style={dropdownItemStyle}
                     >
-                      📋 Copy
+                      <Copy size={16} strokeWidth={1.8} style={{ marginRight: 6, verticalAlign: 'middle' }} /> Copy
                     </button>
                   )}
                   <button
@@ -4216,7 +4216,7 @@ newSocket.on("receiveMessage", (data) => {
                     }}
                     style={dropdownItemStyle}
                   >
-                    ↪ Reply
+                    <CornerUpRight size={16} strokeWidth={1.8} style={{ marginRight: 6, verticalAlign: 'middle' }} /> Reply
                   </button>
                   <button
                     onClick={() => {
@@ -4226,7 +4226,7 @@ newSocket.on("receiveMessage", (data) => {
                     }}
                     style={dropdownItemStyle}
                   >
-                    ➿ Forward
+                    <Forward size={16} strokeWidth={1.8} style={{ marginRight: 6, verticalAlign: 'middle' }} /> Forward
                   </button>
                   <button
                     onClick={() => {
@@ -4235,7 +4235,7 @@ newSocket.on("receiveMessage", (data) => {
                     }}
                     style={{ ...dropdownItemStyle, color: 'red' }}
                   >
-                    🗑️ Delete
+                    <Trash2 size={16} strokeWidth={1.8} style={{ marginRight: 6, verticalAlign: 'middle' }} /> Delete
                   </button>
                 </>
               </div>
@@ -4440,11 +4440,11 @@ newSocket.on("receiveMessage", (data) => {
                   setShowMobileAttach(false);
                 }}
               >
-                <span className="att-icon" style={{ background: '#dcf8c6', color: '#075e54' }}>🖼️</span>
+                <span className="att-icon" style={{ background: '#dcf8c6', color: '#075e54' }}><Image size={20} strokeWidth={1.8} /></span>
                 Photos &amp; Videos
               </button>
               <button onClick={() => { handleOpenCamera(); setShowMobileAttach(false); }}>
-                <span className="att-icon" style={{ background: '#fdeaca', color: '#e8a700' }}>📷</span>
+                <span className="att-icon" style={{ background: '#fdeaca', color: '#e8a700' }}><Camera size={20} strokeWidth={1.8} /></span>
                 Camera
               </button>
               <button
@@ -4454,7 +4454,7 @@ newSocket.on("receiveMessage", (data) => {
                   setShowMobileAttach(false);
                 }}
               >
-                <span className="att-icon" style={{ background: '#d7e7fb', color: '#1a73e8' }}>📄</span>
+                <span className="att-icon" style={{ background: '#d7e7fb', color: '#1a73e8' }}><FileText size={20} strokeWidth={1.8} /></span>
                 Document
               </button>
               <button className="att-close" onClick={() => setShowMobileAttach(false)}>✕ Close</button>
@@ -4518,7 +4518,7 @@ newSocket.on("receiveMessage", (data) => {
               onClick={() => setShowAttachmentMenu((prev) => !prev)}
               aria-label="Attach file"
             >
-              📎
+              <Paperclip size={22} strokeWidth={1.8} />
             </button>
 
             <input
@@ -4555,16 +4555,16 @@ newSocket.on("receiveMessage", (data) => {
                 fileInputRef.current.click();
               }}
             >
-              🖼️ Photos & Videos
+              <Images size={16} strokeWidth={1.8} style={{ marginRight: 8, verticalAlign: 'middle' }} /> Photos & Videos
             </button>
-            <button onClick={handleOpenCamera}>📷 Camera</button>
+            <button onClick={handleOpenCamera}><Camera size={16} strokeWidth={1.8} style={{ marginRight: 8, verticalAlign: 'middle' }} /> Camera</button>
             <button
               onClick={() => {
                 fileInputRef.current.accept = '.pdf,.doc,.docx,.txt,.zip,.xls,.xlsx';
                 fileInputRef.current.click();
               }}
             >
-              📄 Document
+              <FileText size={16} strokeWidth={1.8} style={{ marginRight: 8, verticalAlign: 'middle' }} /> Document
             </button>
           </div>
         )}
@@ -4655,7 +4655,7 @@ newSocket.on("receiveMessage", (data) => {
               fontSize: '18px',
             }}
           >
-            ✏️
+            <PencilLine size={20} strokeWidth={1.8} />
           </button>
         </div>
 
@@ -4992,18 +4992,18 @@ newSocket.on("receiveMessage", (data) => {
     onClick={() => setIsSidebarExpanded(prev => !prev)}
     aria-label="Toggle sidebar"
   >
-    ☰
+    <Menu size={22} strokeWidth={1.8} />
   </button>
 
   {/* Navigation Menu */}
   <nav className="nav-menu">
     {[
-      { id: 'chats', label: 'Chats', icon: '💬' },
-      { id: 'groups', label: 'Groups', icon: '👥' },
-      { id: 'calls', label: 'Calls', icon: '📞' },
-      { id: 'statuses', label: 'Status', icon: '📷' },
-      { id: 'settings', label: 'Settings', icon: '⚙️' },
-      { id: 'profile', label: 'Profile', icon: '👤' },
+      { id: 'chats', label: 'Chats', icon: <MessageCircle size={22} strokeWidth={1.8} /> },
+      { id: 'groups', label: 'Groups', icon: <Users size={22} strokeWidth={1.8} /> },
+      { id: 'calls', label: 'Calls', icon: <Phone size={22} strokeWidth={1.8} /> },
+      { id: 'statuses', label: 'Status', icon: <Camera size={22} strokeWidth={1.8} /> },
+      { id: 'settings', label: 'Settings', icon: <Settings size={22} strokeWidth={1.8} /> },
+      { id: 'profile', label: 'Profile', icon: <User size={22} strokeWidth={1.8} /> },
     ].map(item => (
       <button
         key={item.id}
@@ -5036,7 +5036,7 @@ newSocket.on("receiveMessage", (data) => {
     className="new-chat-trigger"
     onClick={() => setShowNewChatDropdown(prev => !prev)}
   >
-    📝
+    <SquarePen size={20} strokeWidth={1.8} />
   </button>
   </>
 )}
@@ -5060,7 +5060,7 @@ newSocket.on("receiveMessage", (data) => {
       openGroupFlow();
     }}
   >
-    👥 New Group
+    <Users size={18} strokeWidth={1.8} style={{ marginRight: 8, verticalAlign: 'middle' }} /> New Group
   </button>
 
   {/* New Contact */}
@@ -5075,7 +5075,7 @@ newSocket.on("receiveMessage", (data) => {
       setLastName('');
     }}
   >
-    📞 New Contact
+    <Phone size={18} strokeWidth={1.8} style={{ marginRight: 8, verticalAlign: 'middle' }} /> New Contact
   </button>
 </div>
       <div className="frequently-connected">
@@ -5656,7 +5656,7 @@ setContacts(prev => {
 </div>
 <div className="call-icon">
   <span className={call.type === 'missed' ? 'missed' : ''} style={{ transform: call.type !== 'missed' ? 'scaleX(-1)' : 'none' }}>
-    📞
+    <Phone size={20} strokeWidth={1.8} />
   </span>
 </div>
       </div>
