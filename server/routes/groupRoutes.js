@@ -4,6 +4,7 @@ import jwt from 'jsonwebtoken';
 import { promisify } from 'util';
 import Group from '../models/Group.js';
 import GroupMessage from '../models/GroupMessage.js';
+import User from '../models/User.js';
 
 const router = Router();
 const verifyAsync = promisify(jwt.verify);
@@ -86,6 +87,17 @@ router.get('/groups', auth, async (req, res) => {
     res.json({ groups: withLast });
   } catch (err) {
     console.error('Get groups error:', err.message);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// GET /api/users — return all registered users (so contacts show on any device)
+router.get('/users', auth, async (req, res) => {
+  try {
+    const users = await User.find({ _id: { $ne: req.userId } }).select('name email photo _id');
+    res.json({ users });
+  } catch (err) {
+    console.error('Get users error:', err.message);
     res.status(500).json({ message: 'Server error' });
   }
 });

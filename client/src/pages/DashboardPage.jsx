@@ -1309,6 +1309,46 @@ newSocket.on("receiveMessage", (data) => {
           })();
         }, [user.id]);
 
+        // ✅ Fetch all registered users and merge them into the contacts list
+        // so contacts appear on any device/browser (not just the one where
+        // they were added to localStorage).
+        useEffect(() => {
+          const token = localStorage.getItem('token');
+          if (!token || !user.id) return;
+          (async () => {
+            try {
+              const res = await fetch(`${API_URL}/api/users`, {
+                headers: { Authorization: `Bearer ${token}` },
+              });
+              const data = await res.json();
+              if (data && Array.isArray(data.users)) {
+                setContacts(prev => {
+                  const map = new Map(prev.map(c => [String(c.id), c]));
+                  data.users.forEach(u => {
+                    const key = String(u._id);
+                    if (!map.has(key)) {
+                      map.set(key, {
+                        id: u._id,
+                        name: u.name,
+                        email: u.email,
+                        photo: u.photo || 'https://via.placeholder.com/50',
+                        lastMsg: '',
+                        time: '',
+                        online: false,
+                      });
+                    }
+                  });
+                  const updated = [...map.values()];
+                  localStorage.setItem('userContacts', JSON.stringify(updated));
+                  return updated;
+                });
+              }
+            } catch (err) {
+              console.error('Failed to fetch users', err);
+            }
+          })();
+        }, [user.id]);
+
         // Prefetch each group's message history so the list shows
         // previews/times without needing to open the group first.
         // Fetch reliably once the socket is connected and the group list
