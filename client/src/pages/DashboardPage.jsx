@@ -5,7 +5,7 @@ import { createPortal } from 'react-dom';
 import { useNavigate, useLocation } from 'react-router-dom';
 import './dashboard.css';
 import { io } from 'socket.io-client';
-import { Search, X, CornerUpRight, CornerUpLeft, Phone, Video, Paperclip, Camera, Mic, User, FileText, Trash2, Copy, Forward, Reply, ArrowLeft, ChevronUp, ChevronDown, Info, MessageCircle, Users, Settings, Menu, SquarePen, Images, Image, PencilLine } from "lucide-react";   // (latest)
+import { Search, X, CornerUpRight, CornerUpLeft, Phone, Video, Paperclip, Camera, Mic, User, FileText, Trash2, Copy, Forward, Reply, ArrowLeft, ChevronUp, ChevronDown, Info, MessageCircle, Users, Settings, Menu, SquarePen, Images, Image, PencilLine, Check } from "lucide-react";
 import { API_URL } from '../config.js';
 
 
