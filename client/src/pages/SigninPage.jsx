@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import './signin.css'; // Reuse shared auth CSS
+import { API_URL } from '../config.js';
 
 export default function SigninPage() {
   const [formData, setFormData] = useState({
@@ -26,7 +27,7 @@ export default function SigninPage() {
     setMessageType('');
 
     try {
-      const res = await fetch('http://localhost:5000/api/auth/login', {
+      const res = await fetch(`${API_URL}/api/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(formData)
@@ -53,7 +54,7 @@ export default function SigninPage() {
   // ✅ Real Google Login: Redirect to Backend OAuth
   const handleGoogleLogin = () => {
     // Open Google OAuth route on backend
-    window.location.href = 'http://localhost:5000/api/auth/google';
+    window.location.href = `${API_URL}/api/auth/google`;
   };
 
   return (

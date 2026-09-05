@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import './signup.css'; // Reuse same CSS
+import { API_URL } from '../config.js';
 
 export default function SignupPage() {
   const [formData, setFormData] = useState({
@@ -27,7 +28,7 @@ export default function SignupPage() {
     setMessageType('');
 
     try {
-      const res = await fetch('http://localhost:5000/api/auth/register', {
+      const res = await fetch(`${API_URL}/api/auth/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(formData)

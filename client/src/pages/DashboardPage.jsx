@@ -6,6 +6,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import './dashboard.css';
 import { io } from 'socket.io-client';
 import { Search, X, CornerUpRight, CornerUpLeft, Phone, Video, Paperclip, Camera, Mic, User, FileText, Trash2, Copy, Forward, Reply, ArrowLeft, ChevronUp, ChevronDown, Info } from "lucide-react";   // (latest)
+import { API_URL } from '../config.js';
 
 
 export default function DashboardPage() {
@@ -903,7 +904,7 @@ useEffect(() => {
     return;
   }
 
- const newSocket = io('http://localhost:5000', {
+ const newSocket = io(API_URL, {
   auth: { token },
   reconnection: true,
   reconnectionAttempts: 5,
@@ -1273,7 +1274,7 @@ newSocket.on("receiveMessage", (data) => {
           if (!token || !user.id) return;
           (async () => {
             try {
-              const res = await fetch('http://localhost:5000/api/groups', {
+              const res = await fetch(`${API_URL}/api/groups`, {
                 headers: { Authorization: `Bearer ${token}` },
               });
               const data = await res.json();
@@ -1401,7 +1402,7 @@ newSocket.on("receiveMessage", (data) => {
           // Check if user exists in DB
         const findUserByEmail = async (email) => {
           try {
-            const res = await fetch(`http://localhost:5000/api/auth/check-email?email=${encodeURIComponent(email)}`);
+            const res = await fetch(`${API_URL}/api/auth/check-email?email=${encodeURIComponent(email)}`);
             if (res.ok) {
               const data = await res.json();
               return data.user; // { id, name, email, photo }
