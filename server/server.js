@@ -30,10 +30,11 @@ const server = http.createServer(app);
 
 // CORS allowed origins. Defaults to local dev; add more via CORS_ORIGINS
 // (comma-separated) for the deployed client, e.g.
-// CORS_ORIGINS=https://nexchat-client.onrender.com
+// CORS_ORIGINS=https://nexchat-one-dun.vercel.app
 const corsOrigins = [
   'http://localhost:5173',
   'http://192.168.1.190:5173',
+  'https://nexchat-one-dun.vercel.app',
   ...(process.env.CORS_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean)
 ];
 
@@ -74,6 +75,13 @@ app.use('/api', groupRoutes);
 
 // Google Auth Routes
 app.get('/api/auth/google',
+  (req, res, next) => {
+    // Remember which frontend started this login so we can redirect back to it
+    const ref = req.headers.referer || '';
+    const m = /^(https?:\/\/[^/]+)/.exec(ref);
+    if (m) req.session.frontendOrigin = m[1];
+    next();
+  },
   passport.authenticate('google', { scope: ['profile', 'email'] })
 );
 
@@ -87,8 +95,11 @@ app.get('/api/auth/google/callback',
       { expiresIn: '7d' }
     );
 
-    // ✅ Redirect to frontend with token
-    res.redirect(`http://localhost:5173/dashboard?token=${token}`);
+    // ✅ Redirect back to the frontend the user came from
+    const frontendOrigin = req.session.frontendOrigin
+      || process.env.FRONTEND_URL
+      || 'http://localhost:5173';
+    res.redirect(`${frontendOrigin}/dashboard?token=${token}`);
   }
 );
 
