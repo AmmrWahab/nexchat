@@ -354,6 +354,7 @@
 
 .messages {
   flex: 1;
+  min-height: 0;
   padding: 16px;
   overflow-y: auto;
   background: #e5ddd5;
@@ -361,7 +362,6 @@
   flex-direction: column;
   gap: 8px;
   scroll-behavior: smooth;
-  max-height: calc(100vh - 140px);
 }
 
 /* Base Message Bubble */
@@ -1260,12 +1260,23 @@
 /* Show only on mobile */
 @media (max-width: 768px) {
   body, html {
-    overflow-x: hidden;
+    height: 100%;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+
+  #root {
+    height: 100%;
   }
 
   .dashboard-layout {
     flex-direction: column;
     background: white; /* Clean white background */
+    height: 100vh;
+    height: 100dvh;
+    min-height: 0;
+    max-height: 100dvh;
+    overflow: hidden;
   }
 
   /* Hide desktop layout */
@@ -2101,6 +2112,13 @@
     height: 100dvh;
     z-index: 50;
     background: #e5ddd5;
+  }
+
+  /* Keep the chat header + input pinned; only messages scroll */
+  .dashboard-layout.chat-open .right-panel .chat-header,
+  .dashboard-layout.chat-open .right-panel .chat-header-mobile,
+  .dashboard-layout.chat-open .right-panel .mobile-compose {
+    flex-shrink: 0;
   }
 
   .dashboard-layout.chat-open .sidebar,

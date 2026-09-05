@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import './signin.css'; // Reuse shared auth CSS
+import './signup.css'; // Share the signup/auth layout styles
 import { API_URL } from '../config.js';
 
 export default function SigninPage() {

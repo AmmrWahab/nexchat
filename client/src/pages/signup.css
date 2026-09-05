@@ -227,3 +227,73 @@
     font-size: 1.6rem;
   }
 }
+
+/* ===== MOBILE FIT: keep auth pages inside the viewport, no page scroll ===== */
+@media (max-width: 768px) and (max-height: 900px) {
+  body, html {
+    height: 100%;
+  }
+
+  .auth-layout {
+    height: 100vh;
+    height: 100dvh;
+    min-height: 0;
+    max-height: 100dvh;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .brand-panel {
+    padding: 24px 20px;
+    min-height: 0;
+    flex: 0 0 auto;
+  }
+
+  .brand-panel h1 {
+    font-size: 2rem;
+    margin-bottom: 6px;
+  }
+
+  .brand-panel p {
+    font-size: 0.95rem;
+    line-height: 1.4;
+  }
+
+  .shape,
+  .shape-1,
+  .shape-2,
+  .shape-3 {
+    display: none;
+  }
+
+  .form-panel {
+    flex: 1 1 auto;
+    min-height: 0;
+    padding: 12px;
+    overflow-y: auto; /* only if the form genuinely can't fit */
+  }
+
+  .form-container {
+    padding: 24px 20px;
+  }
+
+  .form-container h2 {
+    margin-bottom: 16px;
+    font-size: 1.5rem;
+  }
+
+  .form-container input {
+    padding: 12px;
+    margin: 8px 0;
+  }
+
+  .btn-primary {
+    padding: 12px;
+    margin: 14px 0;
+  }
+
+  .btn-google {
+    padding: 12px;
+    margin-bottom: 12px;
+  }
+}
