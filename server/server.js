@@ -98,7 +98,7 @@ app.get('/api/auth/google/callback',
     // ✅ Redirect back to the frontend the user came from
     const frontendOrigin = req.session.frontendOrigin
       || process.env.FRONTEND_URL
-      || 'http://localhost:5173';
+      || 'https://nexchat-one-dun.vercel.app';
     res.redirect(`${frontendOrigin}/dashboard?token=${token}`);
   }
 );
