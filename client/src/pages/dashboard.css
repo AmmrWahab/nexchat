@@ -1260,8 +1260,7 @@
 /* Show only on mobile */
 @media (max-width: 768px) {
   body, html {
-    overflow: hidden;
-    height: 100%;
+    overflow-x: hidden;
   }
 
   .dashboard-layout {
@@ -2093,6 +2092,7 @@
 
   .dashboard-layout.chat-open .right-panel {
     display: flex !important;
+    flex-direction: column;
     position: fixed;
     top: 0;
     left: 0;
