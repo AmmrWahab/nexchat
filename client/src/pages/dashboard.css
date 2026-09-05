@@ -321,10 +321,12 @@
 
 .chat-window {
   width: 100%;
-  height: 100vh; /* Full viewport height */
+  height: 100%; /* Fill the fixed 100dvh panel exactly */
+  min-height: 0;
   display: flex;
   flex-direction: column;
   background: #e5ddd5;
+  overflow: hidden;
 }
 
 .chat-header {
