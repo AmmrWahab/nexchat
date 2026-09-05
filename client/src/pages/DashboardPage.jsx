@@ -1586,39 +1586,90 @@ newSocket.on("receiveMessage", (data) => {
           }
         }, [navigate, location]);
 
-        // ===== Mobile system back button: navigate inside the app =====
-        // Opening a chat pushes a browser-history entry so that the device
-        // back button closes the chat instead of leaving the whole app.
-        const lastPushedNavKey = useRef(null);
+        // ===== Mobile system back button: in-app page navigation =====
+        // Every time the user enters a new "page" (bottom-nav view, a chat,
+        // create-group flow, camera, ...), we push a browser-history entry.
+        // Pressing the device back button then pops the entry and returns to
+        // the previous in-app page instead of leaving the whole app.
+        const navStackRef = useRef([]);          // [{ screen, saved }]
+        const prevNavRef = useRef({ view, activeTab });
+        const chatOnRef = useRef(false);
+        const groupFlowOnRef = useRef(false);
+        const cameraOnRef = useRef(false);
+
+        // Bottom-nav page / tab changes
         useEffect(() => {
           if (!isMobile) return;
-          const key = selectedChat?.id || selectedGroup?.id || null;
-          if (key) {
-            if (lastPushedNavKey.current !== key) {
-              window.history.pushState({ appNav: true }, '');
-              lastPushedNavKey.current = key;
-            }
-          } else {
-            lastPushedNavKey.current = null;
+          if (view !== prevNavRef.current.view || activeTab !== prevNavRef.current.activeTab) {
+            window.history.pushState({ appNav: true }, '');
+            navStackRef.current.push({ screen: 'tab', saved: prevNavRef.current });
+            prevNavRef.current = { view, activeTab };
           }
+        }, [view, activeTab, isMobile]);
+
+        // Opening a chat (DM or group)
+        useEffect(() => {
+          if (!isMobile) return;
+          const on = !!(selectedChat?.id || selectedGroup?.id);
+          if (on && !chatOnRef.current) {
+            window.history.pushState({ appNav: true }, '');
+            navStackRef.current.push({ screen: 'chat' });
+          }
+          chatOnRef.current = on;
         }, [selectedChat?.id, selectedGroup?.id, isMobile]);
 
+        // Create-group flow
+        useEffect(() => {
+          if (!isMobile) return;
+          if (showGroupFlow && !groupFlowOnRef.current) {
+            window.history.pushState({ appNav: true }, '');
+            navStackRef.current.push({ screen: 'groupflow' });
+          }
+          groupFlowOnRef.current = showGroupFlow;
+        }, [showGroupFlow, isMobile]);
+
+        // Camera
+        useEffect(() => {
+          if (!isMobile) return;
+          if (showCameraModal && !cameraOnRef.current) {
+            window.history.pushState({ appNav: true }, '');
+            navStackRef.current.push({ screen: 'camera' });
+          }
+          cameraOnRef.current = showCameraModal;
+        }, [showCameraModal, isMobile]);
+
+        // Handle the system/hardware back button
         useEffect(() => {
           if (!isMobile) return;
           const handlePopState = () => {
-            if (selectedChat || selectedGroup) {
+            const entry = navStackRef.current.pop();
+            if (!entry) return; // nothing open in-app → let the browser go back
+            if (entry.screen === 'tab') {
+              setView(entry.saved.view);
+              setActiveTab(entry.saved.activeTab);
+              prevNavRef.current = entry.saved;
+            } else if (entry.screen === 'chat') {
               setSelectedChat(null);
               setSelectedGroup(null);
               selectedGroupRef.current = null;
               setMobileChatOpen(false);
               setShowDropdown(false);
               setGroupShowDropdown(false);
-              lastPushedNavKey.current = null;
+              chatOnRef.current = false;
+            } else if (entry.screen === 'groupflow') {
+              setShowGroupFlow(false);
+              groupFlowOnRef.current = false;
+            } else if (entry.screen === 'camera') {
+              if (videoRef.current && videoRef.current.srcObject) {
+                videoRef.current.srcObject.getTracks().forEach((t) => t.stop());
+              }
+              setShowCameraModal(false);
+              cameraOnRef.current = false;
             }
           };
           window.addEventListener('popstate', handlePopState);
           return () => window.removeEventListener('popstate', handlePopState);
-        }, [isMobile, selectedChat, selectedGroup]);
+        }, [isMobile]);
 
         const handleLogout = () => {
           localStorage.removeItem('token');
@@ -5661,7 +5712,7 @@ setContacts(prev => {
   <Phone size={24} strokeWidth={1.8} />
   <small>Calls</small>
 </button>
-      <button onClick={() => {}}>
+      <button onClick={handleOpenCamera}>
         <Video size={24} strokeWidth={1.8} />
         <small>Camera</small>
       </button>
