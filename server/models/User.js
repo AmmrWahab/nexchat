@@ -30,6 +30,10 @@ const userSchema = new mongoose.Schema({
     type: String,
     default: 'https://via.placeholder.com/150'
   },
+  contacts: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  }],
     lastSeen: { type: Date, default: Date.now }, // ← Add this
 }, {
   timestamps: true

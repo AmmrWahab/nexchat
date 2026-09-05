@@ -281,24 +281,7 @@ export default function DashboardPage() {
 
 
 
-  const [contacts, setContacts] = useState(() => {
-    try {
-    const saved = localStorage.getItem('userContacts');
-    const loaded = saved ? JSON.parse(saved) : [];
-
-    // ✅ Ensure every contact has `online: false` on load
-    const initialized = loaded.filter(Boolean).map(contact => ({
-      ...contact,
-      online: false,           // 👈 Force offline by default
-      lastSeen: contact.lastSeen || Date.now()
-    }));
-
-    return initialized;
-    } catch (err) {
-    console.error('Failed to load contacts', err);
-    return [];
-    }
-    });
+  const [contacts, setContacts] = useState([]);
 
 
 
@@ -1063,7 +1046,16 @@ newSocket.on("receiveMessage", (data) => {
         online: true
       };
       const updated = [newContact, ...prev];
-      localStorage.setItem('userContacts', JSON.stringify(updated));
+      // Persist to this user's server-side address book so the chat
+      // stays visible on any device/account.
+      fetch(`${API_URL}/api/contacts`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${localStorage.getItem('token')}`,
+        },
+        body: JSON.stringify({ userId: senderId }),
+      }).catch(err => console.error('Failed to save received-sender contact', err));
       return updated;
     });
 
@@ -1309,42 +1301,32 @@ newSocket.on("receiveMessage", (data) => {
           })();
         }, [user.id]);
 
-        // ✅ Fetch all registered users and merge them into the contacts list
-        // so contacts appear on any device/browser (not just the one where
-        // they were added to localStorage).
+        // ✅ Load this user's private address book from the server (per-account)
         useEffect(() => {
           const token = localStorage.getItem('token');
           if (!token || !user.id) return;
           (async () => {
             try {
-              const res = await fetch(`${API_URL}/api/users`, {
+              const res = await fetch(`${API_URL}/api/contacts`, {
                 headers: { Authorization: `Bearer ${token}` },
               });
               const data = await res.json();
-              if (data && Array.isArray(data.users)) {
-                setContacts(prev => {
-                  const map = new Map(prev.map(c => [String(c.id), c]));
-                  data.users.forEach(u => {
-                    const key = String(u._id);
-                    if (!map.has(key)) {
-                      map.set(key, {
-                        id: u._id,
-                        name: u.name,
-                        email: u.email,
-                        photo: u.photo || 'https://via.placeholder.com/50',
-                        lastMsg: '',
-                        time: '',
-                        online: false,
-                      });
-                    }
-                  });
-                  const updated = [...map.values()];
-                  localStorage.setItem('userContacts', JSON.stringify(updated));
-                  return updated;
-                });
+              if (data && Array.isArray(data.contacts)) {
+                setContacts(data.contacts.map(c => ({
+                  id: c._id,
+                  name: c.name,
+                  firstName: c.firstName || '',
+                  lastName: c.lastName || '',
+                  email: c.email,
+                  photo: c.photo || 'https://via.placeholder.com/50',
+                  lastMsg: '',
+                  time: '',
+                  online: false,
+                  lastSeen: c.lastSeen || Date.now(),
+                })));
               }
             } catch (err) {
-              console.error('Failed to fetch users', err);
+              console.error('Failed to fetch contacts', err);
             }
           })();
         }, [user.id]);
@@ -5185,7 +5167,15 @@ setContacts(prev => {
   }));
 
   const updated = [newContact, ...prev];
-  localStorage.setItem('userContacts', JSON.stringify(updated));
+  // Persist to this user's server-side address book (per-account)
+  fetch(`${API_URL}/api/contacts`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${localStorage.getItem('token')}`,
+    },
+    body: JSON.stringify({ userId: foundUser._id }),
+  }).catch(err => console.error('Failed to save contact to server', err));
   return updated;
 });
 

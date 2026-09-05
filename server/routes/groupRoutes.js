@@ -102,4 +102,54 @@ router.get('/users', auth, async (req, res) => {
   }
 });
 
+// GET /api/contacts — return the current user's private address book
+router.get('/contacts', auth, async (req, res) => {
+  try {
+    const me = await User.findById(req.userId).populate('contacts', 'name email photo lastSeen');
+    res.json({ contacts: me?.contacts || [] });
+  } catch (err) {
+    console.error('Get contacts error:', err.message);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// POST /api/contacts — add a user to the current user's address book
+router.post('/contacts', auth, async (req, res) => {
+  const { userId } = req.body || {};
+  if (!userId) return res.status(400).json({ message: 'userId required' });
+  if (String(userId) === String(req.userId)) return res.status(400).json({ message: 'Cannot add yourself' });
+  try {
+    const target = await User.findById(userId);
+    if (!target) return res.status(404).json({ message: 'User not found' });
+    const me = await User.findById(req.userId);
+    if (!me) return res.status(404).json({ message: 'User not found' });
+    if (!me.contacts.some((id) => String(id) === String(userId))) {
+      me.contacts.push(userId);
+      await me.save();
+    }
+    res.status(201).json({
+      contact: { id: target._id, name: target.name, email: target.email, photo: target.photo, lastSeen: target.lastSeen },
+    });
+  } catch (err) {
+    console.error('Add contact error:', err.message);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// DELETE /api/contacts/:contactId — remove a user from the current user's address book
+router.delete('/contacts/:contactId', auth, async (req, res) => {
+  const contactId = req.params?.contactId;
+  if (!contactId) return res.status(400).json({ message: 'contactId required' });
+  try {
+    const me = await User.findById(req.userId);
+    if (!me) return res.status(404).json({ message: 'User not found' });
+    me.contacts = me.contacts.filter((id) => String(id) !== String(contactId));
+    await me.save();
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Remove contact error:', err.message);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 export default router;
