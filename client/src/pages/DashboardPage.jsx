@@ -29,6 +29,7 @@ export default function DashboardPage() {
   const [showDropdown, setShowDropdown] = useState(false);
   const [showMobileMenu, setShowMobileMenu] = useState(false);
   const [showAddContact, setShowAddContact] = useState(false);
+  const [dataReady, setDataReady] = useState(false);
   const [showNewChatDropdown, setShowNewChatDropdown] = useState(false);
   const [showNewContactModal, setShowNewContactModal] = useState(false);
   // ✅ Group creation flow state
@@ -1312,18 +1313,28 @@ newSocket.on("receiveMessage", (data) => {
               });
               const data = await res.json();
               if (data && Array.isArray(data.contacts)) {
-                setContacts(data.contacts.map(c => ({
-                  id: c._id,
-                  name: c.name,
-                  firstName: c.firstName || '',
-                  lastName: c.lastName || '',
-                  email: c.email,
-                  photo: c.photo || 'https://via.placeholder.com/50',
-                  lastMsg: '',
-                  time: '',
-                  online: false,
-                  lastSeen: c.lastSeen || Date.now(),
-                })));
+                // Merge server contacts into state WITHOUT wiping contacts that were
+                // added at runtime (e.g. a sender who just messaged you), so the
+                // fresh chat stays visible.
+                setContacts(prev => {
+                  const map = new Map(prev.map(c => [String(c.id), c]));
+                  data.contacts.forEach(c => {
+                    map.set(String(c._id), {
+                      id: c._id,
+                      name: c.name,
+                      firstName: c.firstName || '',
+                      lastName: c.lastName || '',
+                      email: c.email,
+                      photo: c.photo || 'https://via.placeholder.com/50',
+                      lastMsg: '',
+                      time: '',
+                      online: false,
+                      lastSeen: c.lastSeen || Date.now(),
+                    });
+                  });
+                  return [...map.values()];
+                });
+                setDataReady(true);
               }
             } catch (err) {
               console.error('Failed to fetch contacts', err);
@@ -1391,19 +1402,24 @@ newSocket.on("receiveMessage", (data) => {
           }
         }, [selectedChat]);
 
-        // Restore on load
+        // Restore the previous chat ONLY if that person/group still exists in this
+        // account's contact list or groups (prevents ghost chats after a refresh).
         useEffect(() => {
+          if (!dataReady) return;
           const saved = localStorage.getItem('selectedChat');
-          if (saved) {
-            const parsed = JSON.parse(saved);
+          const parsed = saved ? JSON.parse(saved) : null;
+          if (!parsed?.id) return;
+          const stillExists =
+            contacts.some(c => String(c.id) === String(parsed.id)) ||
+            groupsList.some(g => String(g.id) === String(parsed.id));
+          if (stillExists) {
             setSelectedChat(parsed);
-
-            // Do NOT auto-mark read on restore; only mark once the user actually opens the chat
-            setTimeout(() => {
-              selectedChatRef.current = parsed;
-            }, 0);
+            selectedChatRef.current = parsed;
+          } else {
+            localStorage.removeItem('selectedChat');
+            setSelectedChat(prev => (prev && String(prev.id) === String(parsed.id) ? null : prev));
           }
-        }, []);
+        }, [dataReady, groupsList]);
 
         // After user + selectedChat restore
         useEffect(() => {
