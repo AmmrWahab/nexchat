@@ -3925,7 +3925,7 @@ newSocket.on("receiveMessage", (data) => {
                 setShowDropdown(false);
               }}
             >
-              <SquareCheckBig size={18} strokeWidth={1.8} />
+              <CheckSquare size={18} strokeWidth={1.8} />
               <span>Select messages</span>
             </button>
             <button
