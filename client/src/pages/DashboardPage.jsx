@@ -813,9 +813,10 @@ useEffect(() => {
   console.log('📁 Messages on load:', saved ? Object.keys(JSON.parse(saved)) : 'none');
 }, []);
 
-  // Auto-scroll to bottom when messages or selectedChat changes
+  // Auto-scroll to bottom when a DM is open and its messages change.
+  // (Only DMs: group chats use their own unread-position scroll logic.)
 useEffect(() => {
-  if (messagesEndRef.current) {
+  if (selectedChat && messagesEndRef.current) {
     messagesEndRef.current.scrollIntoView({ behavior: 'instant' });
   }
 }, [selectedChat, messages]);
@@ -824,9 +825,12 @@ useEffect(() => {
   // unread messages (WhatsApp-style); otherwise to the latest (bottom).
   const scrollGroupOpen = () => {
     const targetId = groupUnreadScrollRef.current;
-    const el = targetId ? groupMessageElsRef.current[targetId] : null;
-    if (targetId && el) {
-      el.scrollIntoView({ behavior: 'instant', block: 'center' });
+    let el = targetId ? groupMessageElsRef.current[targetId] : null;
+    if (!el && targetId && typeof document !== 'undefined') {
+      el = document.querySelector(`.messages [data-msgid="${CSS.escape(targetId)}"]`);
+    }
+    if (el) {
+      el.scrollIntoView({ behavior: 'instant', block: 'start' });
     } else if (messagesEndRef.current) {
       messagesEndRef.current.scrollIntoView({ behavior: 'instant' });
     }
@@ -838,6 +842,15 @@ useEffect(() => {
     requestAnimationFrame(() => scrollGroupOpen());
   }
 }, [selectedGroup]);
+
+  // Re-position when the user tabs back into the Groups view. The messages
+  // panel remounts on tab switches (resetting scrollTop to the top), so restore
+  // the unread/latest position instead of leaving the conversation at the top.
+useEffect(() => {
+  if (activeTab === 'groups' && selectedGroup) {
+    requestAnimationFrame(() => scrollGroupOpen());
+  }
+}, [activeTab, selectedGroup]);
 
   // History is loaded asynchronously (via socket) after a group opens,
   // so re-scroll shortly after open while history is still arriving so the
@@ -989,6 +1002,16 @@ newSocket.on("receiveMessage", (data) => {
     }
 
     // ✅ 2. Otherwise, it's a new message from someone else
+    // If this DM chat is currently open and the user is at the bottom of it,
+    // treat the incoming message as read right away (WhatsApp behavior) —
+    // otherwise it would sit as an unread badge even though they're looking.
+    const isOpenChat = selectedChatRef.current &&
+      String(selectedChatRef.current.id) === String(senderId) &&
+      (isMobileRef.current ? mobileChatOpenRef.current : true);
+    const atBottom = (el => !!el && el.scrollHeight - el.scrollTop - el.clientHeight < 60)(
+      typeof document !== 'undefined' ? document.querySelector('.messages') : null
+    );
+    const autoRead = Boolean(isOpenChat && atBottom);
     const newMessage = {
       id: data._id?.toString() || `fallback-${Date.now()}`,
       text: data.message,
@@ -1003,12 +1026,15 @@ newSocket.on("receiveMessage", (data) => {
       } : null,
       photo: data.fromPhoto || 'https://placehold.co/50x50',
       delivered: true,
-      read: false,
+      read: autoRead,
     };
 
     const updatedChat = [...chat, newMessage];
     const updated = { ...prev, [senderId]: updatedChat };
     localStorage.setItem('chatMessages', JSON.stringify(updated));
+    if (autoRead) {
+      newSocket.emit('markAsRead', { chatId: senderId, readerId: user.id });
+    }
     return updated;
   });
 
@@ -1226,11 +1252,14 @@ newSocket.on("receiveMessage", (data) => {
             readBy: m.readBy || [],
           }))];
           // Dedupe by id/messageId so reopening a group replaces rather than
-          // duplicates the ticking message.
+          // duplicates the ticking message. Last occurrence wins so the server's
+          // history (which carries the authoritative read state) overrides an
+          // earlier live copy — otherwise a message received while the group was
+          // closed stays "unread" forever and the badge never clears.
           const seen = new Map();
           merged.forEach(m => {
             const key = m.id;
-            if (!seen.has(key)) seen.set(key, m);
+            seen.set(key, m);
           });
           // Sort oldest→newest so live-received messages (which were
           // appended before history arrived) don't end up before older ones.
@@ -2928,6 +2957,7 @@ newSocket.on("receiveMessage", (data) => {
                   return (
                     <div
                       key={msg.id}
+                      data-msgid={msg.id}
                       className={`message ${isYou ? 'sent' : 'received'} ${isMatch ? 'highlighted' : ''} ${groupIsMobileHit ? 'mobile-search-hit' : ''} ${groupIsMobileCurrent ? 'mobile-search-current' : ''} ${groupIsMsgSelected ? 'selected-msg' : ''}`}
                       ref={(el) => {
                         groupMessageElsRef.current[msg.id] = el;
