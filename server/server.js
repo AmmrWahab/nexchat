@@ -153,7 +153,7 @@ io.use(async (socket, next) => {
 
 
 
-io.on('connection', async (socket) => {
+io.on('connection', (socket) => {
   console.log('✅ User connected:', socket.userId);
 
   // ✅ Flag to prevent duplicate handling
@@ -189,78 +189,11 @@ io.on('connection', async (socket) => {
     }
   });
 
-  // ✅ Mark as online only after fully connected
-  await User.findByIdAndUpdate(socket.userId, { lastSeen: Date.now() });
-
-  // Track this socket id in the user's set of connected sockets
-  if (!userSocketMap.has(socket.userId)) {
-    userSocketMap.set(socket.userId, new Set());
-  }
-  userSocketMap.get(socket.userId).add(socket.id);
-
-  // ✅ Emit this user's online status to everyone (including self)
-  io.emit('userStatus', {
-    userId: socket.userId,
-    isOnline: true,
-    lastSeen: null
-  });
-
-  // ✅ Snapshot: tell the newly-connected user who is ALREADY online
-  const onlineSnapshot = [];
-  for (const [userId, sockets] of userSocketMap.entries()) {
-    if (userId !== socket.userId && sockets.size > 0) {
-      onlineSnapshot.push({ userId, isOnline: true, lastSeen: null });
-    }
-  }
-  io.to(socket.id).emit('userStatusSnapshot', onlineSnapshot);
-
-  
-
-  // ✅ Deliver undelivered messages
-// ✅ Deliver undelivered messages
-try {
-  const undelivered = await Message.find({
-    to: socket.userId,
-    delivered: false
-  }).populate("from", "name");
-
-  if (undelivered.length > 0) {
-    console.log(`📦 Delivering ${undelivered.length} undelivered messages to ${socket.userId}`);
-
-    for (const msg of undelivered) {
-      // 1. Send message to now-online recipient
-      io.to(socket.id).emit("receiveMessage", {
-        _id: msg._id,
-        from: msg.from._id,
-        fromName: msg.from.name,
-        message: msg.message,
-        file: msg.file,
-        fileName: msg.fileName,
-        fileType: msg.fileType,
-        timestamp: msg.createdAt.getTime(),
-        messageId: msg.clientMessageId
-      });
-
-      // 2. Mark as delivered in DB
-      msg.delivered = true;
-      await msg.save();
-
-      // 3. ✅ Notify the original sender that their message was DELIVERED
-      emitToUser(msg.from._id.toString(), "messageDelivered", {
-          chatId: msg.to.toString(),
-          messageId: msg.clientMessageId
-      });
-
-      console.log(`✅ Delivered stored message ${msg._id} from ${msg.from._id} to ${msg.to}`);
-    }
-  }
-} catch (err) {
-  console.error("❌ Error delivering stored messages:", err);
-}
-  
-
-  // ✅ Handle new message
-  // ✅ Inside socket.on("sendMessage", async (data) => { ... })
+  // (Async connection bookkeeping lives at the END of this callback so every
+  //  socket.on(...) handler below is registered BEFORE any await. If an event
+  //  arrives while an awaited DB call is still in flight, socket.io has no
+  //  handler for it yet and silently DROPS it -> messages appear "not
+  //  reaching" the receiver. Early emits must never be lost.)
 
 socket.on("sendMessage", async (data) => {
     console.log("📨 [DEBUG] Full data received:", JSON.stringify(data, null, 2)); // 🔥 Full payload
@@ -586,6 +519,77 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
       console.error("clearGroupChat error:", err.message);
     }
   });
+
+  // ✅ Async connection bookkeeping — runs AFTER every socket.on handler is
+  //    registered, so no client emit can race an in-flight await and get
+  //    silently dropped before a handler exists to receive it.
+  (async () => {
+    try {
+      // Track this socket id in the user's set of connected sockets (added
+      // synchronously, before any DB await, so the receiver map is ready)
+      if (!userSocketMap.has(socket.userId)) {
+        userSocketMap.set(socket.userId, new Set());
+      }
+      userSocketMap.get(socket.userId).add(socket.id);
+
+      await User.findByIdAndUpdate(socket.userId, { lastSeen: Date.now() });
+
+      // ✅ Emit this user's online status to everyone (including self)
+      io.emit('userStatus', {
+        userId: socket.userId,
+        isOnline: true,
+        lastSeen: null
+      });
+
+      // ✅ Snapshot: tell the newly-connected user who is ALREADY online
+      const onlineSnapshot = [];
+      for (const [userId, sockets] of userSocketMap.entries()) {
+        if (userId !== socket.userId && sockets.size > 0) {
+          onlineSnapshot.push({ userId, isOnline: true, lastSeen: null });
+        }
+      }
+      io.to(socket.id).emit('userStatusSnapshot', onlineSnapshot);
+
+      // ✅ Deliver undelivered messages
+      const undelivered = await Message.find({
+        to: socket.userId,
+        delivered: false
+      }).populate("from", "name");
+
+      if (undelivered.length > 0) {
+        console.log(`📦 Delivering ${undelivered.length} undelivered messages to ${socket.userId}`);
+
+        for (const msg of undelivered) {
+          // 1. Send message to now-online recipient
+          io.to(socket.id).emit("receiveMessage", {
+            _id: msg._id,
+            from: msg.from._id,
+            fromName: msg.from.name,
+            message: msg.message,
+            file: msg.file,
+            fileName: msg.fileName,
+            fileType: msg.fileType,
+            timestamp: msg.createdAt.getTime(),
+            messageId: msg.clientMessageId
+          });
+
+          // 2. Mark as delivered in DB
+          msg.delivered = true;
+          await msg.save();
+
+          // 3. ✅ Notify the original sender that their message was DELIVERED
+          emitToUser(msg.from._id.toString(), "messageDelivered", {
+            chatId: msg.to.toString(),
+            messageId: msg.clientMessageId
+          });
+
+          console.log(`✅ Delivered stored message ${msg._id} from ${msg.from._id} to ${msg.to}`);
+        }
+      }
+    } catch (err) {
+      console.error("❌ Connection bookkeeping error:", err);
+    }
+  })();
 });
 
 
