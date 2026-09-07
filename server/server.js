@@ -290,6 +290,49 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
     }
   });
 
+  // ✅ Group read receipt: a member has seen the group's messages. For every
+  //    unread-by-them message, record them in readBy; once ALL other members
+  //    have read a message, tell its sender so their tick turns green.
+  socket.on("markGroupRead", async ({ groupId, readerId }) => {
+    if (!groupId || !readerId) return;
+    try {
+      const group = await Group.findById(groupId).exec();
+      if (!group || !group.members.map(String).includes(String(readerId))) return;
+
+      const otherMemberIds = (group.members || []).map(String).filter(id => id !== String(readerId));
+      if (otherMemberIds.length === 0) return;
+
+      const unread = await GroupMessage.find({
+        group: groupId,
+        from: { $ne: readerId },
+        readBy: { $nin: [String(readerId)] },
+      }).exec();
+
+      for (const msg of unread) {
+        if (!msg.readBy.map(String).includes(String(readerId))) {
+          msg.readBy.push(readerId);
+        }
+        // WhatsApp-style: green only when every OTHER member (all members except
+        // the SENDER) has read the message.
+        const senderId = String(msg.from);
+        const otherMemberIds = (group.members || []).map(String).filter(id => id !== senderId);
+        const readByIds = msg.readBy.map(String);
+        const allOthersRead = otherMemberIds.length > 0 && otherMemberIds.every(id => readByIds.includes(id));
+        await msg.save();
+        if (allOthersRead) {
+          if (senderId !== String(readerId)) {
+            emitToUser(senderId, "groupMessageReadAll", {
+              groupId,
+              messageId: msg._id.toString(),
+            });
+          }
+        }
+      }
+    } catch (err) {
+      console.error("markGroupRead error:", err.message);
+    }
+  });
+
   // ✅ Handle new group creation — notify ALL members so they see the group
   socket.on("createGroup", async (data) => {
     const { name, dp, members } = data;
@@ -369,8 +412,13 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
         emitToUser(memberId, "receiveGroupMessage", payload, [socket.id]);
       });
 
-      // Confirm deliver to sender
-      socket.emit("groupMessageDelivered", { groupId, messageId: messageId || newMsg._id.toString() });
+      // Confirm delivery to the sender on ALL of their devices (so the ticking
+      // message also adopts the saved _id everywhere and never duplicates).
+      emitToUser(socket.userId, "groupMessageDelivered", {
+        groupId,
+        messageId: messageId || newMsg._id.toString(),
+        _id: newMsg._id.toString(),
+      });
     } catch (err) {
       console.error("sendGroupMessage error:", err.message);
     }
@@ -391,18 +439,27 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
         .limit(200)
         .exec();
 
-      const msgs = history.map(m => ({
-        _id: m._id,
-        groupId,
-        from: String(m.from._id),
-        fromName: m.from.name || 'Unknown',
-        fromPhoto: m.from.photo,
-        message: m.message,
-        file: m.file,
-        fileName: m.fileName,
-        fileType: m.fileType,
-        timestamp: new Date(m.createdAt).getTime(),
-      }));
+      const msgs = history.map(m => {
+        const otherMemberIds = (group.members || []).map(String).filter(id => id !== String(m.from._id));
+        const readByIds = (m.readBy || []).map(String);
+        return {
+          _id: m._id,
+          groupId,
+          from: String(m.from._id),
+          fromName: m.from.name || 'Unknown',
+          fromPhoto: m.from.photo,
+          message: m.message,
+          file: m.file,
+          fileName: m.fileName,
+          fileType: m.fileType,
+          timestamp: new Date(m.createdAt).getTime(),
+          // WhatsApp-style group read tick: green only once every OTHER member
+          // has seen the message. `allRead` is computed server-side so every
+          // device of the sender agrees on the same tick state.
+          readBy: readByIds,
+          allRead: otherMemberIds.length > 0 && otherMemberIds.every(id => readByIds.includes(id)),
+        };
+      });
 
       io.to(socket.id).emit("groupMessagesHistory", { groupId, messages: msgs });
     } catch (err) {

@@ -444,16 +444,6 @@ useEffect(() => {
   if (socket) socketRef.current = socket;
 }, [socket]);
 
-useEffect(() => {
-  if (!selectedChat?.id || !messages[selectedChat.id]) return;
-  const chatMessages = messages[selectedChat.id];
-  const hasUnread = chatMessages.some(m => m.sender !== 'You' && !m.read);
-  const chatVisible = isMobile ? mobileChatOpen : true;
-  if (hasUnread && isTabFocused && chatVisible) {
-    markAsRead();
-  }
-}, [selectedChat?.id, messages, isTabFocused, markAsRead, isMobile, mobileChatOpen]);
-
 
 const positionDropdown = (buttonEl, isYou) => {
   if (!buttonEl) return;
@@ -1135,6 +1125,7 @@ newSocket.on("receiveMessage", (data) => {
         const senderId = String(data.from);
         const displayName = senderId === user.id ? 'You' : data.fromName || 'Unknown';
         const isOpenGroup = selectedGroupRef.current && String(selectedGroupRef.current.id) === gid;
+        const isOwnMessage = senderId === user.id;
         setGroupMessages(prev => {
           const list = prev[gid] || [];
           // dedupe by messageId
@@ -1151,10 +1142,19 @@ newSocket.on("receiveMessage", (data) => {
               fileName: data.fileName,
               fileType: data.fileType,
               photo: data.fromPhoto || 'https://placehold.co/50x50',
-              read: isOpenGroup,
+              // My own message echoed to my other devices is NEVER "read" just
+              // because a device has the group open (read ticks come from the
+              // server once ALL members have seen the message).
+              read: isOpenGroup && !isOwnMessage,
+              delivered: !isOwnMessage,
             }],
           };
         });
+        // Tell the server this member has seen the group's messages so senders
+        // can advance their read ticks (only for messages from OTHERS).
+        if (isOpenGroup && !isOwnMessage) {
+          newSocket.emit('markGroupRead', { groupId: gid, readerId: user.id });
+        }
         // update group preview
         const previewName = senderId === user.id
           ? 'You'
@@ -1165,12 +1165,39 @@ newSocket.on("receiveMessage", (data) => {
         setGroupsList(prev => prev.map(g => String(g.id) === gid ? { ...g, lastMsg: previewName + (previewText ? ': ' + previewText : ''), lastTime: data.timestamp || Date.now() } : g));
       });
 
-      // ✅ Group message delivery confirmation
-      newSocket.on('groupMessageDelivered', ({ groupId, messageId }) => {
+      // ✅ Group message delivery confirmation (mark single tick  → ✓✓ delivered)
+      //    Also adopts the persisted _id so a re-open never duplicates the message
+      //    (server history uses _id as the dedupe key).
+      newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id }) => {
         const gid = String(groupId);
         setGroupMessages(prev => {
           const list = prev[gid] || [];
-          return { ...prev, [gid]: list.map(m => m.id === messageId ? { ...m, delivered: true } : m) };
+          let changed = false;
+          const next = list.map(m => {
+            if (m.id === messageId || m.id === _id) {
+              changed = true;
+              return { ...m, delivered: true, id: _id || m.id };
+            }
+            return m;
+          });
+          return changed ? { ...prev, [gid]: next } : prev;
+        });
+      });
+
+      // ✅ Group read receipt: ALL other members have read a message → green tick
+      newSocket.on('groupMessageReadAll', ({ groupId, messageId }) => {
+        const gid = String(groupId);
+        setGroupMessages(prev => {
+          const list = prev[gid] || [];
+          let changed = false;
+          const next = list.map(m => {
+            if (m.id === messageId && !m.allRead) {
+              changed = true;
+              return { ...m, allRead: true, read: true };
+            }
+            return m;
+          });
+          return changed ? { ...prev, [gid]: next } : prev;
         });
       });
 
@@ -1181,7 +1208,7 @@ newSocket.on("receiveMessage", (data) => {
         setGroupMessages(prev => {
           const existing = prev[gid] || [];
           const merged = [...existing, ...messages.map(m => ({
-            id: m._id?.toString() || `g-${Date.now()}-${Math.random()}`,
+            id: m._id?.toString() || m.messageId || `g-${Date.now()}-${Math.random()}`,
             text: m.message,
             sender: String(m.from) === user.id ? 'You' : m.fromName || 'Unknown',
             senderId: String(m.from),
@@ -1191,9 +1218,15 @@ newSocket.on("receiveMessage", (data) => {
             fileType: m.fileType,
             photo: m.fromPhoto || 'https://placehold.co/50x50',
             delivered: true,
-            read: true,
+            // On load, mark MY OWN messages as "delivered but not read by all"
+            // (WhatsApp shows a single ✓✓ for own group messages until every
+            // member has seen them). Received messages don't show ticks.
+            read: String(m.from) !== user.id,
+            allRead: !!m.allRead,
+            readBy: m.readBy || [],
           }))];
-          // dedupe
+          // Dedupe by id/messageId so reopening a group replaces rather than
+          // duplicates the ticking message.
           const seen = new Map();
           merged.forEach(m => {
             const key = m.id;
@@ -1204,6 +1237,11 @@ newSocket.on("receiveMessage", (data) => {
           const ordered = [...seen.values()].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
           return { ...prev, [gid]: ordered };
         });
+        // If the user is viewing this group, mark all messages from others as
+        // read (server propagates read ticks to senders).
+        if (selectedGroupRef.current && String(selectedGroupRef.current.id) === gid) {
+          newSocket.emit('markGroupRead', { groupId: gid, readerId: user.id });
+        }
       });
 
       // ✅ 1:1 message deleted-for-everyone by the other party
@@ -1421,23 +1459,12 @@ newSocket.on("receiveMessage", (data) => {
           }
         }, [dataReady, groupsList]);
 
-        // After user + selectedChat restore
-        useEffect(() => {
-          if (!user?.id || !selectedChat?.id) return; // wait until both exist
+        // NOTE: no auto "mark as read" on mount for a restored chat — a direct
+        // message must only become a read (green) tick when the receiving user
+        // has ACTUALLY had that chat open and focused. Restoring a saved chat on
+        // load must NOT send read receipts for messages they never saw.
 
-          const chatMessages = messages[selectedChat.id] || [];
-          const hasUnread = chatMessages.some(m => m.sender !== 'You' && !m.read);
-          const chatVisible = isMobileRef.current ? mobileChatOpenRef.current : true;
-
-          if (hasUnread && chatVisible) {
-            console.log("🔥 Marking as read after reload (user + chat ready)", selectedChat.id);
-            markAsReadRef.current();
-          }
-        }, [user?.id, selectedChat?.id, messages]);
-
-
-
-          // Check if user exists in DB
+        // Check if user exists in DB
         const findUserByEmail = async (email) => {
           try {
             const res = await fetch(`${API_URL}/api/auth/check-email?email=${encodeURIComponent(email)}`);
@@ -2094,9 +2121,15 @@ newSocket.on("receiveMessage", (data) => {
         className={`chat-item ${selectedChat?.id === chat.id ? 'active' : ''}`}
         onClick={() => {
           setSelectedChat(chat);
+          selectedChatRef.current = chat;
           setSelectedGroup(null);
           selectedGroupRef.current = null;
           setMobileChatOpen(true);
+          // Mark read only on an explicit user open (WhatsApp behavior):
+          // never auto-send read receipts for chats restored on page load.
+          if ((messages[chat.id] || []).some(m => m.sender !== 'You' && !m.read)) {
+            setTimeout(() => markAsReadRef.current(), 60);
+          }
         }}
         style={{ cursor: 'pointer' }}
       >
@@ -2167,12 +2200,6 @@ newSocket.on("receiveMessage", (data) => {
                       const firstUnread = openList.find(m => m.sender !== 'You' && !m.read);
                       groupUnreadScrollRef.current = firstUnread ? firstUnread.id : null;
                       groupOpenAtRef.current = Date.now();
-                      // Mark this group's messages as read
-                      setGroupMessages(prev => {
-                        const list = prev[normalized.id] || [];
-                        if (!list.some(m => m.sender !== 'You' && !m.read)) return prev;
-                        return { ...prev, [normalized.id]: list.map(m => (m.sender !== 'You' ? { ...m, read: true } : m)) };
-                      });
                       if (socket) {
                         socket.emit('fetchGroupMessages', { groupId: normalized.id });
                       }
@@ -2312,8 +2339,13 @@ newSocket.on("receiveMessage", (data) => {
               senderId: user.id,
               replyTo: replyToForPayload,
               timestamp: now.getTime(),
-              delivered: false,
+              // A brand-new message is "delivered" pessimistically because the
+              // server always echoes groupMessageDelivered back to the sender's
+              // very own socket. allRead (green tick) only comes from the server
+              // once every OTHER member has read the message — same as WhatsApp.
+              delivered: true,
               read: false,
+              allRead: false,
             },
           ],
         }));
@@ -3188,9 +3220,9 @@ newSocket.on("receiveMessage", (data) => {
                       <div className="timestamp-container">
                         <span className="timestamp">{formatTime(msg.timestamp)}</span>
                         {isYou && (
-                          <div className={`message-status ${msg.read ? 'read' : ''}`}>
+                          <div className={`message-status ${msg.allRead ? 'read' : ''}`}>
                             <span className="tick">
-                              {msg.read ? '✅' : msg.delivered ? '✓✓' : '✓'}
+                              {msg.allRead ? '✅' : msg.delivered ? '✓✓' : '✓'}
                             </span>
                           </div>
                         )}

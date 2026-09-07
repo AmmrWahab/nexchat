@@ -10,6 +10,8 @@ const groupMessageSchema = new mongoose.Schema({
   clientMessageId: String,
   delivered: { type: Boolean, default: false },
   read: { type: Boolean, default: false },
+  // Users who have actually seen this message (drives WhatsApp-style read ticks)
+  readBy: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
   createdAt: { type: Date, default: Date.now }
 });
 
