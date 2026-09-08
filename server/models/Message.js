@@ -8,6 +8,7 @@ const messageSchema = new mongoose.Schema({
   file: { type: String, default: null },       // File path or base64
   fileName: { type: String, default: null },
   fileType: { type: String, default: null },
+  duration: { type: Number, default: null },    // seconds (voice messages)
 
   delivered: { type: Boolean, default: false },
   read: { type: Boolean, default: false },

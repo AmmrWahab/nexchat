@@ -7,6 +7,7 @@ const groupMessageSchema = new mongoose.Schema({
   file: { type: String, default: null },
   fileName: { type: String, default: null },
   fileType: { type: String, default: null },
+  duration: { type: Number, default: null },    // seconds (voice messages)
   clientMessageId: String,
   delivered: { type: Boolean, default: false },
   read: { type: Boolean, default: false },

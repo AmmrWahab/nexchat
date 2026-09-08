@@ -17,6 +17,8 @@ import { fileURLToPath } from 'url';
 import Message from "./models/Message.js"; // add this on top
 import groupRoutes from './routes/groupRoutes.js'; // ✅ Group routes
 import statusRoutes, { getStatusViewerIds } from './routes/statusRoutes.js'; // ✅ Status routes
+import callRoutes from './routes/callRoutes.js'; // ✅ Call routes
+import Call from './models/Call.js'; // ✅ Call model
 import { promisify } from 'util';
 const verifyAsync = promisify(jwt.verify);
 
@@ -75,6 +77,7 @@ app.use(passport.session());
 app.use('/api', authRoutes);
 app.use('/api', groupRoutes);
 app.use('/api', statusRoutes);
+app.use('/api', callRoutes);
 
 // Google Auth Routes
 app.get('/api/auth/google',
@@ -200,7 +203,7 @@ io.on('connection', (socket) => {
 
 socket.on("sendMessage", async (data) => {
     console.log("📨 [DEBUG] Full data received:", JSON.stringify(data, null, 2)); // 🔥 Full payload
-  const { to, message, from, file, fileName, fileType, replyTo, messageId } = data; // 👈 Make sure you receive `messageId`
+  const { to, message, from, file, fileName, fileType, replyTo, messageId, duration } = data; // 👈 Make sure you receive `messageId`
     console.log("📄 [DEBUG] Extracted fields:", { to, message, from, messageId }); // 🔥 Check values
   const receiverSocketIds = getSocketIds(to);
   if (!from || !to) {
@@ -223,6 +226,7 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
       file,
       fileName,
       fileType,
+      duration,
       replyTo: replyTo ? {
         sender: replyTo.sender,
         text: replyTo.text,
@@ -251,6 +255,7 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
           file,
           fileName,
           fileType,
+          duration,
           replyTo: replyTo,
           timestamp: newMsg.createdAt.getTime(),
           messageId // 👈 Send back to client
@@ -374,7 +379,7 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
 
   // ✅ Handle group message
   socket.on("sendGroupMessage", async (data) => {
-    const { groupId, message, file, fileName, fileType, messageId } = data;
+    const { groupId, message, file, fileName, fileType, messageId, duration } = data;
     if (!groupId) return;
     try {
       const sender = await User.findById(socket.userId).select("name photo").exec();
@@ -392,6 +397,7 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
         file,
         fileName,
         fileType,
+        duration,
         clientMessageId: data.messageId
       });
 
@@ -405,6 +411,7 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
         file,
         fileName,
         fileType,
+        duration,
         timestamp: newMsg.createdAt.getTime(),
         messageId
       };
@@ -455,6 +462,7 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
           file: m.file,
           fileName: m.fileName,
           fileType: m.fileType,
+          duration: m.duration,
           timestamp: new Date(m.createdAt).getTime(),
           // WhatsApp-style group read tick: green only once every OTHER member
           // has seen the message. `allRead` is computed server-side so every
@@ -638,6 +646,97 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
     }
   });
 
+  // ==================== CALLS (voice/video) ====================
+
+  // Persist a finished call for both participants and notify them to refresh.
+  async function logCall(callerId, calleeId, type, status, durationSec) {
+    try {
+      const call = await Call.create({
+        caller: callerId,
+        callee: calleeId,
+        type: type === 'video' ? 'video' : 'voice',
+        status: status === 'missed' ? 'missed' : 'ended',
+        durationSec: Math.max(0, Math.round(durationSec || 0)),
+      });
+      emitToUser(callerId, 'call:historyUpdated', { callId: String(call._id) });
+      emitToUser(calleeId, 'call:historyUpdated', { callId: String(call._id) });
+    } catch (err) {
+      console.error('logCall error:', err.message);
+    }
+  }
+
+  // Caller starts a call -> ring the callee on all their devices.
+  socket.on('call:invite', async ({ to, type, callId, name, photo }) => {
+    if (!to || !callId) return;
+    const peer = await User.findById(to).select('name photo').lean().exec();
+    const me = await User.findById(socket.userId).select('name photo').lean().exec();
+    emitToUser(to, 'call:incoming', {
+      callId,
+      type,
+      from: String(socket.userId),
+      fromName: name || me?.name || 'Unknown',
+      fromPhoto: photo || me?.photo || 'https://via.placeholder.com/50',
+      callerName: peer ? peer.name : undefined,
+    });
+    socket.emit('call:ringing', { callId });
+  });
+
+  // Callee accepts -> caller opens the active call UI.
+  socket.on('call:accept', ({ to, callId, type }) => {
+    if (!to || !callId) return;
+    emitToUser(to, 'call:accepted', { callId, type });
+  });
+
+  // Callee declines -> mark missed for the caller.
+  socket.on('call:reject', ({ to, callId, type }) => {
+    if (!to) return;
+    logCall(socket.userId, to, type, 'missed', 0);
+    socket.emit('call:rejectedRemote', { callId, type });
+    emitToUser(to, 'call:rejected', { callId, type });
+  });
+
+  // Either side hangs up -> both close; the CALLER records the finished call
+  // (caller was ringed to accept, so caller always initiated).
+  socket.on('call:end', ({ to, callId, type, durationSec }) => {
+    if (!to) return;
+    const secs = Math.max(0, Math.round(durationSec || 0));
+    logCall(socket.userId, to, type, secs > 0 ? 'ended' : 'missed', secs);
+    socket.emit('call:endedLocal', { callId });
+    emitToUser(to, 'call:ended', { callId });
+  });
+
+  // Caller timeout (callee never answered) -> mark missed.
+  socket.on('call:timeout', ({ to, callId, type }) => {
+    if (!to) return;
+    logCall(socket.userId, to, type, 'missed', 0);
+    emitToUser(to, 'call:timedOut', { callId });
+  });
+
+  // WebRTC signaling relay between the two peers.
+  socket.on('rtc:offer', ({ to, callId, sdp }) => {
+    if (!to || !callId || !sdp) return;
+    emitToUser(to, 'rtc:offer', { from: String(socket.userId), callId, sdp });
+  });
+  socket.on('rtc:answer', ({ to, callId, sdp }) => {
+    if (!to || !callId || !sdp) return;
+    emitToUser(to, 'rtc:answer', { from: String(socket.userId), callId, sdp });
+  });
+  socket.on('rtc:ice', ({ to, callId, candidate }) => {
+    if (!to || !callId || !candidate) return;
+    emitToUser(to, 'rtc:ice', { from: String(socket.userId), callId, candidate });
+  });
+  // Keepalive so both sides' heartbeat timers survive socket throttling.
+  socket.on('call:ping', ({ to, callId }) => {
+    if (!to || !callId) return;
+    emitToUser(to, 'call:ping', { from: String(socket.userId), callId });
+  });
+
+  // Peer UI state (camera/mic toggles) relay.
+  socket.on('call:state', ({ to, callId, cameraOn, micOn }) => {
+    if (!to || !callId) return;
+    emitToUser(to, 'call:state', { from: String(socket.userId), callId, cameraOn, micOn });
+  });
+
   // ✅ Async connection bookkeeping — runs AFTER every socket.on handler is
   //    registered, so no client emit can race an in-flight await and get
   //    silently dropped before a handler exists to receive it.
@@ -687,6 +786,7 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
             file: msg.file,
             fileName: msg.fileName,
             fileType: msg.fileType,
+            duration: msg.duration,
             timestamp: msg.createdAt.getTime(),
             messageId: msg.clientMessageId
           });

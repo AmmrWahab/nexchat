@@ -5,7 +5,7 @@ import { createPortal } from 'react-dom';
 import { useNavigate, useLocation } from 'react-router-dom';
 import './dashboard.css';
 import { io } from 'socket.io-client';
-import { Search, X, CornerUpRight, CornerUpLeft, Phone, Video, Paperclip, Camera, Mic, User, FileText, Trash2, Copy, Forward, Reply, ArrowLeft, ChevronUp, ChevronDown, Info, MessageCircle, Users, Settings, Menu, SquarePen, Images, Image, PencilLine, Check } from "lucide-react";
+import { Search, X, CornerUpRight, CornerUpLeft, Phone, Video, Paperclip, Camera, Mic, User, FileText, Trash2, Copy, Forward, Reply, ArrowLeft, ChevronUp, ChevronDown, Info, MessageCircle, Users, Settings, Menu, SquarePen, Images, Image, PencilLine, Check, MicOff, VideoOff, Volume2 } from "lucide-react";
 import { API_URL } from '../config.js';
 
 
@@ -28,6 +28,7 @@ export default function DashboardPage() {
   const location = useLocation();
   const [showDropdown, setShowDropdown] = useState(false);
   const [showMobileMenu, setShowMobileMenu] = useState(false);
+  const [showCallsMenu, setShowCallsMenu] = useState(false);
   const [showAddContact, setShowAddContact] = useState(false);
   const [dataReady, setDataReady] = useState(false);
   const [showNewChatDropdown, setShowNewChatDropdown] = useState(false);
@@ -137,6 +138,27 @@ export default function DashboardPage() {
   const statusVideoRef = useRef(null);
   const statusFileInputRef = useRef(null);
 
+  // -------- Calls (voice/video) state --------
+  const [calls, setCalls] = useState([]);
+  const [activeCall, setActiveCall] = useState(null); // { mode, type, callId, peerId, peerName, peerPhoto }
+  const activeCallRef = useRef(null);
+  const [callSpeakerMenuOpen, setCallSpeakerMenuOpen] = useState(false);
+  const [callSpeakerOutput, setCallSpeakerOutput] = useState('speaker');
+  const [callMicOn, setCallMicOn] = useState(true);
+  const [callCamOn, setCallCamOn] = useState(true);
+  const [mediaViewer, setMediaViewer] = useState(null); // { type:'dm'|'group', chatId, chatName, tab }
+  const callStartAtRef = useRef(0);
+  const pcRef = useRef(null);
+  const localStreamRef = useRef(null);
+  const remoteStreamRef = useRef(null);
+  const signalingRoleRef = useRef(''); // 'offerer' | 'answerer'
+  const callPeerIdRef = useRef(null);
+  const callIdRef = useRef(null);
+  const ownVideoRef = useRef(null);
+  const peerVideoRef = useRef(null);
+  const callTimerRef = useRef(null);
+  const peekReminderRef = useRef(null);
+
   const clearLongPress = () => {
     if (longPressRef.current.timer) {
       clearTimeout(longPressRef.current.timer);
@@ -154,6 +176,53 @@ export default function DashboardPage() {
     if (d < 24 * 60 * 60 * 1000) return `${Math.floor(d / 3600000)}h ago`;
     return `${Math.floor(d / 86400000)}d ago`;
   };
+
+  // WhatsApp-style segmented ring behind a status avatar. The ring is split into
+  // as many pieces as the user has statuses so the count is visible at a glance.
+  const statusRingStyle = (count, seen) => {
+    const color = seen ? '#cfd4da' : '#25D366';
+    if (!count || count <= 1) return `conic-gradient(${color} 0deg 360deg)`;
+    const gap = 5;
+    const each = (360 - gap * count) / count;
+    const stops = [];
+    for (let i = 0; i < count; i++) {
+      const start = i * (each + gap);
+      stops.push(`${color} ${start}deg ${(start + each).toFixed(2)}deg`);
+    }
+    return `conic-gradient(${stops.join(', ')})`;
+  };
+
+  // Reusable circular (never oval) status avatar with a segmented ring.
+  const StatusAvatar = ({ src, count, seen, size, style }) => (
+    <div
+      className="status-ring-avatar"
+      style={{
+        width: size || 50,
+        height: size || 50,
+        flexShrink: 0,
+        borderRadius: '50%',
+        background: statusRingStyle(count, seen),
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 3,
+        boxSizing: 'border-box',
+        ...(style || {}),
+      }}
+    >
+      <img
+        src={src}
+        alt=""
+        style={{
+          width: '100%',
+          height: '100%',
+          borderRadius: '50%',
+          objectFit: 'cover',
+          display: 'block',
+        }}
+      />
+    </div>
+  );
 
   const loadStatusFeed = useCallback(async () => {
     const token = localStorage.getItem('token');
@@ -201,12 +270,66 @@ export default function DashboardPage() {
     );
   }, [statusFeed]);
 
+  // Photo shown inside the "My status" ring: real profile photo before posting,
+  // then the first (newest) posted status image once the user has statuses.
+  const myStatusPhoto = myStatuses[0]?.file ||
+    user.photo ||
+    `https://via.placeholder.com/50/25D366/fff?text=${encodeURIComponent((user.name || '?')[0])}`;
+
   const postStatus = (type, text, bg, file) => {
     if (!socket || !socket.connected) {
       alert('Not connected yet. Please wait a moment.');
       return;
     }
     socket.emit('postStatus', { type, text: text || '', bg: bg || 'default', file: file || '' });
+  };
+
+  // Voice message bubble with play/pause, animated bars and live progress.
+  const VoiceBubble = ({ msg }) => {
+    const [playing, setPlaying] = useState(false);
+    const [progress, setProgress] = useState(0);
+    const [cur, setCur] = useState(0);
+    const audioRef = useRef(null);
+    useEffect(() => {
+      const a = audioRef.current;
+      if (!a) return;
+      const onTime = () => { setCur(a.currentTime); setProgress(a.duration ? a.currentTime / a.duration : 0); };
+      const onEnd = () => { setPlaying(false); setProgress(0); setCur(0); };
+      a.addEventListener('timeupdate', onTime);
+      a.addEventListener('ended', onEnd);
+      return () => {
+        a.removeEventListener('timeupdate', onTime);
+        a.removeEventListener('ended', onEnd);
+      };
+    }, []);
+    const toggle = () => {
+      const a = audioRef.current;
+      if (!a) return;
+      if (playing) { a.pause(); setPlaying(false); }
+      else { a.play().catch(() => {}); setPlaying(true); }
+    };
+    const total = Number(msg.duration) || 0;
+    const secLabel = (s) => {
+      const v = Math.max(0, Math.round(Number(s) || 0));
+      return `${Math.floor(v / 60)}:${String(v % 60).padStart(2, '0')}`;
+    };
+    const bars = Array.from({ length: 22 }, (_, i) => 0.35 + (Math.abs(Math.sin(i * 1.15)) * 0.5) + ((i * 7919) % 37) / 90);
+    return (
+      <div className="voice-bubble" onClick={toggle} role="button" aria-label={playing ? 'Pause voice message' : 'Play voice message'}>
+        <audio ref={audioRef} src={msg.file} preload="metadata" />
+        <span className={`voice-play ${playing ? 'playing' : ''}`}>{playing ? '❚❚' : '▶'}</span>
+        <span className="voice-bars">
+          {bars.map((h, i) => (
+            <span
+              key={i}
+              className={`bar ${playing ? 'active' : ''}`}
+              style={{ height: `${Math.round(6 + h * 14)}px` }}
+            />
+          ))}
+        </span>
+        <span className="voice-dur">{secLabel(playing || progress > 0 ? cur : total)}</span>
+      </div>
+    );
   };
 
   const openStatusCamera = () => {
@@ -978,6 +1101,599 @@ const handleFileChange = (e) => {
   reader.readAsDataURL(file);
 };
 
+// ---------- Voice messages (hold-to-record) ----------
+const [recDuration, setRecDuration] = useState(0);
+const [desktopDraft, setDesktopDraft] = useState('');
+const recTimerRef = useRef(null);
+const recorderRef = useRef(null);
+const recStreamRef = useRef(null);
+const recChunksRef = useRef([]);
+const recCancelRef = useRef(false);
+const voiceTargetRef = useRef(null);
+
+const startVoiceRecord = (e) => {
+  e?.preventDefault();
+  if (recorderRef.current || !navigator.mediaDevices?.getUserMedia) return;
+  const target = selectedGroup
+    ? { kind: 'group', id: selectedGroup?.id }
+    : selectedChat
+      ? { kind: 'dm', id: selectedChat?.id }
+      : null;
+  if (!target) return;
+  voiceTargetRef.current = target;
+  (async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      recStreamRef.current = stream;
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm')
+        ? 'audio/webm'
+        : (MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4' : '');
+      const rec = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      recorderRef.current = rec;
+      recChunksRef.current = [];
+      recCancelRef.current = false;
+      rec.ondataavailable = (ev) => { if (ev.data && ev.data.size > 0) recChunksRef.current.push(ev.data); };
+      rec.onstop = () => {
+        const audioBlob = new Blob(recChunksRef.current, { type: mimeType || 'audio/webm' });
+        const durSec = Math.max(1, recDuration || 1);
+        recStreamRef.current?.getTracks().forEach(t => t.stop());
+        recStreamRef.current = null;
+        recorderRef.current = null;
+        if (recCancelRef.current || audioBlob.size === 0) return;
+        sendVoiceBlob(audioBlob, durSec);
+      };
+      rec.start();
+      setMobileRecording(true);
+      setRecDuration(0);
+      recTimerRef.current = setInterval(() => setRecDuration(d => d + 1), 1000);
+    } catch (err) {
+      console.error('Mic error', err);
+      alert('Microphone not available. Recording requires permission.');
+    }
+  })();
+};
+
+const stopVoiceRecord = (e) => {
+  e?.preventDefault();
+  if (recTimerRef.current) { clearInterval(recTimerRef.current); recTimerRef.current = null; }
+  setMobileRecording(false);
+  if (recorderRef.current && recorderRef.current.state !== 'inactive') {
+    try { recorderRef.current.stop(); } catch (err) { console.error(err); }
+  }
+};
+
+const sendVoiceBlob = (blob, durSec) => {
+  if (!blob) return;
+  const target = voiceTargetRef.current;
+  if (!target) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const base64 = reader.result;
+    const tempId = `temp-${Date.now()}-${Math.random()}`;
+    const fileName = `voice-${Date.now()}.webm`;
+    const fileType = blob.type || 'audio/webm';
+    if (target.kind === 'group') {
+      socket.emit('sendGroupMessage', {
+        groupId: target.id,
+        message: '',
+        file: base64,
+        fileName,
+        fileType,
+        duration: durSec,
+        messageId: tempId,
+      });
+      setGroupMessages(prev => ({
+        ...prev,
+        [target.id]: [
+          ...(prev[target.id] || []),
+          {
+            id: tempId,
+            text: '',
+            sender: 'You',
+            senderId: user.id,
+            timestamp: Date.now(),
+            file: base64,
+            fileName,
+            fileType,
+            duration: durSec,
+            delivered: true,
+            read: false,
+            allRead: false,
+          },
+        ],
+      }));
+      setDesktopDraft('');
+      return;
+    }
+    socket.emit('sendMessage', {
+      to: target.id,
+      message: '',
+      file: base64,
+      fileName,
+      fileType,
+      duration: durSec,
+      from: user.id,
+      fromName: user.name,
+      fromPhoto: selectedChat?.photo,
+      messageId: tempId,
+    });
+    setMessages(prev => {
+      const updated = {
+        ...prev,
+        [target.id]: [
+          ...(prev[target.id] || []),
+          {
+            id: tempId,
+            text: '',
+            sender: 'You',
+            timestamp: Date.now(),
+            file: base64,
+            fileName,
+            fileType,
+            duration: durSec,
+            delivered: false,
+            read: false,
+          },
+        ],
+      };
+      localStorage.setItem('chatMessages', JSON.stringify(updated));
+      return updated;
+    });
+    setDesktopDraft('');
+  };
+  reader.readAsDataURL(blob);
+};
+
+// ==================== CALLS (voice/video) ====================
+const loadCalls = useCallback(async () => {
+  const token = localStorage.getItem('token');
+  if (!token) return;
+  try {
+    const res = await fetch(`${API_URL}/api/calls`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const data = await res.json();
+    if (data && Array.isArray(data.calls)) setCalls(data.calls);
+  } catch (err) {
+    console.error('Failed to load calls', err);
+  }
+}, []);
+useEffect(() => { loadCalls(); }, [loadCalls]);
+
+const callElapsed = () => (Date.now() - callStartAtRef.current) / 1000;
+
+const fmtCallTime = (secs) => {
+  const v = Math.max(0, Math.floor(Number(secs) || 0));
+  const m = Math.floor(v / 60);
+  return `${String(m).padStart(2, '0')}:${String(v % 60).padStart(2, '0')}`;
+};
+
+const cleanupCall = (soft) => {
+  if (callTimerRef.current) { clearInterval(callTimerRef.current); callTimerRef.current = null; }
+  if (peekReminderRef.current) { clearTimeout(peekReminderRef.current); peekReminderRef.current = null; }
+  try { pcRef.current?.close(); } catch (err) {}
+  pcRef.current = null;
+  if (localStreamRef.current) {
+    localStreamRef.current.getTracks().forEach((t) => t.stop());
+    localStreamRef.current = null;
+  }
+  if (remoteStreamRef.current) {
+    remoteStreamRef.current.getTracks().forEach((t) => t.stop());
+    remoteStreamRef.current = null;
+  }
+  signalingRoleRef.current = '';
+  callIdRef.current = null;
+  callPeerIdRef.current = null;
+  if (!soft) setActiveCall(null);
+};
+useEffect(() => () => cleanupCall(true), []);
+
+const createPeer = () => {
+  const pc = new RTCPeerConnection({
+    iceServers: [
+      { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+    ],
+  });
+  pc.onicecandidate = (e) => {
+    if (e.candidate && callPeerIdRef.current && callIdRef.current) {
+      socket.emit('rtc:ice', {
+        to: callPeerIdRef.current,
+        callId: callIdRef.current,
+        candidate: e.candidate.toJSON(),
+      });
+    }
+  };
+  pc.ontrack = (e) => {
+    const stream = e.streams[0] || new MediaStream([e.track]);
+    remoteStreamRef.current = stream;
+    setTimeout(() => {
+      const v = peerVideoRef.current;
+      if (v && remoteStreamRef.current) {
+        v.srcObject = remoteStreamRef.current;
+        v.play().catch(() => {});
+      }
+    }, 100);
+  };
+  pc.onconnectionstatechange = () => {
+    if (['failed', 'disconnected'].includes(pc.connectionState)) {
+      // Fire a clean hangup so a drop never leaves the UI stuck.
+      socket.emit('call:end', {
+        to: callPeerIdRef.current,
+        callId: callIdRef.current,
+        type: activeCall?.type,
+        durationSec: callElapsed(),
+      });
+      cleanupCall(false);
+    }
+  };
+  return pc;
+};
+
+const getMediaStream = async (video) => {
+  const constraints = video ? { video: { facingMode: 'user' }, audio: true } : { audio: true };
+  const stream = await navigator.mediaDevices.getUserMedia(constraints);
+  return stream;
+};
+
+const initLocalVideo = () => {
+  setTimeout(() => {
+    const v = ownVideoRef.current;
+    if (v && localStreamRef.current) {
+      v.srcObject = localStreamRef.current;
+      v.play().catch(() => {});
+    }
+  }, 50);
+};
+
+const addLocalTracks = (pc, stream) => {
+  stream.getTracks().forEach((t) => pc.addTrack(t, stream));
+};
+
+const handleRemoteOffer = async (sdp) => {
+  try {
+    const pc = pcRef.current;
+    if (!pc) createPeer();
+    await pcRef.current.setRemoteDescription(sdp);
+    const answer = await pcRef.current.createAnswer();
+    await pcRef.current.setLocalDescription(answer);
+    if (callPeerIdRef.current && callIdRef.current) {
+      socket.emit('rtc:answer', {
+        to: callPeerIdRef.current,
+        callId: callIdRef.current,
+        sdp: pcRef.current.localDescription,
+      });
+    }
+  } catch (err) {
+    console.error('answer error', err);
+  }
+};
+
+const handleRemoteAnswer = async (sdp) => {
+  try {
+    const pc = pcRef.current;
+    if (!pc) return;
+    await pc.setRemoteDescription(sdp);
+  } catch (err) {
+    console.error('setRemote answer error', err);
+  }
+};
+
+const sendOffer = async () => {
+  try {
+    const offer = await pcRef.current.createOffer();
+    await pcRef.current.setLocalDescription(offer);
+    if (callPeerIdRef.current && callIdRef.current) {
+      socket.emit('rtc:offer', {
+        to: callPeerIdRef.current,
+        callId: callIdRef.current,
+        sdp: pcRef.current.localDescription,
+      });
+    }
+  } catch (err) {
+    console.error('offer error', err);
+  }
+};
+
+const startCall = async (type, chat) => {
+  if (!socket || !chat) return;
+  const callId = `call-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  const peer = chat.photo && !chat.photo.includes('placeholder') ? chat.photo : 'https://via.placeholder.com/50';
+  callPeerIdRef.current = String(chat.id);
+  callIdRef.current = callId;
+  callStartAtRef.current = Date.now();
+  // Start media + peer connection immediately (like WhatsApp).
+  try {
+    const stream = await getMediaStream(type === 'video');
+    localStreamRef.current = stream;
+    pcRef.current = createPeer();
+    addLocalTracks(pcRef.current, stream);
+    if (type === 'video') initLocalVideo();
+  } catch (err) {
+    alert('Microphone/camera not available to start the call.');
+    return;
+  }
+  socket.emit('call:invite', {
+    to: chat.id,
+    type,
+    callId,
+    name: user.name,
+    photo: user.photo || '',
+  });
+  setActiveCall({
+    mode: 'outgoing',
+    type,
+    callId,
+    peerId: String(chat.id),
+    peerName: chat.name,
+    peerPhoto: peer,
+    callerId: user.id,
+  });
+  // If nobody answers within 30s, auto-cancel (missed call).
+  peekReminderRef.current = setTimeout(() => {
+    if (activeCallRef.current?.mode === 'outgoing' && String(activeCallRef.current.callId) === String(callId)) {
+      socket.emit('call:timeout', { to: callPeerIdRef.current, callId, type });
+      cleanupCall(false);
+      loadCalls();
+    }
+  }, 30000);
+};
+
+const acceptCall = async () => {
+  if (!activeCall) return;
+  const call = activeCall;
+  const peerId = String(call.peerId);
+  callPeerIdRef.current = peerId;
+  callIdRef.current = call.callId;
+  callStartAtRef.current = Date.now();
+  signalingRoleRef.current = 'answerer';
+  socket.emit('call:accept', { to: peerId, callId: call.callId, type: call.type });
+  try {
+    const stream = localStreamRef.current || (await getMediaStream(call.type === 'video'));
+    localStreamRef.current = stream;
+    pcRef.current = createPeer();
+    addLocalTracks(pcRef.current, stream);
+    if (call.type === 'video') initLocalVideo();
+    setActiveCall({ ...call, mode: 'active' });
+  } catch (err) {
+    alert('Media could not be started (allow camera/microphone).');
+    cleanupCall(false);
+  }
+};
+
+const rejectCall = () => {
+  if (activeCall) {
+    socket.emit('call:reject', {
+      to: String(activeCall.peerId),
+      callId: activeCall.callId,
+      type: activeCall.type,
+    });
+  }
+  cleanupCall(false);
+};
+
+const hangupCall = () => {
+  if (activeCall) {
+    socket.emit('call:end', {
+      to: String(activeCall.peerId),
+      callId: activeCall.callId,
+      type: activeCall.type,
+      durationSec: callElapsed(),
+    });
+  }
+  cleanupCall(false);
+  loadCalls();
+};
+
+const toggleMuteCall = () => {
+  const stream = localStreamRef.current;
+  if (!stream) return;
+  const en = !stream.getAudioTracks().some((t) => !t.enabled);
+  stream.getAudioTracks().forEach((t) => { t.enabled = !en; });
+  if (callPeerIdRef.current && callIdRef.current) {
+    socket.emit('call:state', {
+      to: callPeerIdRef.current,
+      callId: callIdRef.current,
+      cameraOn: stream.getVideoTracks().some((t) => t.enabled),
+      micOn: !en,
+    });
+  }
+  return !en;
+};
+
+const toggleCameraCall = () => {
+  const stream = localStreamRef.current;
+  if (!stream) return false;
+  const vTracks = stream.getVideoTracks();
+  if (vTracks.length === 0) return false;
+  const on = vTracks.every((t) => t.enabled);
+  vTracks.forEach((t) => { t.enabled = !on; });
+  if (callPeerIdRef.current && callIdRef.current) {
+    socket.emit('call:state', {
+      to: callPeerIdRef.current,
+      callId: callIdRef.current,
+      cameraOn: !on,
+      micOn: stream.getAudioTracks().some((t) => t.enabled),
+    });
+  }
+  return !on;
+};
+
+const switchCameraCall = async () => {
+  const stream = localStreamRef.current;
+  if (!stream) return;
+  const track = stream.getVideoTracks()[0];
+  if (!track) return;
+  try {
+    const next = track.getSettings?.().facingMode === 'user' ? 'environment' : 'user';
+    await track.applyConstraints({ facingMode: next });
+  } catch (err) {
+    console.error('switch camera error', err);
+  }
+};
+
+const upgradeToVideo = async () => {
+  try {
+    const vStream = await getMediaStream(true);
+    const pc = pcRef.current;
+    if (!pc) return;
+    const old = localStreamRef.current;
+    old?.getTracks().forEach((t) => { if (t.kind === 'video') t.stop(); });
+    const vTrack = vStream.getVideoTracks()[0];
+    const aTrack = vStream.getAudioTracks()[0];
+    if (aTrack) aTrack.stop();
+    pc.addTrack(vTrack, old || vStream);
+    localStreamRef.current = old || vStream;
+    setActiveCall((prev) => (prev ? { ...prev, type: 'video' } : prev));
+    initLocalVideo();
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    if (callPeerIdRef.current && callIdRef.current) {
+      socket.emit('rtc:offer', {
+        to: callPeerIdRef.current,
+        callId: callIdRef.current,
+        sdp: pc.localDescription,
+      });
+    }
+  } catch (err) {
+    alert('Camera unavailable to switch to video.');
+  }
+};
+
+useEffect(() => {
+  const s = socketRef.current;
+  if (!s) return;
+
+  const onIncoming = (data) => {
+    // Already in a call -> politely refuse new incoming calls.
+    if (activeCallRef.current) {
+      s.emit('call:reject', { to: data.from, callId: data.callId, type: data.type });
+      return;
+    }
+    callPeerIdRef.current = String(data.from);
+    callIdRef.current = data.callId;
+    callStartAtRef.current = Date.now();
+    // Pre-block microphone so the accepted call starts cleanly.
+    getMediaStream(data.type === 'video').then((stream) => {
+      localStreamRef.current = stream;
+      if (data.type === 'video') initLocalVideo();
+    }).catch(() => {});
+    signalingRoleRef.current = 'answerer';
+    setActiveCall({
+      mode: 'incoming',
+      type: data.type,
+      callId: data.callId,
+      peerId: String(data.from),
+      peerName: data.fromName,
+      peerPhoto: data.fromPhoto || 'https://via.placeholder.com/50',
+    });
+  };
+
+  const onAccepted = (data) => {
+    if (!activeCallRef.current || String(activeCallRef.current.callId) !== String(data.callId)) return;
+    if (!pcRef.current) {
+      // Wire the 3GPP-local stream into the peer connection.
+      if (localStreamRef.current) {
+        pcRef.current = createPeer();
+        addLocalTracks(pcRef.current, localStreamRef.current);
+      } else {
+        return;
+      }
+    }
+    signalingRoleRef.current = 'offerer';
+    setActiveCall((prev) => (prev ? { ...prev, mode: 'active' } : prev));
+    if (activeCallRef.current?.type === 'video') initLocalVideo();
+    setTimeout(sendOffer, 250);
+  };
+
+  const onOffer = async (data) => {
+    if (callIdRef.current && String(data.callId) !== String(callIdRef.current)) return;
+    if (!pcRef.current) {
+      if (!localStreamRef.current) {
+        localStreamRef.current = await getMediaStream(activeCallRef.current?.type === 'video').catch(() => null);
+      }
+      if (!localStreamRef.current) return;
+      pcRef.current = createPeer();
+      addLocalTracks(pcRef.current, localStreamRef.current);
+      if (activeCallRef.current?.type === 'video') initLocalVideo();
+    }
+    await handleRemoteOffer(data.sdp);
+  };
+
+  const onAnswer = (data) => {
+    if (String(data.callId) !== String(callIdRef.current)) return;
+    handleRemoteAnswer(data.sdp);
+  };
+
+  const onIce = (data) => {
+    if (String(data.callId) !== String(callIdRef.current)) return;
+    try {
+      pcRef.current?.addIceCandidate(data.candidate);
+    } catch (err) {
+      console.error('ice error', err);
+    }
+  };
+
+  const onRejected = (data) => {
+    if (String(data.callId) !== String(callIdRef.current)) return;
+    cleanupCall(false);
+  };
+
+  const onEnded = (data) => {
+    if (String(data.callId) !== String(callIdRef.current)) return;
+    cleanupCall(false);
+    loadCalls();
+  };
+
+  const onTimedOut = (data) => {
+    if (String(data.callId) !== String(callIdRef.current)) return;
+    cleanupCall(false);
+    loadCalls();
+  };
+
+  const onState = (data) => {
+    if (String(data.callId) !== String(callIdRef.current)) return;
+    setActiveCall((prev) => (prev ? { ...prev, peerCameraOn: data.cameraOn, peerMicOn: data.micOn } : prev));
+  };
+
+  s.on('call:incoming', onIncoming);
+  s.on('call:accepted', onAccepted);
+  s.on('rtc:offer', onOffer);
+  s.on('rtc:answer', onAnswer);
+  s.on('rtc:ice', onIce);
+  s.on('call:rejected', onRejected);
+  s.on('call:ended', onEnded);
+  s.on('call:endedLocal', (data) => { if (String(data.callId) === String(callIdRef.current)) { cleanupCall(false); loadCalls(); } });
+  s.on('call:timedOut', onTimedOut);
+  s.on('call:state', onState);
+  s.on('call:historyUpdated', loadCalls);
+
+  // Elapsed-time counter for ongoing calls.
+  callTimerRef.current = setInterval(() => {
+    if (activeCallRef.current?.mode === 'active' && callStartAtRef.current) {
+      setActiveCall((prev) => (prev ? { ...prev, elapsed: callElapsed() } : prev));
+    } else if (activeCallRef.current?.mode === 'incoming') {
+      setActiveCall((prev) => (prev ? { ...prev, elapsed: callElapsed() } : prev));
+    }
+  }, 1000);
+
+  return () => {
+    s.off('call:incoming', onIncoming);
+    s.off('call:accepted', onAccepted);
+    s.off('rtc:offer', onOffer);
+    s.off('rtc:answer', onAnswer);
+    s.off('rtc:ice', onIce);
+    s.off('call:rejected', onRejected);
+    s.off('call:ended', onEnded);
+    s.off('call:endedLocal');
+    s.off('call:timedOut', onTimedOut);
+    s.off('call:state', onState);
+    s.off('call:historyUpdated', loadCalls);
+    if (callTimerRef.current) { clearInterval(callTimerRef.current); callTimerRef.current = null; }
+  };
+}, [socket]);
+
+useEffect(() => { activeCallRef.current = activeCall; }, [activeCall]);
+
 
 
 
@@ -991,6 +1707,21 @@ useEffect(() => {
 
   document.addEventListener('mousedown', handleClickOutside);
   return () => document.removeEventListener('mousedown', handleClickOutside);
+}, []);
+
+// Every three-dot / popup menu closes on an outside click.
+useEffect(() => {
+  const closeMenus = (e) => {
+    if (e.target.closest('.group-menu-btn') || e.target.closest('.chat-menu-dropdown') || e.target.closest('.menu-container') || e.target.closest('.new-chat-dropdown')) {
+      return;
+    }
+    setShowMobileMenu(false);
+    setShowCallsMenu(false);
+    setShowNewChatDropdown(false);
+    setGroupShowDropdown(false);
+  };
+  document.addEventListener('mousedown', closeMenus);
+  return () => document.removeEventListener('mousedown', closeMenus);
 }, []);
 
 
@@ -1230,6 +1961,7 @@ newSocket.on("receiveMessage", (data) => {
       file: data.file,
       fileName: data.fileName,
       fileType: data.fileType,
+      duration: data.duration,
       replyTo: data.replyTo ? {
         ...data.replyTo,
         
@@ -1377,6 +2109,7 @@ newSocket.on("receiveMessage", (data) => {
               file: data.file,
               fileName: data.fileName,
               fileType: data.fileType,
+              duration: data.duration,
               photo: data.fromPhoto || 'https://placehold.co/50x50',
               // My own message echoed to my other devices is NEVER "read" just
               // because a device has the group open (read ticks come from the
@@ -1452,6 +2185,7 @@ newSocket.on("receiveMessage", (data) => {
             file: m.file,
             fileName: m.fileName,
             fileType: m.fileType,
+            duration: m.duration,
             photo: m.fromPhoto || 'https://placehold.co/50x50',
             delivered: true,
             // On load, mark MY OWN messages as "delivered but not read by all"
@@ -2046,10 +2780,6 @@ newSocket.on("receiveMessage", (data) => {
       // Mock chats data
       const chats = []; // ✅ start empty, load real contacts instead
 
-
-      // Mock calls (groups now come from the backend via groupsList)
-      const calls = [{ id: 1, name: 'Alice', type: 'video', time: 'Today, 9:00 AM' }];
-
     
 
       const openGroupFlow = () => {
@@ -2524,24 +3254,56 @@ newSocket.on("receiveMessage", (data) => {
                   ));
                 })()}
 {activeTab === 'calls' && calls.map(call => (
-                  <div key={call.id} className="chat-item">
-                    <img src="https://via.placeholder.com/50" alt={call.name} />
+                  <div key={call.id} className="chat-item" style={{ cursor: 'pointer' }}>
+                    <img src={call.photo || 'https://via.placeholder.com/50'} alt={call.name} />
                     <div className="chat-info">
                       <h4>{call.name}</h4>
-                      <p>{call.type} call • {call.time}</p>
+                      <p><span className={`call-dir ${call.direction === 'missed' ? 'missed' : ''}`}>{call.direction === 'outgoing' ? '↗' : call.direction === 'missed' ? '↘' : '↙'}</span> {call.direction === 'outgoing' ? 'Outgoing' : call.direction === 'missed' ? 'Missed' : 'Incoming'} {call.video ? 'video' : 'voice'} call{call.durationSec ? ` • ${fmtCallTime(call.durationSec)}` : ''}</p>
+                      {call.time && <small style={{ color: '#888', fontSize: '0.75rem' }}>{new Date(call.time).toLocaleString()}</small>}
                     </div>
                   </div>
                 ))}
-                {activeTab === 'statuses' && feedGroups.map(status => (
-                  <div key={String(status.user.id)} className="chat-item" onClick={() => setStatusViewer({ userId: String(status.user.id), index: 0 })}>
-                    <img src={status.user.photo || 'https://via.placeholder.com/50/25D366/fff?text=S'} alt={status.user.name} />
-                    <div className="chat-info">
-                      <h4>{status.user.name}</h4>
-                      <p>• {status.statuses.length > 1 ? `${status.statuses.length} updates • ` : ''}{timeAgo(status.statuses[0]?.createdAt)}</p>
+                {activeTab === 'calls' && calls.length === 0 && (
+                  <div style={{ padding: '30px 16px', textAlign: 'center', color: '#8a8f99' }}>No calls yet</div>
+                )}
+                {activeTab === 'statuses' && (
+                  <>
+                    <div
+                      className="chat-item my-status"
+                      onClick={() => {
+                        if (myStatuses.length) setStatusViewer({ userId: user.id, index: 0 });
+                        else setStatusAddSheet(true);
+                      }}
+                    >
+                      <div className="my-status-avatar">
+                        <StatusAvatar src={myStatusPhoto} count={myStatuses.length} seen={false} />
+                        <button className="my-status-add" onClick={(e) => { e.stopPropagation(); setStatusAddSheet(true); }} aria-label="Add status">+</button>
+                      </div>
+                      <div className="chat-info">
+                        <h4>{myStatuses.length ? 'My Status' : 'Tap to add status'}</h4>
+                        <p>{myStatuses.length ? `• ${timeAgo(myStatuses[0].createdAt)}` : 'Visible to everyone'}</p>
+                      </div>
                     </div>
-                    {status.statuses.some(s => !s.viewed) && <span className="status-dot" />}
-                  </div>
-                ))}
+                    {feedGroups.map(status => {
+                      const hasUnseen = status.statuses.some(s => !s.viewed);
+                      return (
+                        <div key={String(status.user.id)} className={`chat-item ${hasUnseen ? 'unseen' : 'seen'}`} onClick={() => setStatusViewer({ userId: String(status.user.id), index: 0 })}>
+                          <StatusAvatar
+                            src={status.statuses[0]?.file || status.user.photo || 'https://via.placeholder.com/50'}
+                            count={status.statuses.length}
+                            seen={!hasUnseen}
+                          />
+                          <div className="chat-info">
+                            <h4>{status.user.name}</h4>
+                            <p>• {status.statuses.length > 1 ? `${status.statuses.length} updates • ` : ''}{timeAgo(status.statuses[0]?.createdAt)}</p>
+                          </div>
+                          {hasUnseen && <span className="status-dot" />}
+                        </div>
+                      );
+                    })}
+                    {feedGroups.length === 0 && <div style={{ padding: '14px 16px', color: '#8a8f99', fontSize: '0.9rem' }}>No recent updates</div>}
+                  </>
+                )}
               </div>
             </>
           );
@@ -2612,6 +3374,7 @@ newSocket.on("receiveMessage", (data) => {
           }
         });
 
+        setDesktopDraft('');
         setGroupReplyTo(null);
       };
 
@@ -2930,27 +3693,23 @@ newSocket.on("receiveMessage", (data) => {
                     </button>
                   )}
 
-                  {isMobile && (
-                    <>
-                      <button
+                  <button
                         className="mobile-header-call"
-                        onClick={() => window.alert(`Calling ${selectedGroup.name}…`)}
+                        onClick={() => startCall('voice', { id: selectedGroup.id, name: selectedGroup.name, photo: selectedGroup.dp })}
                         aria-label="Call"
                       >
                         <Phone size={20} strokeWidth={2.2} />
                       </button>
                       <button
                         className="mobile-header-video"
-                        onClick={() => window.alert(`Video call ${selectedGroup.name}…`)}
+                        onClick={() => startCall('video', { id: selectedGroup.id, name: selectedGroup.name, photo: selectedGroup.dp })}
                         aria-label="Video call"
                       >
                         <Video size={21} strokeWidth={2.2} />
                       </button>
-                    </>
-                  )}
 
                   <button
-                    className="menu-btn"
+                    className="menu-btn group-menu-btn"
                     onClick={(e) => {
                       e.stopPropagation();
                       setGroupShowDropdown(!groupShowDropdown);
@@ -3388,7 +4147,11 @@ newSocket.on("receiveMessage", (data) => {
                         </div>
                       )}
 
-                      {msg.file && !msg.fileType?.startsWith('image/') && (
+                      {msg.file && msg.fileType?.startsWith('audio/') && (
+                        <VoiceBubble msg={msg} />
+                      )}
+
+                      {msg.file && !msg.fileType?.startsWith('image/') && !msg.fileType?.startsWith('audio/') && (
                         <div
                           style={{
                             display: 'flex',
@@ -3524,6 +4287,8 @@ newSocket.on("receiveMessage", (data) => {
                     <input
                       ref={messageInputRef}
                       type="text"
+                      value={desktopDraft}
+                      onChange={(e) => setDesktopDraft(e.target.value)}
                       placeholder={groupReplyTo ? 'Reply to message...' : 'Type a group message'}
                       required
                     />
@@ -3586,6 +4351,8 @@ newSocket.on("receiveMessage", (data) => {
                       <input
                         ref={messageInputRef}
                         type="text"
+                        value={desktopDraft}
+                        onChange={(e) => setDesktopDraft(e.target.value)}
                         placeholder={groupReplyTo ? 'Reply to message...' : 'Message'}
                         required
                       />
@@ -3612,12 +4379,12 @@ newSocket.on("receiveMessage", (data) => {
                     <button
                       type="button"
                       className={`mobile-voice-btn ${mobileRecording ? 'recording' : ''}`}
-                      onPointerDown={() => { setMobileRecording(true); setShowMobileAttach(false); }}
-                      onPointerUp={() => setMobileRecording(false)}
-                      onPointerLeave={() => setMobileRecording(false)}
+                      onPointerDown={(e) => { e.preventDefault(); setShowMobileAttach(false); startVoiceRecord(e); }}
+                      onPointerUp={(e) => { e.preventDefault(); stopVoiceRecord(e); }}
+                      onPointerLeave={(e) => { e.preventDefault(); stopVoiceRecord(e); }}
                       aria-label="Hold to record"
                     >
-                      <Mic size={22} strokeWidth={2.2} />
+                      {mobileRecording ? <span className="mobile-voice-btn-dot" /> : <Mic size={22} strokeWidth={2.2} />}
                     </button>
                   </div>
 
@@ -3629,7 +4396,7 @@ newSocket.on("receiveMessage", (data) => {
                   )}
 
                   {mobileRecording && (
-                    <div className="mobile-recording-bar">🔴 Recording…</div>
+                    <div className="mobile-recording-bar">🔴 Recording… {recDuration}s <small>(release to send)</small></div>
                   )}
                   </>
                   )}
@@ -3749,6 +4516,7 @@ newSocket.on("receiveMessage", (data) => {
   }));
 
   input.value = '';
+  setDesktopDraft('');
   setReplyTo(null);
 };
 
@@ -3963,7 +4731,11 @@ newSocket.on("receiveMessage", (data) => {
             src={selectedChat?.photo || 'https://via.placeholder.com/40'}
             alt={selectedChat?.name}
           />
-          <div className="user-info">
+          <div
+            className="user-info"
+            style={isMobile ? { cursor: 'pointer' } : undefined}
+            onClick={() => isMobile && setShowContactInfo(true)}
+          >
             <h4>{selectedChat?.name}</h4>
             <p>
               {selectedChat?.online
@@ -3987,24 +4759,20 @@ newSocket.on("receiveMessage", (data) => {
       >
         {!isSelectionMode && (
           <>
-            {isMobile && (
-              <>
-                <button
-                  className="mobile-header-call"
-                  onClick={() => window.alert(`Calling ${selectedChat?.name}…`)}
-                  aria-label="Call"
-                >
-                  <Phone size={20} strokeWidth={2.2} />
-                </button>
-                <button
-                  className="mobile-header-video"
-                  onClick={() => window.alert(`Video call ${selectedChat?.name}…`)}
-                  aria-label="Video call"
-                >
-                  <Video size={21} strokeWidth={2.2} />
-                </button>
-              </>
-            )}
+            <button
+              className="mobile-header-call"
+              onClick={() => selectedChat && startCall('voice', selectedChat)}
+              aria-label="Call"
+            >
+              <Phone size={20} strokeWidth={2.2} />
+            </button>
+            <button
+              className="mobile-header-video"
+              onClick={() => selectedChat && startCall('video', selectedChat)}
+              aria-label="Video call"
+            >
+              <Video size={21} strokeWidth={2.2} />
+            </button>
             {/* Search */}
             {isSearching ? (
               <div
@@ -4162,14 +4930,13 @@ newSocket.on("receiveMessage", (data) => {
                 <button
                   className="dropdown-item"
                   onClick={() => {
-                    setShowContactInfo(true);
                     setShowDropdown(false);
+                    if (selectedChat) setMediaViewer({ type: 'dm', chatId: selectedChat.id, chatName: selectedChat.name, tab: 'media' });
                   }}
                 >
                   <FileText size={18} strokeWidth={2.2} style={{ color: '#00a884' }} />
                   <span>Media, links and docs</span>
                 </button>
-                <div className="divider"></div>
                 <button
                   className="dropdown-item"
                   onClick={() => {
@@ -4192,6 +4959,16 @@ newSocket.on("receiveMessage", (data) => {
             >
               <Info size={18} strokeWidth={1.8} />
               <span>Contact info</span>
+            </button>
+            <button
+              className="dropdown-item"
+              onClick={() => {
+                setShowDropdown(false);
+                if (selectedChat) setMediaViewer({ type: 'dm', chatId: selectedChat.id, chatName: selectedChat.name, tab: 'media' });
+              }}
+            >
+              <FileText size={18} strokeWidth={1.8} />
+              <span>Media, links and docs</span>
             </button>
             <button
               className="dropdown-item"
@@ -4556,8 +5333,13 @@ newSocket.on("receiveMessage", (data) => {
               </div>
             )}
 
+            {/* Voice */}
+            {msg.file && msg.fileType?.startsWith('audio/') && (
+              <VoiceBubble msg={msg} />
+            )}
+
             {/* Document */}
-            {msg.file && !msg.fileType?.startsWith('image/') && (
+            {msg.file && !msg.fileType?.startsWith('image/') && !msg.fileType?.startsWith('audio/') && (
               <div
                 style={{
                   display: 'flex',
@@ -4655,6 +5437,8 @@ newSocket.on("receiveMessage", (data) => {
               <input
                 ref={messageInputRef}
                 type="text"
+                value={desktopDraft}
+                onChange={(e) => setDesktopDraft(e.target.value)}
                 placeholder={replyTo ? 'Reply to message...' : 'Message'}
                 required
               />
@@ -4681,12 +5465,12 @@ newSocket.on("receiveMessage", (data) => {
             <button
               type="button"
               className={`mobile-voice-btn ${mobileRecording ? 'recording' : ''}`}
-              onPointerDown={() => { setMobileRecording(true); setShowMobileAttach(false); }}
-              onPointerUp={() => setMobileRecording(false)}
-              onPointerLeave={() => setMobileRecording(false)}
+              onPointerDown={(e) => { e.preventDefault(); setShowMobileAttach(false); startVoiceRecord(e); }}
+              onPointerUp={(e) => { e.preventDefault(); stopVoiceRecord(e); }}
+              onPointerLeave={(e) => { e.preventDefault(); stopVoiceRecord(e); }}
               aria-label="Hold to record"
             >
-              <Mic size={22} strokeWidth={2.2} />
+              {mobileRecording ? <span className="mobile-voice-btn-dot" /> : <Mic size={22} strokeWidth={2.2} />}
             </button>
           </div>
 
@@ -4698,7 +5482,7 @@ newSocket.on("receiveMessage", (data) => {
           )}
 
           {mobileRecording && (
-            <div className="mobile-recording-bar">🔴 Recording…</div>
+            <div className="mobile-recording-bar">🔴 Recording… {recDuration}s <small>(release to send)</small></div>
           )}
           </>
           )}
@@ -4799,13 +5583,32 @@ newSocket.on("receiveMessage", (data) => {
             <input
               ref={messageInputRef}
               type="text"
+              value={desktopDraft}
+              onChange={(e) => setDesktopDraft(e.target.value)}
               placeholder={replyTo ? 'Reply to message...' : 'Type a message'}
               required
             />
 
-            <button type="submit">Send</button>
+            {desktopDraft.trim() ? (
+              <button type="submit">Send</button>
+            ) : (
+              <button
+                type="button"
+                className={`desktop-voice-btn ${mobileRecording ? 'recording' : ''}`}
+                onPointerDown={(e) => { e.preventDefault(); startVoiceRecord(e); }}
+                onPointerUp={(e) => { e.preventDefault(); stopVoiceRecord(e); }}
+                onPointerLeave={(e) => { e.preventDefault(); stopVoiceRecord(e); }}
+                aria-label="Hold to record voice message"
+              >
+                {mobileRecording ? <span className="mobile-voice-btn-dot" /> : <Mic size={20} strokeWidth={1.8} />}
+              </button>
+            )}
           </div>
         </form>
+
+        {mobileRecording && (
+          <div className="mobile-recording-bar desktop">🔴 Recording… {recDuration}s <small>(release to send)</small></div>
+        )}
 
         <input
           type="file"
@@ -5013,7 +5816,13 @@ newSocket.on("receiveMessage", (data) => {
           >
             Media, Links and Docs
           </div>
-          <div className="action-item">No media yet</div>
+          <div
+            className="action-item"
+            style={{ cursor: 'pointer' }}
+            onClick={() => selectedChat && setMediaViewer({ type: 'dm', chatId: selectedChat.id, chatName: selectedChat.name, tab: 'media' })}
+          >
+            No media yet
+          </div>
         </div>
 
         <div
@@ -5498,6 +6307,34 @@ setContacts(prev => {
           ? emptyState('Select a group', 'Choose a group from the list to start chatting.', groupEmptyIcon)
           : emptyState('No groups yet', 'Create a group from the 📝 menu to start chatting.', groupEmptyIcon)
       )
+    ) : activeTab === 'statuses' ? (
+      <div className="status-desktop-panel">
+        <div className="status-desktop-avatar">
+          <StatusAvatar src={myStatusPhoto} count={myStatuses.length} seen={false} size={110} />
+          {!myStatuses.length && (
+            <button
+              className="my-status-add"
+              onClick={() => setStatusAddSheet(true)}
+              aria-label="Add status"
+              style={{ width: 30, height: 30, fontSize: 20 }}
+            >
+              +
+            </button>
+          )}
+        </div>
+        <h2>Share statuses</h2>
+        <p>Share photos, videos and text that disappear after 24 hours.....</p>
+        <div className="status-desktop-actions">
+          {myStatuses.length ? (
+            <>
+              <button className="status-desktop-btn" onClick={() => setStatusViewer({ userId: user.id, index: 0 })}>My Status</button>
+              <button className="status-desktop-btn alt" onClick={() => setStatusAddSheet(true)}>Add status</button>
+            </>
+          ) : (
+            <button className="status-desktop-btn" onClick={() => setStatusAddSheet(true)}>Add status</button>
+          )}
+        </div>
+      </div>
     ) : (
       emptyState('Feature Coming Soon', `The ${activeTab} view is not available here.`, chatEmptyIcon)
     )
@@ -5623,7 +6460,13 @@ setContacts(prev => {
         >
           Media, Links and Docs
         </div>
-        <div className="action-item">No media yet</div>
+        <div
+          className="action-item"
+          style={{ cursor: 'pointer' }}
+          onClick={() => selectedGroup && setMediaViewer({ type: 'group', chatId: selectedGroup.id, chatName: selectedGroup.name, tab: 'media' })}
+        >
+          No media yet
+        </div>
       </div>
 
       <div
@@ -5905,9 +6748,10 @@ setContacts(prev => {
               }}
             >
               <div className="my-status-avatar">
-                <img
-                  src={`https://via.placeholder.com/50/25D366/fff?text=${encodeURIComponent((user.name || '?')[0])}`}
-                  alt="You"
+                <StatusAvatar
+                  src={myStatusPhoto}
+                  count={myStatuses.length}
+                  seen={false}
                 />
                 <button
                   className="my-status-add"
@@ -5935,7 +6779,11 @@ setContacts(prev => {
                   className={`status-item ${hasUnseen ? 'unseen' : 'seen'}`}
                   onClick={() => setStatusViewer({ userId: String(g.user.id), index: 0 })}
                 >
-                  <img src={g.user.photo || 'https://via.placeholder.com/50'} alt={g.user.name} />
+                  <StatusAvatar
+                    src={first.file || g.user.photo || 'https://via.placeholder.com/50'}
+                    count={g.statuses.length}
+                    seen={!hasUnseen}
+                  />
                   <div className="status-info">
                     <h4>{g.user.name}</h4>
                     <p>
@@ -5956,7 +6804,16 @@ setContacts(prev => {
     {/* Calls Header */}
     <div className="mobile-header">
       <h1>Calls</h1>
-      <button className="menu-btn">⋮</button>
+      <div className="menu-container">
+        <button className="menu-btn" onClick={() => setShowCallsMenu(prev => !prev)}>⋮</button>
+        {showCallsMenu && (
+          <div className="dropdown-menu" onClick={(e) => e.stopPropagation()}>
+            <button onClick={() => { setCalls([]); setShowCallsMenu(false); }}>Clear call log</button>
+            <button onClick={() => { loadCalls(); setShowCallsMenu(false); }}>Refresh</button>
+            <button onClick={() => { setShowCallsMenu(false); alert('Settings'); }}>Settings</button>
+          </div>
+        )}
+      </div>
     </div>
 
     {/* Search Bar */}
@@ -5968,21 +6825,22 @@ setContacts(prev => {
 <div className="calls-section">
   <h2 className="section-title">Recent</h2>
   <div className="calls-list">
+    {calls.length === 0 && <p style={{ padding: '12px 16px', color: '#8a8f99', fontSize: '0.9rem' }}>No calls yet</p>}
     {calls.map(call => (
-      <div key={call.id} className="call-item">
-        <img src="https://via.placeholder.com/50" alt={call.name} />
+      <div key={call.id} className="call-item" style={{ cursor: 'pointer' }}>
+        <img src={call.photo || 'https://via.placeholder.com/50'} alt={call.name} />
        <div className="call-info">
   <h4>{call.name}</h4>
   <p>
-    {call.type === 'incoming' && 'Incoming'}
-    {call.type === 'outgoing' && 'Outgoing'}
-    {call.type === 'missed' && 'Missed'}
+    {call.direction === 'incoming' && 'Incoming'}
+    {call.direction === 'outgoing' && 'Outgoing'}
+    {call.direction === 'missed' && 'Missed'}
     {call.video && ' Video'}
   </p>
-  <small style={{ color: '#888', fontSize: '0.9rem' }}>{call.time}</small>
+  <small style={{ color: '#888', fontSize: '0.9rem' }}>{call.time ? new Date(call.time).toLocaleString() : ''}{call.durationSec ? ` • ${fmtCallTime(call.durationSec)}` : ''}</small>
 </div>
 <div className="call-icon">
-  <span className={call.type === 'missed' ? 'missed' : ''} style={{ transform: call.type !== 'missed' ? 'scaleX(-1)' : 'none' }}>
+  <span className={call.direction === 'missed' ? 'missed' : ''} style={{ transform: call.direction !== 'missed' ? 'scaleX(-1)' : 'none' }}>
     <Phone size={20} strokeWidth={1.8} />
   </span>
 </div>
@@ -6465,6 +7323,194 @@ setContacts(prev => {
     )}
   </div>
 )}
+
+{/* ===== FULL-SCREEN CALL OVERLAY (voice + video) ===== */}
+{activeCall && (
+  <div className={`call-overlay ${activeCall.type === 'video' ? 'video-call' : 'voice-call'}`}>
+    {/* Peer video (fullscreen once connected) */}
+    {activeCall.mode === 'active' && activeCall.type === 'video' && (
+      <>
+        <video
+          ref={peerVideoRef}
+          className="call-peer-video"
+          autoPlay
+          playsInline
+          style={{ objectFit: 'cover', width: '100%', height: '100%' }}
+        />
+        {(!remoteStreamRef.current || activeCall.peerCameraOn === false) && (
+          <div className="call-peer-fallback">
+            {activeCall.peerCameraOn === false ? (
+              <div className="call-cam-off">Video is off</div>
+            ) : (
+              <img src={activeCall.peerPhoto} alt={activeCall.peerName} />
+            )}
+          </div>
+        )}
+      </>
+    )}
+
+    {/* Own camera preview / PiP */}
+    {activeCall.type === 'video' && (
+      <video
+        ref={ownVideoRef}
+        className={`call-own-video ${activeCall.mode === 'active' ? 'pip' : 'preview'}`}
+        autoPlay
+        playsInline
+        muted
+      />
+    )}
+
+    {/* Voice / pre-connect avatar */}
+    {(activeCall.type === 'voice' || activeCall.mode !== 'active') && (
+      <div className={`call-avatar-zone ${activeCall.mode !== 'active' && activeCall.type === 'video' && localStreamRef.current ? 'with-preview' : ''}`}>
+        <div className="call-avatar-ring">
+          <img src={activeCall.peerPhoto} alt={activeCall.peerName} />
+        </div>
+        <h2>{activeCall.peerName}</h2>
+        <p>
+          {activeCall.mode === 'outgoing' && 'Ringing…'}
+          {activeCall.mode === 'incoming' && 'Incoming video call…'}
+          {activeCall.mode !== 'active' && (activeCall.peerName || '') }
+          {activeCall.mode === 'active' && activeCall.type === 'voice' && <span className="call-elapsed">{fmtCallTime(activeCall.elapsed)}</span>}
+        </p>
+      </div>
+    )}
+
+    {/* Top-center name for video + elapsed */}
+    {activeCall.mode === 'active' && activeCall.type === 'video' && (
+      <div className="call-top-center">
+        <h2>{activeCall.peerName}</h2>
+        <span className="call-elapsed">{fmtCallTime(activeCall.elapsed)}</span>
+      </div>
+    )}
+
+    {/* Speaker/Handset chooser */}
+    {callSpeakerMenuOpen && (
+      <>
+        <div className="call-speaker-backdrop" onClick={() => setCallSpeakerMenuOpen(false)} />
+        <div className="call-speaker-menu">
+          <button onClick={() => { setCallSpeakerOutput('speaker'); setCallSpeakerMenuOpen(false); }}>
+            <span className="cs-icon">🔊</span> Speaker
+          </button>
+          <button onClick={() => { setCallSpeakerOutput('handset'); setCallSpeakerMenuOpen(false); }}>
+            <span className="cs-icon">📱</span> Handset
+          </button>
+        </div>
+      </>
+    )}
+
+    {/* Bottom controls */}
+    <div className="call-controls">
+      {activeCall.mode === 'incoming' ? (
+        <>
+          <button className="call-ctrl accept" onClick={acceptCall} aria-label="Answer"><Phone size={26} strokeWidth={2} /></button>
+          <button className="call-ctrl decline" onClick={rejectCall} aria-label="Decline"><Phone size={26} strokeWidth={2} style={{ transform: 'rotate(135deg)' }} /></button>
+        </>
+      ) : activeCall.mode === 'outgoing' ? (
+        <button className="call-ctrl decline big" onClick={() => { socket.emit('call:timeout', { to: callPeerIdRef.current, callId: activeCall.callId, type: activeCall.type }); setActiveCall(null); }} aria-label="Cancel call">
+          <Phone size={26} strokeWidth={2} style={{ transform: 'rotate(135deg)' }} />
+        </button>
+      ) : (
+        <>
+          {activeCall.type === 'video' && (
+            <>
+              <button className="call-ctrl" onClick={switchCameraCall} aria-label="Switch camera"><Camera size={24} strokeWidth={2} /></button>
+              <button className="call-ctrl" onClick={() => { const on = toggleCameraCall(); setCallCamOn(on); }} aria-label="Turn camera off" style={{ background: !callCamOn ? '#e02f5b' : undefined }}>
+                <VideoOff size={24} strokeWidth={2} />
+              </button>
+            </>
+          )}
+          <button className="call-ctrl" onClick={() => { const on = toggleMuteCall(); setCallMicOn(on); }} aria-label="Mute" style={{ background: !callMicOn ? '#e02f5b' : undefined }}>
+            <MicOff size={24} strokeWidth={2} />
+          </button>
+          <button className="call-ctrl" onClick={() => setCallSpeakerMenuOpen(true)} aria-label="Speaker or handset"><Volume2 size={24} strokeWidth={2} /></button>
+          {activeCall.type === 'voice' && (
+            <button className="call-ctrl" onClick={upgradeToVideo} aria-label="Switch to video call"><Video size={24} strokeWidth={2} /></button>
+          )}
+          <button className="call-ctrl decline" onClick={hangupCall} aria-label="End call"><Phone size={26} strokeWidth={2} style={{ transform: 'rotate(135deg)' }} /></button>
+        </>
+      )}
+    </div>
+  </div>
+)}
+
+{/* ===== FULL-SCREEN MEDIA / LINKS / DOCS ===== */}
+{mediaViewer && (() => {
+  const src = mediaViewer.type === 'dm'
+    ? (messages[mediaViewer.chatId] || [])
+    : (groupMessages[mediaViewer.chatId] || []);
+  const mediaList = [...src].reverse().filter((m) => m.type === 'image' || (m.fileType || '').startsWith('image') || (m.fileType || '').startsWith('video'));
+  const linksList = [...src].reverse().filter((m) => (m.text || '').match(/https?:\/\/|www\./));
+  const docsList = [...src].reverse().filter((m) => m.type === 'file' && (m.fileType || '') && !(m.fileType.startsWith('image')) && !(m.fileType.startsWith('audio')));
+  const tabs = [
+    { key: 'media', label: 'Media' },
+    { key: 'links', label: 'Links' },
+    { key: 'docs', label: 'Docs' },
+  ];
+  return (
+    <div className="media-viewer-overlay">
+      <div className="media-viewer-head">
+        <button className="media-viewer-back" onClick={() => setMediaViewer(null)} aria-label="Back">‹</button>
+        <div className="media-viewer-title">
+          <strong>{mediaViewer.chatName}</strong>
+          <span>Media, links and docs</span>
+        </div>
+        <div className="media-viewer-tabs">
+          {tabs.map((t) => (
+            <button
+              key={t.key}
+              className={`media-viewer-tab ${mediaViewer.tab === t.key ? 'active' : ''}`}
+              onClick={() => setMediaViewer({ ...mediaViewer, tab: t.key })}
+            >
+              {t.label} ({t.key === 'media' ? mediaList.length : t.key === 'links' ? linksList.length : docsList.length})
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="media-viewer-body">
+        {mediaViewer.tab === 'media' && (
+          mediaList.length ? (
+            <div className="media-grid">
+              {mediaList.map((m, i) => (
+                <img key={String(m._id || i)} src={m.file || m.dataUrl} alt="media" onClick={() => window.open(m.file || m.dataUrl, '_blank')} />
+              ))}
+            </div>
+          ) : <div className="media-viewer-empty">No media available</div>
+        )}
+        {mediaViewer.tab === 'links' && (
+          linksList.length ? (
+            <div className="links-list">
+              {linksList.map((m, i) => {
+                const match = (m.text || '').match(/https?:\/\/[^\s]+/);
+                return (
+                  <a key={String(m._id || i)} className="link-item" href={match ? match[0] : '#'} target="_blank" rel="noreferrer">
+                    <span className="link-ico">🔗</span>
+                    <span className="link-text">{m.text}</span>
+                  </a>
+                );
+              })}
+            </div>
+          ) : <div className="media-viewer-empty">No links available</div>
+        )}
+        {mediaViewer.tab === 'docs' && (
+          docsList.length ? (
+            <div className="docs-list">
+              {docsList.map((m, i) => (
+                <a key={String(m._id || i)} className="doc-item" href={m.file} target="_blank" rel="noreferrer" download>
+                  <span className="doc-ico">📄</span>
+                  <div>
+                    <strong>{m.fileName || 'Document'}</strong>
+                    <small>{m.fileSize ? `${Math.round(m.fileSize / 1024)} KB` : ''}</small>
+                  </div>
+                </a>
+              ))}
+            </div>
+          ) : <div className="media-viewer-empty">No documents available</div>
+        )}
+      </div>
+    </div>
+  );
+})()}
 
 </div>
   );
