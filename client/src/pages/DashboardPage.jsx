@@ -1,6 +1,6 @@
 // src/pages/DashboardPage.jsx
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate, useLocation } from 'react-router-dom';
 import './dashboard.css';
@@ -125,6 +125,17 @@ export default function DashboardPage() {
   const [showForwardModal, setShowForwardModal] = useState(false);
   const [forwardSearchQuery, setForwardSearchQuery] = useState('');
   const [selectedForwardChats, setSelectedForwardChats] = useState(new Set());
+  // ✅ Status feature (WhatsApp-style, mobile)
+  const [statusFeed, setStatusFeed] = useState([]);
+  const [statusAddSheet, setStatusAddSheet] = useState(false);
+  const [statusComposerOpen, setStatusComposerOpen] = useState(false);
+  const [statusText, setStatusText] = useState('');
+  const [statusCameraOpen, setStatusCameraOpen] = useState(false);
+  const [statusCapture, setStatusCapture] = useState(null); // { dataUrl, caption } pending send
+  const [statusCaptureCaption, setStatusCaptureCaption] = useState('');
+  const [statusViewer, setStatusViewer] = useState(null); // { userId, index }
+  const statusVideoRef = useRef(null);
+  const statusFileInputRef = useRef(null);
 
   const clearLongPress = () => {
     if (longPressRef.current.timer) {
@@ -132,6 +143,205 @@ export default function DashboardPage() {
       longPressRef.current.timer = null;
     }
     longPressRef.current.active = false;
+  };
+
+  // ---------- Status (WhatsApp-style) ----------
+  const timeAgo = (ts) => {
+    if (!ts) return '';
+    const d = Date.now() - Number(ts);
+    if (d < 60 * 1000) return 'now';
+    if (d < 60 * 60 * 1000) return `${Math.floor(d / 60000)}m ago`;
+    if (d < 24 * 60 * 60 * 1000) return `${Math.floor(d / 3600000)}h ago`;
+    return `${Math.floor(d / 86400000)}d ago`;
+  };
+
+  const loadStatusFeed = useCallback(async () => {
+    const token = localStorage.getItem('token');
+    if (!token) return;
+    try {
+      const res = await fetch(`${API_URL}/api/status/feed`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (data && Array.isArray(data.statuses)) {
+        setStatusFeed(data.statuses);
+      }
+    } catch (err) {
+      console.error('Failed to load status feed', err);
+    }
+  }, []);
+  const loadStatusFeedRef = useRef(loadStatusFeed);
+  useEffect(() => { loadStatusFeedRef.current = loadStatusFeed; });
+
+  // Keep the feed fresh: on first load and every time the Status view opens.
+  useEffect(() => {
+    if (!user.id) return;
+    loadStatusFeed();
+  }, [user.id]);
+  useEffect(() => {
+    if (view === 'status') loadStatusFeed();
+  }, [view]);
+
+  // Derived, grouped status lists (flat feed -> groups by user)
+  const myStatuses = (statusFeed || []).filter(
+    s => s.user && String(s.user.id) === String(user.id)
+  );
+  const feedGroups = useMemo(() => {
+    const map = new Map();
+    (statusFeed || [])
+      .filter(s => s.user && String(s.user.id) !== String(user.id))
+      .forEach(s => {
+        const key = String(s.user.id);
+        const g = map.get(key);
+        if (g) g.statuses.push(s);
+        else map.set(key, { user: s.user, statuses: [s] });
+      });
+    return [...map.values()].sort(
+      (a, b) => (b.statuses[0]?.createdAt || 0) - (a.statuses[0]?.createdAt || 0)
+    );
+  }, [statusFeed]);
+
+  const postStatus = (type, text, bg, file) => {
+    if (!socket || !socket.connected) {
+      alert('Not connected yet. Please wait a moment.');
+      return;
+    }
+    socket.emit('postStatus', { type, text: text || '', bg: bg || 'default', file: file || '' });
+  };
+
+  const openStatusCamera = () => {
+    setStatusCameraOpen(true);
+    setTimeout(() => {
+      if (statusVideoRef.current) {
+        navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
+          .then(stream => { statusVideoRef.current.srcObject = stream; })
+          .catch(err => {
+            console.error('❌ Status camera error:', err);
+            alert('Unable to access camera');
+            setStatusCameraOpen(false);
+          });
+      }
+    }, 100);
+  };
+
+  const closeStatusCamera = () => {
+    const stream = statusVideoRef.current?.srcObject;
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    setStatusCameraOpen(false);
+  };
+
+  const captureStatusPhoto = () => {
+    const video = statusVideoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas) return;
+    if (!video.videoWidth) {
+      alert('Camera not ready yet. Please wait.');
+      return;
+    }
+    const context = canvas.getContext('2d');
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const photoDataUrl = canvas.toDataURL('image/jpeg', 0.9);
+    const stream = video.srcObject;
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    setStatusCameraOpen(false);
+    setStatusCapture({ dataUrl: photoDataUrl });
+    setStatusCaptureCaption('');
+  };
+
+  const onStatusFileChange = (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      setStatusCapture({ dataUrl: reader.result });
+      setStatusCaptureCaption('');
+      setStatusAddSheet(false);
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
+
+  const sendStatusImage = () => {
+    if (!statusCapture || !statusCapture.dataUrl) return;
+    postStatus('image', statusCaptureCaption, 'default', statusCapture.dataUrl);
+    setStatusCapture(null);
+    setStatusCaptureCaption('');
+    setStatusAddSheet(false);
+  };
+
+  const sendStatusText = () => {
+    const txt = statusText.trim();
+    if (!txt) return;
+    postStatus('text', txt, 'default', '');
+    setStatusText('');
+    setStatusComposerOpen(false);
+    setStatusAddSheet(false);
+  };
+
+  const deleteCurrentStatus = () => {
+    if (!statusViewer || !currentStatusForViewer) return;
+    if (socket && socket.connected) {
+      socket.emit('deleteStatus', { statusId: currentStatusForViewer._id });
+    }
+    setStatusViewer(null);
+  };
+
+  // The status currently shown in the full-screen viewer
+  const viewerUser = useMemo(() => {
+    if (!statusViewer) return null;
+    if (String(statusViewer.userId) === String(user.id)) {
+      return { user: { id: user.id, name: 'My status', photo: '' }, statuses: myStatuses };
+    }
+    return feedGroups.find(g => String(g.user.id) === String(statusViewer.userId)) || null;
+  }, [statusViewer, feedGroups, myStatuses, user.id]);
+  const currentStatusForViewer = viewerUser && viewerUser.statuses[statusViewer.index];
+
+  // Mark a viewed status as read so the green ring turns grey.
+  useEffect(() => {
+    if (!statusViewer || !currentStatusForViewer || !currentStatusForViewer._id) return;
+    if (currentStatusForViewer.user && String(currentStatusForViewer.user.id) === String(user.id)) return;
+    fetch(`${API_URL}/api/status/${currentStatusForViewer._id}/view`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
+    }).catch(() => {});
+    setStatusFeed(prev => {
+      const i = prev.findIndex(s => s._id === currentStatusForViewer._id);
+      if (i === -1 || prev[i].viewed) return prev;
+      const next = [...prev];
+      next[i] = { ...next[i], viewed: true };
+      return next;
+    });
+  }, [currentStatusForViewer && currentStatusForViewer._id]);
+
+  // Auto-advance the viewer every 5s (WhatsApp-style); close after the last one.
+  useEffect(() => {
+    if (!statusViewer || !viewerUser || !viewerUser.statuses.length) return;
+    const timer = setTimeout(() => {
+      setStatusViewer(prev => {
+        if (!prev) return prev;
+        const list = String(prev.userId) === String(user.id) ? myStatuses : feedGroups.find(g => String(g.user.id) === String(prev.userId))?.statuses || [];
+        if (prev.index < list.length - 1) return { userId: prev.userId, index: prev.index + 1 };
+        return null;
+      });
+    }, 5000);
+    return () => clearTimeout(timer);
+  }, [statusViewer && String(statusViewer.userId), statusViewer && statusViewer.index]);
+
+  const handleViewerTap = (e) => {
+    if (!viewerUser || !statusViewer) return;
+    const x = e.clientX;
+    const w = window.innerWidth || document.documentElement.clientWidth;
+    if (x < w * 0.5) {
+      if (statusViewer.index > 0) setStatusViewer({ userId: statusViewer.userId, index: statusViewer.index - 1 });
+    } else {
+      if (statusViewer.index < viewerUser.statuses.length - 1) {
+        setStatusViewer({ userId: statusViewer.userId, index: statusViewer.index + 1 });
+      } else {
+        setStatusViewer(null);
+      }
+    }
   };
 
   const startLongPress = (onFire) => {
@@ -1320,6 +1530,11 @@ newSocket.on("receiveMessage", (data) => {
         setGroupMessages(prev => ({ ...prev, [gid]: [] }));
       });
 
+      // ✅ Status posted by anyone I am in contact with (including my own
+      //    other devices) — refresh the status feed.
+      newSocket.on('statusPosted', () => loadStatusFeedRef.current());
+      newSocket.on('statusDeleted', () => loadStatusFeedRef.current());
+
     return () => {
     newSocket.disconnect();
    };
@@ -1832,9 +2047,8 @@ newSocket.on("receiveMessage", (data) => {
       const chats = []; // ✅ start empty, load real contacts instead
 
 
-      // Mock calls, etc. (groups now come from the backend via groupsList)
+      // Mock calls (groups now come from the backend via groupsList)
       const calls = [{ id: 1, name: 'Alice', type: 'video', time: 'Today, 9:00 AM' }];
-      const statuses = [{ id: 1, name: 'Alice', time: '2 min ago' }];
 
     
 
@@ -2318,13 +2532,14 @@ newSocket.on("receiveMessage", (data) => {
                     </div>
                   </div>
                 ))}
-                {activeTab === 'statuses' && statuses.map(status => (
-                  <div key={status.id} className="chat-item">
-                    <img src="https://via.placeholder.com/50/25D366/fff?text=S" alt={status.name} />
+                {activeTab === 'statuses' && feedGroups.map(status => (
+                  <div key={String(status.user.id)} className="chat-item" onClick={() => setStatusViewer({ userId: String(status.user.id), index: 0 })}>
+                    <img src={status.user.photo || 'https://via.placeholder.com/50/25D366/fff?text=S'} alt={status.user.name} />
                     <div className="chat-info">
-                      <h4>{status.name}</h4>
-                      <p>• {status.time}</p>
+                      <h4>{status.user.name}</h4>
+                      <p>• {status.statuses.length > 1 ? `${status.statuses.length} updates • ` : ''}{timeAgo(status.statuses[0]?.createdAt)}</p>
                     </div>
+                    {status.statuses.some(s => !s.viewed) && <span className="status-dot" />}
                   </div>
                 ))}
               </div>
@@ -5660,35 +5875,79 @@ setContacts(prev => {
           {/* Status Header */}
           <div className="mobile-header">
             <h1>Status</h1>
-            <button className="menu-btn">⋮</button>
+            <div className="menu-container">
+              <button
+                className="menu-btn"
+                onClick={() => setShowMobileMenu(prev => !prev)}
+              >
+                ⋮
+              </button>
+              {/* Same dropdown options as the Chats menu */}
+              {showMobileMenu && (
+                <div className="dropdown-menu">
+                  <button onClick={() => { setShowAddContact(true); setShowMobileMenu(false); }}>Add new contact</button>
+                  <button onClick={() => { setShowMobileMenu(false); openGroupFlow(); }}>New Group</button>
+                  <button onClick={() => setActiveTab('profile')}>Profile</button>
+                  <button onClick={() => alert('Settings')}>Settings</button>
+                  <button onClick={() => { setShowMobileMenu(false); handleLogout(); }}>Logout</button>
+                </div>
+              )}
+            </div>
           </div>
           {/* My Status */}
           <div className="status-section">
             <h2 className="section-title">My Status</h2>
-            <div className="status-item my-status">
-              <img src="https://via.placeholder.com/50/25D366/fff?text=+" alt="Add" />
+            <div
+              className="status-item my-status"
+              onClick={() => {
+                if (myStatuses.length) setStatusViewer({ userId: user.id, index: 0 });
+                else setStatusAddSheet(true);
+              }}
+            >
+              <div className="my-status-avatar">
+                <img
+                  src={`https://via.placeholder.com/50/25D366/fff?text=${encodeURIComponent((user.name || '?')[0])}`}
+                  alt="You"
+                />
+                <button
+                  className="my-status-add"
+                  onClick={(e) => { e.stopPropagation(); setStatusAddSheet(true); }}
+                  aria-label="Add status"
+                >
+                  +
+                </button>
+              </div>
               <div className="status-info">
-                <h4>Tap to add status</h4>
-                <p>Visible to everyone</p>
+                <h4>{myStatuses.length ? 'My Status' : 'Tap to add status'}</h4>
+                <p>{myStatuses.length ? `Updated ${timeAgo(myStatuses[0].createdAt)}` : 'Visible to everyone'}</p>
               </div>
             </div>
           </div>
           {/* Recent Updates */}
           <div className="status-section">
             <h2 className="section-title">Recent updates</h2>
-            {statuses.map(status => (
-              <div
-                key={status.id}
-                className="status-item"
-                onClick={() => alert(`Viewing status from ${status.name}`)}
-              >
-                <img src="https://via.placeholder.com/50" alt={status.name} />
-                <div className="status-info">
-                  <h4>{status.name}</h4>
-                  <p>{status.time}</p>
+            {feedGroups.map(g => {
+              const first = g.statuses[0];
+              const hasUnseen = g.statuses.some(s => !s.viewed);
+              return (
+                <div
+                  key={String(g.user.id)}
+                  className={`status-item ${hasUnseen ? 'unseen' : 'seen'}`}
+                  onClick={() => setStatusViewer({ userId: String(g.user.id), index: 0 })}
+                >
+                  <img src={g.user.photo || 'https://via.placeholder.com/50'} alt={g.user.name} />
+                  <div className="status-info">
+                    <h4>{g.user.name}</h4>
+                    <p>
+                      {g.statuses.length > 1 ? `${g.statuses.length} updates • ` : ''}
+                      {timeAgo(first.createdAt)}
+                    </p>
+                  </div>
+                  {hasUnseen && <span className="status-dot" />}
                 </div>
-              </div>
-            ))}
+              );
+            })}
+            {feedGroups.length === 0 && <p className="status-empty">No recent updates</p>}
           </div>
         </>
       
@@ -6074,6 +6333,136 @@ setContacts(prev => {
           </div>
         </div>
     </div>
+  </div>
+)}
+
+{/* ===== STATUS ADD SHEET (Camera / Gallery / Text) ===== */}
+{statusAddSheet && (
+  <div className="status-action-overlay" onClick={() => setStatusAddSheet(false)}>
+    <div className="status-action-sheet" onClick={(e) => e.stopPropagation()}>
+      <div className="status-action-title">Add status</div>
+      <button
+        className="status-action-item"
+        onClick={() => { setStatusAddSheet(false); openStatusCamera(); }}
+      >
+        <Camera size={22} strokeWidth={1.8} /> Camera
+      </button>
+      <button
+        className="status-action-item"
+        onClick={() => { setStatusAddSheet(false); statusFileInputRef.current?.click(); }}
+      >
+        <Image size={22} strokeWidth={1.8} /> Gallery
+      </button>
+      <button
+        className="status-action-item"
+        onClick={() => { setStatusAddSheet(false); setStatusText(''); setStatusComposerOpen(true); }}
+      >
+        <PencilLine size={22} strokeWidth={1.8} /> Text
+      </button>
+      <button className="status-action-cancel" onClick={() => setStatusAddSheet(false)}>Cancel</button>
+    </div>
+  </div>
+)}
+<input
+  ref={statusFileInputRef}
+  type="file"
+  accept="image/*"
+  style={{ display: 'none' }}
+  onChange={onStatusFileChange}
+/>
+
+{/* ===== FULL-SCREEN STATUS CAMERA (covers everything) ===== */}
+{statusCameraOpen && (
+  <div className="status-camera-overlay">
+    <div className="status-camera-top">
+      <button className="status-camera-close" onClick={closeStatusCamera} aria-label="Close camera">✕</button>
+    </div>
+    <video ref={statusVideoRef} autoPlay playsInline className="status-camera-video" />
+    <div className="status-camera-bottom">
+      <div className="status-capture-btn" onClick={captureStatusPhoto} aria-label="Capture photo" />
+    </div>
+  </div>
+)}
+
+{/* ===== STATUS TEXT COMPOSER (colored background) ===== */}
+{statusComposerOpen && (
+  <div className="status-composer">
+    <div className="status-composer-header">
+      <button onClick={() => setStatusComposerOpen(false)}>Cancel</button>
+      <button className="status-composer-send" onClick={sendStatusText} disabled={!statusText.trim()}>Send</button>
+    </div>
+    <textarea
+      className="status-text-input"
+      value={statusText}
+      onChange={(e) => setStatusText(e.target.value)}
+      placeholder="Type a status"
+      maxLength={120}
+      autoFocus
+    />
+    <p className="status-composer-hint">{statusText.length}/120</p>
+  </div>
+)}
+
+{/* ===== STATUS PHOTO PREVIEW + CAPTION ===== */}
+{statusCapture && statusCapture.dataUrl && (
+  <div className="status-capture-preview">
+    <div className="status-composer-header">
+      <button onClick={() => setStatusCapture(null)}>Cancel</button>
+      <button className="status-composer-send" onClick={sendStatusImage}>Send</button>
+    </div>
+    <img src={statusCapture.dataUrl} alt="status" />
+    <input
+      className="status-caption-input"
+      value={statusCaptureCaption}
+      onChange={(e) => setStatusCaptureCaption(e.target.value)}
+      placeholder="Add a caption"
+      maxLength={120}
+    />
+  </div>
+)}
+
+{/* ===== FULL-SCREEN STATUS VIEWER ===== */}
+{statusViewer && viewerUser && viewerUser.statuses.length > 0 && currentStatusForViewer && (
+  <div className="status-viewer-overlay">
+    <div className="status-viewer-head">
+      <button className="status-viewer-close" onClick={() => setStatusViewer(null)} aria-label="Close">✕</button>
+      {String(viewerUser.user.id) === String(user.id) && (
+        <button className="status-viewer-delete" onClick={deleteCurrentStatus} aria-label="Delete status">🗑</button>
+      )}
+    </div>
+    <div className="status-progress">
+      {viewerUser.statuses.map((s, i) => (
+        <div
+          key={String(s._id)}
+          className={`status-progress-seg ${i < statusViewer.index ? 'done' : i === statusViewer.index ? 'active' : ''}`}
+        />
+      ))}
+    </div>
+    <div className="status-viewer-content" onClick={handleViewerTap}>
+      {currentStatusForViewer.type === 'image' ? (
+        <img src={currentStatusForViewer.file} alt="status" className="status-viewer-image" />
+      ) : (
+        <div className="status-text-view">
+          {currentStatusForViewer.text}
+        </div>
+      )}
+    </div>
+    <div className="status-viewer-info">
+      <img
+        src={
+          viewerUser.user.photo ||
+          `https://via.placeholder.com/40/25D366/fff?text=${encodeURIComponent((viewerUser.user.name || '?')[0])}`
+        }
+        alt={viewerUser.user.name}
+      />
+      <div className="status-viewer-meta">
+        <strong>{viewerUser.user.name}</strong>
+        <span>{timeAgo(currentStatusForViewer.createdAt)}</span>
+      </div>
+    </div>
+    {currentStatusForViewer.type === 'image' && currentStatusForViewer.text && (
+      <p className="status-viewer-caption">{currentStatusForViewer.text}</p>
+    )}
   </div>
 )}
 

@@ -11,10 +11,12 @@ import passport from './config/passport.js';
 import User from './models/User.js'; // ✅ Add this line
 import Group from './models/Group.js'; // ✅ Group model
 import GroupMessage from './models/GroupMessage.js'; // ✅ Group message model
+import Status from './models/Status.js'; // ✅ Status model
 import path from 'path'; // ✅ Add this
 import { fileURLToPath } from 'url';
 import Message from "./models/Message.js"; // add this on top
 import groupRoutes from './routes/groupRoutes.js'; // ✅ Group routes
+import statusRoutes, { getStatusViewerIds } from './routes/statusRoutes.js'; // ✅ Status routes
 import { promisify } from 'util';
 const verifyAsync = promisify(jwt.verify);
 
@@ -72,6 +74,7 @@ app.use(passport.session());
 // Routes
 app.use('/api', authRoutes);
 app.use('/api', groupRoutes);
+app.use('/api', statusRoutes);
 
 // Google Auth Routes
 app.get('/api/auth/google',
@@ -574,6 +577,64 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
       }
     } catch (err) {
       console.error("clearGroupChat error:", err.message);
+    }
+  });
+
+  // ✅ Post a WhatsApp-style status. Only the poster's contacts (people they
+  //    chat with) receive the realtime `statusPosted` event; the feed itself
+  //    also enforces the same visibility rule.
+  socket.on("postStatus", async (data) => {
+    const { type, text, bg, file } = data || {};
+    try {
+      const isImage = type === 'image';
+      const status = await Status.create({
+        user: socket.userId,
+        type: isImage ? 'image' : 'text',
+        text: isImage ? (text || '') : String(text || '').slice(0, 120),
+        bg: bg || 'default',
+        file: isImage ? (file || '') : '',
+      });
+
+      const owner = await User.findById(socket.userId).select('name photo').lean().exec();
+      const payload = {
+        _id: String(status._id),
+        user: {
+          id: String(socket.userId),
+          name: owner?.name || 'Unknown',
+          photo: owner?.photo || 'https://via.placeholder.com/50',
+        },
+        type: status.type,
+        text: status.text || '',
+        bg: status.bg || 'default',
+        file: status.file || '',
+        createdAt: status.createdAt.getTime(),
+        viewed: false,
+      };
+
+      // Notify every viewer (including the poster's own other sockets) so
+      // their status list refreshes instantly.
+      const viewerIds = await getStatusViewerIds(socket.userId);
+      viewerIds.forEach((uid) => emitToUser(uid, 'statusPosted', payload));
+    } catch (err) {
+      console.error("postStatus error:", err.message);
+    }
+  });
+
+  // ✅ Delete one of my own statuses
+  socket.on("deleteStatus", async ({ statusId }) => {
+    if (!statusId) return;
+    try {
+      const deleted = await Status.findOneAndDelete({
+        _id: statusId,
+        user: socket.userId,
+      }).exec();
+      if (!deleted) return;
+      const viewerIds = await getStatusViewerIds(socket.userId);
+      viewerIds.forEach((uid) =>
+        emitToUser(uid, 'statusDeleted', { statusId: String(deleted._id) })
+      );
+    } catch (err) {
+      console.error("deleteStatus error:", err.message);
     }
   });
 

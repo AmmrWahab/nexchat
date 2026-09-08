@@ -2516,7 +2516,398 @@
     font-size: 0.95rem;
     cursor: pointer;
   }
-  .mobile-sel-dropdown-item:hover {
+.mobile-sel-dropdown-item:hover {
     background: #f0f2f5;
   }
+}
+
+/* ===== STATUS FEATURE (WhatsApp-style) ===== */
+
+/* My Status avatar wrapper + small "+" add button */
+.my-status-avatar {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.my-status-add {
+  position: absolute;
+  bottom: -2px;
+  right: -2px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 2px solid #e9edef;
+  background: #25D366;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+}
+
+/* Seen statuses have a grey ring (unseen keeps the green one) */
+.status-item.seen img {
+  border-color: #e0e0e0;
+}
+
+.status-empty {
+  padding: 8px 16px;
+  color: #888;
+  font-size: 0.9rem;
+}
+
+/* ---- Add-status bottom sheet ---- */
+.status-action-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 99998;
+  display: flex;
+  align-items: flex-end;
+}
+
+.status-action-sheet {
+  width: 100%;
+  background: #fff;
+  border-radius: 16px 16px 0 0;
+  padding: 8px 0 12px;
+  animation: statusSheetUp 0.25s ease-out;
+}
+
+@keyframes statusSheetUp {
+  from { transform: translateY(40%); opacity: 0.4; }
+  to   { transform: translateY(0); opacity: 1; }
+}
+
+.status-action-title {
+  text-align: center;
+  font-weight: 700;
+  color: #333;
+  padding: 12px 0 6px;
+}
+
+.status-action-item {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  text-align: left;
+  padding: 14px 20px;
+  background: #fff;
+  border: none;
+  font-size: 1rem;
+  color: #1f1f1f;
+  cursor: pointer;
+}
+
+.status-action-item:hover {
+  background: #f0f2f5;
+}
+
+.status-action-item svg {
+  color: #075e54;
+}
+
+.status-action-cancel {
+  width: 100%;
+  padding: 12px;
+  background: #f0f2f5;
+  border: none;
+  border-radius: 10px;
+  margin-top: 8px;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #075e54;
+  cursor: pointer;
+}
+
+/* ---- Full-screen status camera (covers everything) ---- */
+.status-camera-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  background: #000;
+  z-index: 100000;
+  display: flex;
+  flex-direction: column;
+}
+
+.status-camera-video {
+  flex: 1;
+  width: 100%;
+  object-fit: cover;
+}
+
+.status-camera-top {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  padding: 12px 16px;
+  z-index: 2;
+}
+
+.status-camera-close {
+  background: rgba(0, 0, 0, 0.5);
+  border: none;
+  color: #fff;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  font-size: 18px;
+  cursor: pointer;
+}
+
+.status-camera-bottom {
+  position: absolute;
+  bottom: 24px;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  z-index: 2;
+}
+
+.status-capture-btn {
+  width: 66px;
+  height: 66px;
+  border-radius: 50%;
+  border: 5px solid #fff;
+  background: rgba(255, 255, 255, 0.35);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+  cursor: pointer;
+}
+
+/* ---- Text composer (one default colorful style, WhatsApp-like) ---- */
+.status-composer {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  z-index: 100000;
+  background: linear-gradient(135deg, #7f00ff, #e100ff);
+  display: flex;
+  flex-direction: column;
+  padding: 16px;
+  box-sizing: border-box;
+}
+
+.status-composer-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.status-composer-header button {
+  background: transparent;
+  border: none;
+  color: #fff;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.status-composer-header .status-composer-send:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.status-text-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #fff;
+  font-size: 1.6rem;
+  font-weight: 600;
+  resize: none;
+  width: 100%;
+}
+
+.status-text-input::placeholder {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.status-composer-hint {
+  color: rgba(255, 255, 255, 0.75);
+  text-align: right;
+  font-size: 0.85rem;
+}
+
+/* ---- Captured/gallery image preview up to send ---- */
+.status-capture-preview {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  z-index: 100000;
+  background: #111;
+  display: flex;
+  flex-direction: column;
+  padding: 16px;
+  box-sizing: border-box;
+}
+
+.status-capture-preview .status-composer-header button {
+  color: #fff;
+}
+
+.status-capture-preview img {
+  flex: 1;
+  width: 100%;
+  object-fit: contain;
+  border-radius: 8px;
+}
+
+.status-caption-input {
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 10px;
+  border: none;
+  outline: none;
+  font-size: 1rem;
+  background: #fff;
+}
+
+/* ---- Full-screen status viewer ---- */
+.status-viewer-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  background: #000;
+  z-index: 100001;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.status-viewer-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  z-index: 3;
+}
+
+.status-viewer-close,
+.status-viewer-delete {
+  background: rgba(255, 255, 255, 0.15);
+  border: none;
+  color: #fff;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.status-progress {
+  display: flex;
+  gap: 4px;
+  padding: 4px 12px 8px;
+  z-index: 3;
+}
+
+.status-progress-seg {
+  flex: 1;
+  height: 3px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.status-progress-seg.done {
+  background: #fff;
+}
+
+.status-progress-seg.active {
+  background: #fff;
+}
+
+.status-viewer-content {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  cursor: pointer;
+  position: relative;
+}
+
+.status-viewer-image {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.status-text-view {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  box-sizing: border-box;
+  color: #fff;
+  font-size: 1.8rem;
+  font-weight: 700;
+  text-align: center;
+  background: linear-gradient(135deg, #7f00ff, #e100ff);
+  overflow-wrap: break-word;
+}
+
+.status-viewer-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  z-index: 3;
+}
+
+.status-viewer-info img {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.status-viewer-meta {
+  display: flex;
+  flex-direction: column;
+  color: #fff;
+}
+
+.status-viewer-meta strong {
+  font-size: 0.95rem;
+}
+
+.status-viewer-meta span {
+  font-size: 0.8rem;
+  opacity: 0.7;
+}
+
+.status-viewer-caption {
+  color: #fff;
+  padding: 0 16px 20px;
+  margin: 0;
+  font-size: 0.95rem;
+  z-index: 3;
+  text-align: center;
 }
