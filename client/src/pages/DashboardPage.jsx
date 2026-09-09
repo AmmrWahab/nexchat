@@ -8,6 +8,103 @@ import { io } from 'socket.io-client';
 import { Search, X, CornerUpRight, CornerUpLeft, Phone, Video, Paperclip, Camera, Mic, User, FileText, Trash2, Copy, Forward, Reply, ArrowLeft, ChevronUp, ChevronDown, Info, MessageCircle, Users, Settings, Menu, SquarePen, Images, Image, PencilLine, Check, MicOff, VideoOff, Volume2 } from "lucide-react";
 import { API_URL } from '../config.js';
 
+const BLUE_TICK = '#53bdeb';
+
+// WhatsApp-style delivery ticks: single grey = sent, double tick = delivered, blue = read.
+function WhatsAppTicks({ read, delivered }) {
+  return (
+    <span className="wa-ticks" aria-label={read ? 'Read' : delivered ? 'Delivered' : 'Sent'}>
+      <span className={`wa-tick ${read ? 'read' : ''}`}>✓</span>
+      {delivered && <span className={`wa-tick ${read ? 'read' : ''}`}>✓</span>}
+    </span>
+  );
+}
+
+// Convert URLs in message text into clickable blue links.
+function linkify(text) {
+  if (!text) return text;
+  const re = /(https?:\/\/[^\s]+)/g;
+  const parts = String(text).split(re);
+  return parts.map((p, i) =>
+    i % 2 === 1
+      ? <a key={i} href={p} target="_blank" rel="noopener noreferrer" className="msg-link">{p}</a>
+      : p
+  );
+}
+
+// localStorage write that never crashes the UI on QuotaExceededError.
+function safeSetItem(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch (err) {
+    console.warn(`localStorage write failed for "${key}"`, err);
+  }
+}
+
+// WhatsApp-style call-history row date ("today at 3:45 PM" / "yesterday at …" / "12 Mar at …")
+function formatCallDate(ts) {
+  if (!ts) return '';
+  const d = new Date(Number(ts));
+  if (isNaN(d.getTime())) return '';
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const day = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  let datePart;
+  if (day === today) datePart = 'today';
+  else if (day === today - 86400000) datePart = 'yesterday';
+  else datePart = d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: d.getFullYear() !== now.getFullYear() ? 'numeric' : undefined });
+  return `${datePart} at ${d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`;
+}
+
+// Video status player with play/pause + progress (WhatsApp-style).
+// Defined at module scope so it is not re-created (and re-mounted) on every
+// parent render — a re-created inner component would restart the video.
+const StatusVideoView = ({ src, onEnded }) => {
+  const [playing, setPlaying] = useState(true);
+  const [progress, setProgress] = useState(0);
+  const videoRef = useRef(null);
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    v.currentTime = 0;
+    const onTime = () => setProgress(v.duration ? v.currentTime / v.duration : 0);
+    const onEnd = () => { setPlaying(false); setProgress(1); onEnded(); };
+    v.addEventListener('timeupdate', onTime);
+    v.addEventListener('ended', onEnd);
+    v.play().catch(() => {});
+    return () => {
+      v.pause();
+      v.removeEventListener('timeupdate', onTime);
+      v.removeEventListener('ended', onEnd);
+    };
+  }, [src]);
+  const toggle = () => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (playing) { v.pause(); setPlaying(false); }
+    else { v.play().catch(() => {}); setPlaying(true); }
+  };
+  return (
+    <div
+      className="status-video-wrap"
+      onClick={(e) => {
+        const r = e.currentTarget.getBoundingClientRect();
+        const cx = e.clientX - r.left;
+        if (cx < r.width * 0.3 || cx > r.width * 0.7) return;
+        e.stopPropagation();
+        toggle();
+      }}
+    >
+      <video ref={videoRef} src={src} className="status-viewer-video" muted playsInline preload="metadata" />
+      <button className={`status-video-pause ${playing ? '' : 'paused'}`} aria-label={playing ? 'Pause' : 'Play'} onClick={(e) => { e.stopPropagation(); toggle(); }}>
+        {playing ? '❚❚' : '▶'}
+      </button>
+      <div className="status-video-progress">
+        <span style={{ width: `${Math.max(0, Math.min(100, progress * 100))}%` }} />
+      </div>
+    </div>
+  );
+};
 
 export default function DashboardPage() {
   const [activeTab, setActiveTab] = useState('chats');
@@ -135,8 +232,16 @@ export default function DashboardPage() {
   const [statusCapture, setStatusCapture] = useState(null); // { dataUrl, caption } pending send
   const [statusCaptureCaption, setStatusCaptureCaption] = useState('');
   const [statusViewer, setStatusViewer] = useState(null); // { userId, index }
+  const [statusReplyText, setStatusReplyText] = useState('');
+  const [statusRecording, setStatusRecording] = useState(false);
+  const [statusRecordSec, setStatusRecordSec] = useState(0);
+  const [videoStatusEnded, setVideoStatusEnded] = useState(false);
   const statusVideoRef = useRef(null);
   const statusFileInputRef = useRef(null);
+  const statusHoldTimerRef = useRef(null);
+  const statusMediaRecorderRef = useRef(null);
+  const statusMediaChunksRef = useRef([]);
+  const statusRecordTimerRef = useRef(null);
 
   // -------- Calls (voice/video) state --------
   const [calls, setCalls] = useState([]);
@@ -146,6 +251,7 @@ export default function DashboardPage() {
   const [callSpeakerOutput, setCallSpeakerOutput] = useState('speaker');
   const [callMicOn, setCallMicOn] = useState(true);
   const [callCamOn, setCallCamOn] = useState(true);
+  const [callMinimized, setCallMinimized] = useState(false);
   const [mediaViewer, setMediaViewer] = useState(null); // { type:'dm'|'group', chatId, chatName, tab }
   const callStartAtRef = useRef(0);
   const pcRef = useRef(null);
@@ -158,6 +264,16 @@ export default function DashboardPage() {
   const peerVideoRef = useRef(null);
   const callTimerRef = useRef(null);
   const peekReminderRef = useRef(null);
+  // ---------- Group-call mesh ----------
+  const groupPeersRef = useRef({});
+  const groupStreamsRef = useRef({});
+  const [groupTiles, setGroupTiles] = useState({});
+  const [groupCallPage, setGroupCallPage] = useState(0);
+
+  // Never stay minimized after a call has ended
+  useEffect(() => {
+    if (!activeCall) setCallMinimized(false);
+  }, [activeCall]);
 
   const clearLongPress = () => {
     if (longPressRef.current.timer) {
@@ -350,7 +466,81 @@ export default function DashboardPage() {
   const closeStatusCamera = () => {
     const stream = statusVideoRef.current?.srcObject;
     if (stream) stream.getTracks().forEach(t => t.stop());
+    setStatusRecording(false);
+    setStatusRecordSec(0);
+    clearInterval(statusRecordTimerRef.current);
     setStatusCameraOpen(false);
+  };
+
+  const startStatusRecording = () => {
+    const video = statusVideoRef.current;
+    const stream = video?.srcObject;
+    if (!stream || !stream.getVideoTracks().length) return;
+    let mime = '';
+    if (typeof MediaRecorder !== 'undefined') {
+      if (MediaRecorder.isTypeSupported('video/webm;codecs=vp8')) mime = 'video/webm;codecs=vp8';
+      else if (MediaRecorder.isTypeSupported('video/webm')) mime = 'video/webm';
+    }
+    try {
+      const mr = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: 1500000 } : { videoBitsPerSecond: 1500000 });
+      statusMediaRecorderRef.current = mr;
+      statusMediaChunksRef.current = [];
+      mr.ondataavailable = (ev) => { if (ev.data && ev.data.size) statusMediaChunksRef.current.push(ev.data); };
+      mr.onstop = () => {
+        try {
+          const blob = new Blob(statusMediaChunksRef.current, { type: mime || 'video/webm' });
+          const reader = new FileReader();
+          reader.onload = () => {
+            const s = statusVideoRef.current?.srcObject;
+            if (s) s.getTracks().forEach(t => t.stop());
+            setStatusRecording(false);
+            setStatusRecordSec(0);
+            clearInterval(statusRecordTimerRef.current);
+            setStatusCameraOpen(false);
+            setStatusCapture({ dataUrl: reader.result, type: 'video' });
+            setStatusCaptureCaption('');
+          };
+          reader.readAsDataURL(blob);
+        } catch (err) {
+          console.error('❌ Status video finalize error:', err);
+        }
+      };
+      mr.start();
+      statusMediaRecorderRef.current = mr;
+      setStatusRecording(true);
+      setStatusRecordSec(0);
+      clearInterval(statusRecordTimerRef.current);
+      statusRecordTimerRef.current = setInterval(() => {
+        setStatusRecordSec((s) => {
+          const n = s + 1;
+          if (n >= 15) stopStatusRecording();
+          return n;
+        });
+      }, 1000);
+    } catch (err) {
+      console.error('❌ MediaRecorder error:', err);
+      alert('Video recording not supported on this device');
+    }
+  };
+
+  const stopStatusRecording = () => {
+    setStatusRecording(false);
+    setStatusRecordSec(0);
+    clearInterval(statusRecordTimerRef.current);
+    const mr = statusMediaRecorderRef.current;
+    if (mr && mr.state !== 'inactive') mr.stop();
+  };
+
+  // Tap = photo, press-and-hold = video recording.
+  const statusCapturePointerDown = () => {
+    statusHoldTimerRef.current = setTimeout(() => {
+      if (typeof MediaRecorder !== 'undefined' && statusVideoRef.current?.srcObject) startStatusRecording();
+    }, 350);
+  };
+  const statusCapturePointerUp = () => {
+    clearTimeout(statusHoldTimerRef.current);
+    if (statusRecording) stopStatusRecording();
+    else captureStatusPhoto();
   };
 
   const captureStatusPhoto = () => {
@@ -369,7 +559,7 @@ export default function DashboardPage() {
     const stream = video.srcObject;
     if (stream) stream.getTracks().forEach(t => t.stop());
     setStatusCameraOpen(false);
-    setStatusCapture({ dataUrl: photoDataUrl });
+    setStatusCapture({ dataUrl: photoDataUrl, type: 'image' });
     setStatusCaptureCaption('');
   };
 
@@ -388,7 +578,7 @@ export default function DashboardPage() {
 
   const sendStatusImage = () => {
     if (!statusCapture || !statusCapture.dataUrl) return;
-    postStatus('image', statusCaptureCaption, 'default', statusCapture.dataUrl);
+    postStatus(statusCapture.type === 'video' ? 'video' : 'image', statusCaptureCaption, 'default', statusCapture.dataUrl);
     setStatusCapture(null);
     setStatusCaptureCaption('');
     setStatusAddSheet(false);
@@ -401,6 +591,42 @@ export default function DashboardPage() {
     setStatusText('');
     setStatusComposerOpen(false);
     setStatusAddSheet(false);
+  };
+
+  const sendStatusReply = (replyText) => {
+    const txt = (replyText || statusReplyText).trim();
+    if (!txt || !viewerUser || String(viewerUser.user.id) === String(user.id)) return;
+    const targetId = viewerUser.user.id;
+    const contact = contacts.find((c) => String(c.id) === String(targetId));
+    const cur = currentStatusForViewer;
+    const quoteText = (cur && (cur.text || (cur.type === 'video' ? '[Video]' : cur.type === 'image' ? '[Photo]' : '[Text]'))) || 'Status';
+    setStatusReplyText('');
+    setStatusViewer(null);
+    if (!contact) {
+      if (socket && socket.connected) {
+        socket.emit('sendMessage', {
+          to: targetId,
+          message: txt || `Replied to their status: ${quoteText}`,
+          file: '',
+          fileName: '',
+          fileType: '',
+          from: user.id,
+          fromName: user.name,
+          fromPhoto: user.photo || '',
+        });
+      }
+      return;
+    }
+    setSelectedChat(contact);
+    setSelectedGroup(null);
+    setMobileChatOpen(true);
+    setActiveTab('chats');
+    setReplyTo({ sender: viewerUser.user.name, text: `Status: ${quoteText}`, isStatus: true });
+    setDesktopDraft(txt || '');
+    setTimeout(() => {
+      const el = isMobile ? document.querySelector('.mobile-compose textarea') : document.querySelector('.message-input input[type=text]');
+      if (el) el.focus();
+    }, 180);
   };
 
   const deleteCurrentStatus = () => {
@@ -439,8 +665,10 @@ export default function DashboardPage() {
   }, [currentStatusForViewer && currentStatusForViewer._id]);
 
   // Auto-advance the viewer every 5s (WhatsApp-style); close after the last one.
+  // Video statuses only advance once playback has ended.
   useEffect(() => {
     if (!statusViewer || !viewerUser || !viewerUser.statuses.length) return;
+    if (currentStatusForViewer?.type === 'video' && !videoStatusEnded) return;
     const timer = setTimeout(() => {
       setStatusViewer(prev => {
         if (!prev) return prev;
@@ -450,6 +678,10 @@ export default function DashboardPage() {
       });
     }, 5000);
     return () => clearTimeout(timer);
+  }, [statusViewer && String(statusViewer.userId), statusViewer && statusViewer.index, currentStatusForViewer && currentStatusForViewer.type, videoStatusEnded]);
+
+  useEffect(() => {
+    setVideoStatusEnded(false);
   }, [statusViewer && String(statusViewer.userId), statusViewer && statusViewer.index]);
 
   const handleViewerTap = (e) => {
@@ -466,6 +698,8 @@ export default function DashboardPage() {
       }
     }
   };
+
+  // Video status player with play/pause + progress (WhatsApp-style).
 
   const startLongPress = (onFire) => {
     clearLongPress();
@@ -498,7 +732,7 @@ export default function DashboardPage() {
       if (cmd.chatType === 'group') return prev;
       if (!prev[chatId]) return prev;
       const next = { ...prev, [chatId]: prev[chatId].filter(m => String(m.id) !== String(cmd.msg.id)) };
-      localStorage.setItem('chatMessages', JSON.stringify(next));
+      safeSetItem('chatMessages', next);
       return next;
     });
     if (cmd.chatType === 'group') {
@@ -532,7 +766,7 @@ export default function DashboardPage() {
         const chatId = String(cmd.chatId);
         if (!prev[chatId]) return prev;
         const next = { ...prev, [chatId]: prev[chatId].filter((m) => !ids.includes(m.id)) };
-        localStorage.setItem('chatMessages', JSON.stringify(next));
+        safeSetItem('chatMessages', next);
         return next;
       });
       setIsSelectionMode(false);
@@ -581,7 +815,7 @@ export default function DashboardPage() {
           const chatId = String(cmd.chatId);
           if (!prev[chatId]) return prev;
           const next = { ...prev, [chatId]: prev[chatId].filter(m => String(m.id) !== String(cmd.msg.id)) };
-          localStorage.setItem('chatMessages', JSON.stringify(next));
+          safeSetItem('chatMessages', next);
           return next;
         });
       }
@@ -604,7 +838,7 @@ export default function DashboardPage() {
       socketRef.current?.emit('clearChat', { to: t.chatId, forEveryone: false });
       setMessages(prev => {
         const next = { ...prev, [String(t.chatId)]: [] };
-        localStorage.setItem('chatMessages', JSON.stringify(next));
+        safeSetItem('chatMessages', next);
         return next;
       });
     }
@@ -690,7 +924,7 @@ function formatTime(value) {
     );
 
     const updated = { ...prev, [chat.id]: updatedChat };
-    localStorage.setItem('chatMessages', JSON.stringify(updated));
+    safeSetItem('chatMessages', updated);
     return updated;
   });
 }, []);
@@ -768,6 +1002,14 @@ useEffect(() => {
 useEffect(() => {
   mobileChatOpenRef.current = mobileChatOpen;
 }, [mobileChatOpen]);
+
+// Never leave the mobile chat overlay open without a selected chat,
+// otherwise the panel leaks into the "Select a chat" empty state.
+useEffect(() => {
+  if (isMobileRef.current && !selectedChat?.id && !selectedGroup?.id) {
+    setMobileChatOpen(false);
+  }
+}, [selectedChat?.id, selectedGroup?.id, isMobile]);
 
 useEffect(() => {
   isMobileRef.current = isMobile;
@@ -986,8 +1228,18 @@ const handleCapturePhoto = () => {
 
   // Set captured photo
   setCapturedPhoto(photoDataUrl);
-  setShowCameraModal(false);
+  setCaption('');
   console.log('✅ Photo captured');
+};
+
+// Close the camera modal and release the stream
+const handleCloseCamera = () => {
+  const stream = videoRef.current?.srcObject;
+  if (stream) stream.getTracks().forEach(track => track.stop());
+  videoRef.current = null;
+  setShowCameraModal(false);
+  setCapturedPhoto(null);
+  setCaption('');
 };
 
 // Send photo
@@ -996,47 +1248,92 @@ const handleSendPhoto = () => {
     alert('Not logged in');
     return;
   }
-  if (!capturedPhoto || !selectedChat || !socket) return;
+  if (!capturedPhoto || !socket) return;
+  const isGroup = !!selectedGroup;
+  if (!isGroup && !selectedChat) return;
 
   const messageText = caption;
   const tempId = `photo-${Date.now()}-${Math.random()}`;
 
-  socket.emit('sendMessage', {
-    to: selectedChat.id,
-    message: messageText,
-    file: capturedPhoto,
-    fileName: 'photo.jpg',
-    fileType: 'image/jpeg', // ✅ Send fileType
-    from: user.id,
-    fromName: user.name,
-    fromPhoto: selectedChat.photo,
-    messageId: tempId  // ✅ Now valid
-  });
+  if (isGroup) {
+    socket.emit('sendGroupMessage', {
+      groupId: selectedGroup.id,
+      message: messageText,
+      file: capturedPhoto,
+      fileName: 'photo.jpg',
+      fileType: 'image/jpeg',
+      from: user.id,
+      fromName: user.name,
+      timestamp: Date.now(),
+      messageId: tempId,
+    });
 
-  // In handleSendPhoto
-setMessages(prev => {
-  const updated = {
-    ...prev,
-    [selectedChat.id]: [
-      ...(prev[selectedChat.id] || []),
-      {
-        id: tempId,
-        text: messageText,
-        sender: 'You',
-        timestamp: Date.now(),
-        file: capturedPhoto,
-        fileName: 'photo.jpg',
-        fileType: 'image/jpeg',
-        delivered: false,
-        read: false
+    setGroupMessages(prev => ({
+      ...prev,
+      [selectedGroup.id]: [
+        ...(prev[selectedGroup.id] || []),
+        {
+          id: tempId,
+          text: messageText,
+          sender: 'You',
+          senderId: user.id,
+          timestamp: Date.now(),
+          file: capturedPhoto,
+          fileName: 'photo.jpg',
+          fileType: 'image/jpeg',
+          delivered: false,
+          read: false,
+        },
+      ],
+    }));
+
+    setGroupsList(prev => {
+      const exists = prev.some(g => String(g.id) === String(selectedGroup.id));
+      return exists ? prev.map(g =>
+        String(g.id) === String(selectedGroup.id)
+          ? { ...g, lastMsg: 'You: 📷 Photo', lastTime: Date.now() }
+          : g
+      ) : prev;
+    });
+  } else {
+    socket.emit('sendMessage', {
+      to: selectedChat.id,
+      message: messageText,
+      file: capturedPhoto,
+      fileName: 'photo.jpg',
+      fileType: 'image/jpeg', // ✅ Send fileType
+      from: user.id,
+      fromName: user.name,
+      fromPhoto: selectedChat.photo,
+      messageId: tempId  // ✅ Now valid
+    });
+
+    setMessages(prev => {
+      const updated = {
+        ...prev,
+        [selectedChat.id]: [
+          ...(prev[selectedChat.id] || []),
+          {
+            id: tempId,
+            text: messageText,
+            sender: 'You',
+            timestamp: Date.now(),
+            file: capturedPhoto,
+            fileName: 'photo.jpg',
+            fileType: 'image/jpeg',
+            delivered: false,
+            read: false
+          }
+        ]
+      };
+      try {
+        safeSetItem('chatMessages', updated);
+      } catch (err) {
+        console.warn('chatMessages quota exceeded', err);
       }
-    ]
-  };
-  // ✅ Persist to localStorage
-  localStorage.setItem('chatMessages', JSON.stringify(updated));
-  return updated;
-});
-
+      return updated;
+    });
+  }
 
   // Reset
   setCapturedPhoto(null);
@@ -1090,7 +1387,7 @@ const handleFileChange = (e) => {
           }
         ]
       };
-      localStorage.setItem('chatMessages', JSON.stringify(updated));
+      safeSetItem('chatMessages', updated);
       return updated;
     });
 
@@ -1110,6 +1407,8 @@ const recStreamRef = useRef(null);
 const recChunksRef = useRef([]);
 const recCancelRef = useRef(false);
 const voiceTargetRef = useRef(null);
+const recSecondsRef = useRef(0);
+const recStartYRef = useRef(0);
 
 const startVoiceRecord = (e) => {
   e?.preventDefault();
@@ -1121,6 +1420,7 @@ const startVoiceRecord = (e) => {
       : null;
   if (!target) return;
   voiceTargetRef.current = target;
+  recStartYRef.current = e?.clientY ?? 0;
   (async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -1135,7 +1435,7 @@ const startVoiceRecord = (e) => {
       rec.ondataavailable = (ev) => { if (ev.data && ev.data.size > 0) recChunksRef.current.push(ev.data); };
       rec.onstop = () => {
         const audioBlob = new Blob(recChunksRef.current, { type: mimeType || 'audio/webm' });
-        const durSec = Math.max(1, recDuration || 1);
+        const durSec = Math.max(1, recSecondsRef.current || 1);
         recStreamRef.current?.getTracks().forEach(t => t.stop());
         recStreamRef.current = null;
         recorderRef.current = null;
@@ -1145,7 +1445,8 @@ const startVoiceRecord = (e) => {
       rec.start();
       setMobileRecording(true);
       setRecDuration(0);
-      recTimerRef.current = setInterval(() => setRecDuration(d => d + 1), 1000);
+      recSecondsRef.current = 0;
+      recTimerRef.current = setInterval(() => { recSecondsRef.current += 1; setRecDuration(d => d + 1); }, 1000);
     } catch (err) {
       console.error('Mic error', err);
       alert('Microphone not available. Recording requires permission.');
@@ -1153,8 +1454,17 @@ const startVoiceRecord = (e) => {
   })();
 };
 
+const cancelVoiceRecord = () => {
+  recCancelRef.current = true;
+  stopVoiceRecord();
+};
+
 const stopVoiceRecord = (e) => {
   e?.preventDefault();
+  // Swipe up to cancel (mobile): pointer moved more than 70px above start point.
+  if (e && typeof e.clientY === 'number' && recStartYRef.current && (recStartYRef.current - e.clientY) > 70) {
+    recCancelRef.current = true;
+  }
   if (recTimerRef.current) { clearInterval(recTimerRef.current); recTimerRef.current = null; }
   setMobileRecording(false);
   if (recorderRef.current && recorderRef.current.state !== 'inactive') {
@@ -1236,7 +1546,7 @@ const sendVoiceBlob = (blob, durSec) => {
           },
         ],
       };
-      localStorage.setItem('chatMessages', JSON.stringify(updated));
+      safeSetItem('chatMessages', updated);
       return updated;
     });
     setDesktopDraft('');
@@ -1284,6 +1594,7 @@ const cleanupCall = (soft) => {
   signalingRoleRef.current = '';
   callIdRef.current = null;
   callPeerIdRef.current = null;
+  clearGroupCallState();
   if (!soft) setActiveCall(null);
 };
 useEffect(() => () => cleanupCall(true), []);
@@ -1327,6 +1638,66 @@ const createPeer = () => {
     }
   };
   return pc;
+};
+
+// ------------------ Group call mesh ------------------
+const createGroupPeer = (peerId) => {
+  const pc = new RTCPeerConnection({
+    iceServers: [
+      { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+    ],
+  });
+  pc.onicecandidate = (e) => {
+    if (e.candidate && peerId && callIdRef.current) {
+      socket.emit('rtc:ice', {
+        to: peerId,
+        callId: callIdRef.current,
+        candidate: e.candidate.toJSON(),
+      });
+    }
+  };
+  pc.ontrack = (e) => {
+    const stream = e.streams[0] || new MediaStream([e.track]);
+    groupStreamsRef.current[peerId] = stream;
+    setGroupTiles({ ...groupStreamsRef.current });
+  };
+  pc.onconnectionstatechange = () => {
+    if (['failed', 'disconnected'].includes(pc.connectionState)) {
+      delete groupStreamsRef.current[peerId];
+      setGroupTiles({ ...groupStreamsRef.current });
+    }
+  };
+  return pc;
+};
+
+// Join a group peer. Offerers connect/renegotiate to the newcomer; the
+// newcomer (joiner) only answers so two sides never glare on the same pair.
+const connectToGroupPeer = async (peerId, asOfferer = true) => {
+  if (!localStreamRef.current || String(peerId) === String(user.id)) return;
+  if (groupPeersRef.current[peerId]) return;
+  const pc = createGroupPeer(peerId);
+  groupPeersRef.current[peerId] = pc;
+  try {
+    addLocalTracks(pc, localStreamRef.current);
+    if (asOfferer) {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      if (callIdRef.current) {
+        socket.emit('rtc:offer', { to: peerId, callId: callIdRef.current, sdp: pc.localDescription });
+      }
+    }
+  } catch (err) {
+    console.error('group connect error', err);
+  }
+};
+
+const clearGroupCallState = () => {
+  Object.values(groupPeersRef.current).forEach((pc) => { try { pc.close(); } catch (err) {} });
+  groupPeersRef.current = {};
+  Object.values(groupStreamsRef.current).forEach((s) => { try { s.getTracks().forEach((t) => t.stop()); } catch (err) {} });
+  groupStreamsRef.current = {};
+  setGroupTiles({});
+  setGroupCallPage(0);
 };
 
 const getMediaStream = async (video) => {
@@ -1396,6 +1767,11 @@ const sendOffer = async () => {
 
 const startCall = async (type, chat) => {
   if (!socket || !chat) return;
+  // Group chat (has a members roster) -> mesh group call.
+  if (Array.isArray(chat.members) && chat.members.length > 0) {
+    await startGroupCall(type, chat);
+    return;
+  }
   const callId = `call-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
   const peer = chat.photo && !chat.photo.includes('placeholder') ? chat.photo : 'https://via.placeholder.com/50';
   callPeerIdRef.current = String(chat.id);
@@ -1438,9 +1814,77 @@ const startCall = async (type, chat) => {
   }, 30000);
 };
 
+// Rings every member. Roster peers wire up over rtc:offer/answer on the fly.
+const startGroupCall = async (type, group) => {
+  if (!socket) return;
+  const callId = `gcall-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  const memberIds = (group.members || [])
+    .map((m) => String(((m && (m._id || m.id)) || m) || ''))
+    .filter((x) => x && String(x) !== String(user.id));
+  callIdRef.current = callId;
+  callPeerIdRef.current = null;
+  callStartAtRef.current = Date.now();
+  try {
+    const stream = await getMediaStream(type === 'video');
+    localStreamRef.current = stream;
+    if (type === 'video') initLocalVideo();
+  } catch (err) {
+    alert('Microphone/camera not available to start the call.');
+    return;
+  }
+  socket.emit('call:inviteGroup', {
+    groupId: group.id,
+    type,
+    callId,
+    name: group.name,
+    photo: user.photo || '',
+    memberIds,
+  });
+  setActiveCall({
+    mode: 'outgoing',
+    type,
+    callId,
+    group: true,
+    groupId: group.id,
+    peerId: null,
+    peerName: group.name,
+    peerPhoto: group.dp || 'https://via.placeholder.com/50',
+    callerId: user.id,
+  });
+  // Nobody joined within 30s -> cancel the ring (logs a missed group call).
+  peekReminderRef.current = setTimeout(() => {
+    if (
+      activeCallRef.current?.mode === 'outgoing' &&
+      activeCallRef.current?.group &&
+      String(activeCallRef.current.callId) === String(callId) &&
+      Object.keys(groupPeersRef.current).length === 0
+    ) {
+      socket.emit('call:groupTimeout', { groupId: group.id, callId, type, callerName: user.name });
+      cleanupCall(false);
+      loadCalls();
+    }
+  }, 30000);
+};
+
 const acceptCall = async () => {
   if (!activeCall) return;
   const call = activeCall;
+  if (call.group) {
+    callIdRef.current = call.callId;
+    callStartAtRef.current = Date.now();
+    try {
+      const stream = localStreamRef.current || (await getMediaStream(call.type === 'video'));
+      localStreamRef.current = stream;
+      if (call.type === 'video') initLocalVideo();
+    } catch (err) {
+      alert('Media could not be started (allow camera/microphone).');
+      cleanupCall(false);
+      return;
+    }
+    socket.emit('call:acceptGroup', { to: String(call.callerId), callId: call.callId, type: call.type });
+    setActiveCall({ ...call, mode: 'active' });
+    return;
+  }
   const peerId = String(call.peerId);
   callPeerIdRef.current = peerId;
   callIdRef.current = call.callId;
@@ -1462,23 +1906,35 @@ const acceptCall = async () => {
 
 const rejectCall = () => {
   if (activeCall) {
-    socket.emit('call:reject', {
-      to: String(activeCall.peerId),
-      callId: activeCall.callId,
-      type: activeCall.type,
-    });
+    if (!activeCall.group) {
+      socket.emit('call:reject', {
+        to: String(activeCall.peerId),
+        callId: activeCall.callId,
+        type: activeCall.type,
+      });
+    }
   }
   cleanupCall(false);
 };
 
 const hangupCall = () => {
   if (activeCall) {
-    socket.emit('call:end', {
-      to: String(activeCall.peerId),
-      callId: activeCall.callId,
-      type: activeCall.type,
-      durationSec: callElapsed(),
-    });
+    if (activeCall.group) {
+      socket.emit('call:groupEnd', {
+        groupId: activeCall.groupId,
+        callId: activeCall.callId,
+        type: activeCall.type,
+        durationSec: callElapsed(),
+        callerName: user.name,
+      });
+    } else {
+      socket.emit('call:end', {
+        to: String(activeCall.peerId),
+        callId: activeCall.callId,
+        type: activeCall.type,
+        durationSec: callElapsed(),
+      });
+    }
   }
   cleanupCall(false);
   loadCalls();
@@ -1590,6 +2046,13 @@ useEffect(() => {
 
   const onAccepted = (data) => {
     if (!activeCallRef.current || String(activeCallRef.current.callId) !== String(data.callId)) return;
+    // Group call: the caller just needs to flip to active; peer wiring happens
+    // via call:memberJoined / call:groupJoined as members come in.
+    if (activeCallRef.current.group) {
+      setActiveCall((prev) => (prev ? { ...prev, mode: 'active' } : prev));
+      if (activeCallRef.current?.type === 'video') initLocalVideo();
+      return;
+    }
     if (!pcRef.current) {
       // Wire the 3GPP-local stream into the peer connection.
       if (localStreamRef.current) {
@@ -1607,6 +2070,28 @@ useEffect(() => {
 
   const onOffer = async (data) => {
     if (callIdRef.current && String(data.callId) !== String(callIdRef.current)) return;
+    if (activeCallRef.current?.group) {
+      let pc = groupPeersRef.current[data.from];
+      if (!pc) {
+        if (!localStreamRef.current) {
+          localStreamRef.current = await getMediaStream(activeCallRef.current?.type === 'video').catch(() => null);
+        }
+        if (!localStreamRef.current) return;
+        pc = createGroupPeer(data.from);
+        groupPeersRef.current[data.from] = pc;
+        addLocalTracks(pc, localStreamRef.current);
+        if (activeCallRef.current?.type === 'video') initLocalVideo();
+      }
+      try {
+        await pc.setRemoteDescription(data.sdp);
+        const ans = await pc.createAnswer();
+        await pc.setLocalDescription(ans);
+        socket.emit('rtc:answer', { to: data.from, callId: data.callId, sdp: pc.localDescription });
+      } catch (err) {
+        console.error('group answer error', err);
+      }
+      return;
+    }
     if (!pcRef.current) {
       if (!localStreamRef.current) {
         localStreamRef.current = await getMediaStream(activeCallRef.current?.type === 'video').catch(() => null);
@@ -1621,16 +2106,72 @@ useEffect(() => {
 
   const onAnswer = (data) => {
     if (String(data.callId) !== String(callIdRef.current)) return;
+    if (activeCallRef.current?.group) {
+      try { groupPeersRef.current[data.from]?.setRemoteDescription(data.sdp); } catch (err) { console.error('group answer set error', err); }
+      return;
+    }
     handleRemoteAnswer(data.sdp);
   };
 
   const onIce = (data) => {
     if (String(data.callId) !== String(callIdRef.current)) return;
+    if (activeCallRef.current?.group) {
+      try { groupPeersRef.current[data.from]?.addIceCandidate(data.candidate); } catch (err) {}
+      return;
+    }
     try {
       pcRef.current?.addIceCandidate(data.candidate);
     } catch (err) {
       console.error('ice error', err);
     }
+  };
+
+  // ---- Group-call events ----
+  const onGroupIncoming = (data) => {
+    if (activeCallRef.current) {
+      s.emit('call:reject', { to: data.from, callId: data.callId, type: data.type });
+      return;
+    }
+    callIdRef.current = data.callId;
+    callStartAtRef.current = Date.now();
+    getMediaStream(data.type === 'video').then((stream) => {
+      if (String(callIdRef.current) === String(data.callId)) {
+        localStreamRef.current = stream;
+        if (data.type === 'video') initLocalVideo();
+      }
+    }).catch(() => {});
+    setActiveCall({
+      mode: 'incoming',
+      type: data.type,
+      callId: data.callId,
+      group: true,
+      groupId: data.groupId,
+      callerId: String(data.from),
+      peerId: null,
+      peerName: data.groupName || 'Group call',
+      peerPhoto: data.fromPhoto || 'https://via.placeholder.com/50',
+    });
+  };
+
+  const onGroupJoined = (data) => {
+    if (String(data.callId) !== String(callIdRef.current)) return;
+    // This member just joined: answer offers from existing participants.
+    (data.members || []).forEach((m) => connectToGroupPeer(String(m.id), false));
+  };
+
+  const onMemberJoined = (data) => {
+    if (String(data.callId) !== String(callIdRef.current)) return;
+    if (String(data.userId) === String(user.id)) return;
+    // Someone joined mid-call: we (an existing participant) offer to them.
+    connectToGroupPeer(String(data.userId), true);
+  };
+
+  const onMemberLeft = (data) => {
+    if (String(data.callId) !== String(callIdRef.current)) return;
+    try { groupPeersRef.current[data.userId]?.close(); } catch (err) {}
+    delete groupPeersRef.current[data.userId];
+    delete groupStreamsRef.current[data.userId];
+    setGroupTiles({ ...groupStreamsRef.current });
   };
 
   const onRejected = (data) => {
@@ -1666,6 +2207,10 @@ useEffect(() => {
   s.on('call:timedOut', onTimedOut);
   s.on('call:state', onState);
   s.on('call:historyUpdated', loadCalls);
+  s.on('call:groupIncoming', onGroupIncoming);
+  s.on('call:groupJoined', onGroupJoined);
+  s.on('call:memberJoined', onMemberJoined);
+  s.on('call:memberLeft', onMemberLeft);
 
   // Elapsed-time counter for ongoing calls.
   callTimerRef.current = setInterval(() => {
@@ -1688,6 +2233,10 @@ useEffect(() => {
     s.off('call:timedOut', onTimedOut);
     s.off('call:state', onState);
     s.off('call:historyUpdated', loadCalls);
+    s.off('call:groupIncoming', onGroupIncoming);
+    s.off('call:groupJoined', onGroupJoined);
+    s.off('call:memberJoined', onMemberJoined);
+    s.off('call:memberLeft', onMemberLeft);
     if (callTimerRef.current) { clearInterval(callTimerRef.current); callTimerRef.current = null; }
   };
 }, [socket]);
@@ -1852,7 +2401,7 @@ newSocket.on('messageDelivered', ({ chatId, messageId }) => {
       msg.id === messageId ? { ...msg, delivered: true } : msg
     );
     const updated = { ...prev, [chatId]: updatedChat };
-    localStorage.setItem('chatMessages', JSON.stringify(updated));
+    safeSetItem('chatMessages', updated);
     return updated;
   });
 });
@@ -1937,7 +2486,7 @@ newSocket.on("receiveMessage", (data) => {
         };
 
         const updated = { ...prev, [senderId]: updatedChat };
-        localStorage.setItem('chatMessages', JSON.stringify(updated));
+        safeSetItem('chatMessages', updated);
         return updated;
       }
     }
@@ -1973,7 +2522,7 @@ newSocket.on("receiveMessage", (data) => {
 
     const updatedChat = [...chat, newMessage];
     const updated = { ...prev, [senderId]: updatedChat };
-    localStorage.setItem('chatMessages', JSON.stringify(updated));
+    safeSetItem('chatMessages', updated);
     if (autoRead) {
       newSocket.emit('markAsRead', { chatId: senderId, readerId: user.id });
     }
@@ -2041,7 +2590,7 @@ newSocket.on("receiveMessage", (data) => {
         msg.sender === 'You' ? { ...msg, delivered: true, read: true } : msg
       );
       const updated = { ...prev, [chatId]: updatedChat };
-      localStorage.setItem('chatMessages', JSON.stringify(updated));
+      safeSetItem('chatMessages', updated);
       return updated;
     });
     });
@@ -2230,7 +2779,7 @@ newSocket.on("receiveMessage", (data) => {
             });
             next[cid] = filtered;
           });
-          if (changed) localStorage.setItem('chatMessages', JSON.stringify(next));
+          if (changed) safeSetItem('chatMessages', next);
           return changed ? next : prev;
         });
       });
@@ -2241,7 +2790,7 @@ newSocket.on("receiveMessage", (data) => {
           const key = to !== undefined && to !== null ? String(to) : null;
           if (key !== null && prev[key]) {
             const next = { ...prev, [key]: [] };
-            localStorage.setItem('chatMessages', JSON.stringify(next));
+            safeSetItem('chatMessages', next);
             return next;
           }
           return prev;
@@ -2301,7 +2850,7 @@ newSocket.on("receiveMessage", (data) => {
                           ? 'You: '
                           : ((contacts.find(c => String(c.id) === String(g.lastMessage.from))?.name || g.lastMessage.fromName) + ': ')) +
                           (g.lastMessage.file
-                            ? (g.lastMessage.fileType?.startsWith('image/') ? '[Photo]' : '[File]')
+                            ? (g.lastMessage.fileType?.startsWith('image/') ? '[Photo]' : g.lastMessage.fileType?.startsWith('audio/') ? '🎤 Voice message' : '[File]')
                             : (g.lastMessage.text || ''))
                       : `${g.members?.length || 0} members`,
                     lastTime: g.lastMessage?.timestamp || null,
@@ -2557,7 +3106,7 @@ newSocket.on("receiveMessage", (data) => {
                   if (messages.undefined && !messages[userId]) {
                     messages[userId] = messages.undefined;
                     delete messages.undefined;
-                    localStorage.setItem('chatMessages', JSON.stringify(messages));
+                    safeSetItem('chatMessages', messages);
                     setMessages(messages);
                   } else {
                     setMessages(messages);
@@ -3075,7 +3624,7 @@ newSocket.on("receiveMessage", (data) => {
             let preview = '';
             if (previewMsg) {
               if (previewMsg.file) {
-                preview = previewMsg.fileType?.startsWith('image/') ? '[Photo]' : '[File]';
+                preview = previewMsg.fileType?.startsWith('image/') ? '[Photo]' : previewMsg.fileType?.startsWith('audio/') ? '🎤 Voice message' : '[File]';
               } else if (previewMsg.text) {
                 preview = truncate(previewMsg.text);
               }
@@ -3135,7 +3684,7 @@ newSocket.on("receiveMessage", (data) => {
                       ? 'You'
                       : contacts.find(c => String(c.id) === String(previewMsg.senderId))?.name || previewMsg.sender || 'Member';
                     if (previewMsg.file) {
-                      preview = previewMsg.fileType?.startsWith('image/') ? '[Photo]' : '[File]';
+                      preview = previewMsg.fileType?.startsWith('image/') ? '[Photo]' : previewMsg.fileType?.startsWith('audio/') ? '🎤 Voice message' : '[File]';
                     } else if (previewMsg.text) {
                       preview = truncate(previewMsg.text);
                     }
@@ -3255,10 +3804,10 @@ newSocket.on("receiveMessage", (data) => {
                 })()}
 {activeTab === 'calls' && calls.map(call => (
                   <div key={call.id} className="chat-item" style={{ cursor: 'pointer' }}>
-                    <img src={call.photo || 'https://via.placeholder.com/50'} alt={call.name} />
+                    <img src={call.groupId ? 'https://via.placeholder.com/50/4a00e0/fff?text=G' : (call.photo || 'https://via.placeholder.com/50')} alt={call.name} />
                     <div className="chat-info">
-                      <h4>{call.name}</h4>
-                      <p><span className={`call-dir ${call.direction === 'missed' ? 'missed' : ''}`}>{call.direction === 'outgoing' ? '↗' : call.direction === 'missed' ? '↘' : '↙'}</span> {call.direction === 'outgoing' ? 'Outgoing' : call.direction === 'missed' ? 'Missed' : 'Incoming'} {call.video ? 'video' : 'voice'} call{call.durationSec ? ` • ${fmtCallTime(call.durationSec)}` : ''}</p>
+                      <h4>{call.groupId ? (groupsList.find(g => String(g.id) === String(call.groupId))?.name || 'Group call') : call.name}</h4>
+                      <p><span className={`call-dir ${call.direction === 'missed' ? 'missed' : ''}`}>{call.direction === 'outgoing' ? '↗' : call.direction === 'missed' ? '↘' : '↙'}</span> {call.direction === 'outgoing' ? 'Outgoing' : call.direction === 'missed' ? 'Missed' : 'Incoming'} {call.video ? 'video' : 'voice'} {call.groupId ? 'group ' : ''}call{call.durationSec ? ` • ${fmtCallTime(call.durationSec)}` : ''}</p>
                       {call.time && <small style={{ color: '#888', fontSize: '0.75rem' }}>{new Date(call.time).toLocaleString()}</small>}
                     </div>
                   </div>
@@ -3645,6 +4194,21 @@ newSocket.on("receiveMessage", (data) => {
                     marginRight: '15px',
                   }}
                 >
+                  <button
+                        className="mobile-header-call"
+                        onClick={() => startCall('voice', selectedGroup)}
+                        aria-label="Call"
+                      >
+                        <Phone size={20} strokeWidth={2.2} />
+                      </button>
+                      <button
+                        className="mobile-header-video"
+                        onClick={() => startCall('video', selectedGroup)}
+                        aria-label="Video call"
+                      >
+                        <Video size={21} strokeWidth={2.2} />
+                      </button>
+
                   {chatSearchOpen ? (
                     <div
                       className="search-in-chat"
@@ -3692,21 +4256,6 @@ newSocket.on("receiveMessage", (data) => {
                       <Search size={18} />
                     </button>
                   )}
-
-                  <button
-                        className="mobile-header-call"
-                        onClick={() => startCall('voice', { id: selectedGroup.id, name: selectedGroup.name, photo: selectedGroup.dp })}
-                        aria-label="Call"
-                      >
-                        <Phone size={20} strokeWidth={2.2} />
-                      </button>
-                      <button
-                        className="mobile-header-video"
-                        onClick={() => startCall('video', { id: selectedGroup.id, name: selectedGroup.name, photo: selectedGroup.dp })}
-                        aria-label="Video call"
-                      >
-                        <Video size={21} strokeWidth={2.2} />
-                      </button>
 
                   <button
                     className="menu-btn group-menu-btn"
@@ -3914,8 +4463,27 @@ newSocket.on("receiveMessage", (data) => {
                     No group messages yet. Say hello!
                   </div>
                 )}
-                {groupMsgs.map((msg) => {
-                  const isMatch =
+                {(() => {
+                  const grpCalls = (calls || []).filter(c => String(c.groupId) === String(selectedGroup.id));
+                  const grpEntries = [
+                    ...groupMsgs.map(m => ({ kind: 'msg', msg: m, t: Number(m.timestamp) || 0 })),
+                    ...grpCalls.map(c => ({ kind: 'call', call: c, t: Number(c.time) || Number(c.timestamp) || 0 })),
+                  ].sort((a, b) => a.t - b.t);
+                  return grpEntries.map((entry) => {
+                    if (entry.kind === 'call') {
+                      const c = entry.call;
+                      return (
+                        <div key={`gcall-${c.id || c._id || entry.t}`} className={`call-history-row ${c.direction === 'missed' ? 'missed' : ''}`}>
+                          <span className="call-history-icon">{c.video ? '📹' : '📞'}</span>
+                          <span className="call-history-text">
+                            {c.video ? 'Video call' : 'Voice call'}
+                          </span>
+                          <span className="call-history-time">{formatCallDate(c.time || c.timestamp)}</span>
+                        </div>
+                      );
+                    }
+                    const msg = entry.msg;
+                    const isMatch =
                     chatSearchQuery &&
                     msg.text?.toLowerCase().includes(chatSearchQuery.toLowerCase());
                   const isCurrentMatch =
@@ -4107,9 +4675,9 @@ newSocket.on("receiveMessage", (data) => {
                         </div>
                       )}
 
-                      {!msg.file && msg.text && (
-                        <div style={{ wordBreak: 'break-word' }}>{msg.text}</div>
-                      )}
+{!msg.file && msg.text && (
+            <div style={{ wordBreak: 'break-word' }}>{linkify(msg.text)}</div>
+          )}
 
                       {msg.file && msg.fileType?.startsWith('image/') && (
                         <div
@@ -4151,7 +4719,17 @@ newSocket.on("receiveMessage", (data) => {
                         <VoiceBubble msg={msg} />
                       )}
 
-                      {msg.file && !msg.fileType?.startsWith('image/') && !msg.fileType?.startsWith('audio/') && (
+                      {/* Video: render inline instead of a file card */}
+                      {msg.file && msg.fileType?.startsWith('video/') && (
+                        <video
+                          src={msg.file}
+                          controls
+                          className="chat-inline-video"
+                          preload="metadata"
+                        />
+                      )}
+
+                      {msg.file && !msg.fileType?.startsWith('image/') && !msg.fileType?.startsWith('audio/') && !msg.fileType?.startsWith('video/') && (
                         <div
                           style={{
                             display: 'flex',
@@ -4229,15 +4807,14 @@ newSocket.on("receiveMessage", (data) => {
                         <span className="timestamp">{formatTime(msg.timestamp)}</span>
                         {isYou && (
                           <div className={`message-status ${msg.allRead ? 'read' : ''}`}>
-                            <span className="tick">
-                              {msg.allRead ? '✅' : msg.delivered ? '✓✓' : '✓'}
-                            </span>
+                            <WhatsAppTicks read={msg.allRead} delivered={msg.delivered} />
                           </div>
                         )}
                       </div>
                     </div>
                   );
-                })}
+                  });
+                  })()}
                 <div ref={messagesEndRef} />
               </div>
 
@@ -4348,13 +4925,18 @@ newSocket.on("receiveMessage", (data) => {
                   <>
                   <div className="mobile-input-row">
                     <form className="mobile-input-form" onSubmit={handleSendGroupMessage}>
-                      <input
+                      <textarea
                         ref={messageInputRef}
-                        type="text"
+                        rows={1}
+                        enterKeyHint="enter"
                         value={desktopDraft}
-                        onChange={(e) => setDesktopDraft(e.target.value)}
+                        onChange={(e) => {
+                          setDesktopDraft(e.target.value);
+                          e.target.style.height = 'auto';
+                          e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px';
+                        }}
                         placeholder={groupReplyTo ? 'Reply to message...' : 'Message'}
-                        required
+                        aria-label="Message"
                       />
                       <button
                         type="button"
@@ -4372,20 +4954,24 @@ newSocket.on("receiveMessage", (data) => {
                       >
                         <Camera size={22} strokeWidth={2.2} />
                       </button>
-                      <button type="submit" className="mobile-send-btn" aria-label="Send">
-                        ➤
-                      </button>
+                      {desktopDraft.trim() ? (
+                        <button type="submit" className="mobile-send-btn" aria-label="Send">
+                          ➤
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          className={`mobile-voice-btn ${mobileRecording ? 'recording' : ''}`}
+                          onPointerDown={(e) => { e.preventDefault(); setShowMobileAttach(false); startVoiceRecord(e); }}
+                          onPointerUp={(e) => { e.preventDefault(); stopVoiceRecord(e); }}
+                          onPointerCancel={(e) => { e.preventDefault(); stopVoiceRecord(e); }}
+                          onPointerLeave={(e) => { e.preventDefault(); stopVoiceRecord(e); }}
+                          aria-label="Hold to record"
+                        >
+                          {mobileRecording ? <span className="mobile-voice-btn-dot" /> : <Mic size={22} strokeWidth={2.2} />}
+                        </button>
+                      )}
                     </form>
-                    <button
-                      type="button"
-                      className={`mobile-voice-btn ${mobileRecording ? 'recording' : ''}`}
-                      onPointerDown={(e) => { e.preventDefault(); setShowMobileAttach(false); startVoiceRecord(e); }}
-                      onPointerUp={(e) => { e.preventDefault(); stopVoiceRecord(e); }}
-                      onPointerLeave={(e) => { e.preventDefault(); stopVoiceRecord(e); }}
-                      aria-label="Hold to record"
-                    >
-                      {mobileRecording ? <span className="mobile-voice-btn-dot" /> : <Mic size={22} strokeWidth={2.2} />}
-                    </button>
                   </div>
 
                   {groupReplyTo && (
@@ -4396,7 +4982,7 @@ newSocket.on("receiveMessage", (data) => {
                   )}
 
                   {mobileRecording && (
-                    <div className="mobile-recording-bar">🔴 Recording… {recDuration}s <small>(release to send)</small></div>
+                    <div className="mobile-recording-bar">🔴 Recording… {recDuration}s <small>(release to send · swipe up to cancel)</small><button type="button" className="rec-cancel-btn" onClick={cancelVoiceRecord}>Cancel</button></div>
                   )}
                   </>
                   )}
@@ -5010,7 +5596,7 @@ newSocket.on("receiveMessage", (data) => {
                   setMessages((prev) => {
                     const newMsgs = { ...prev };
                     delete newMsgs[selectedChat.id];
-                    localStorage.setItem('chatMessages', JSON.stringify(newMsgs));
+                    safeSetItem('chatMessages', newMsgs);
                     return newMsgs;
                   });
                   setSelectedChat(null);
@@ -5090,7 +5676,27 @@ newSocket.on("receiveMessage", (data) => {
 
     {/* Messages */}
     <div className="messages">
-      {chatMessages.map((msg) => {
+      {(() => {
+        const dmCalls = (calls || []).filter(c => String(c.userId) === String(selectedChat.id));
+        const dmEntries = [
+          ...chatMessages.map(m => ({ kind: 'msg', msg: m, t: Number(m.timestamp) || 0 })),
+          ...dmCalls.map(c => ({ kind: 'call', call: c, t: Number(c.time) || Number(c.timestamp) || 0 })),
+        ].sort((a, b) => a.t - b.t);
+        return dmEntries.map((entry) => {
+          if (entry.kind === 'call') {
+            const c = entry.call;
+            return (
+              <div key={`call-${c.id || c._id || entry.t}`} className={`call-history-row ${c.direction === 'missed' ? 'missed' : ''}`}>
+                <span className="call-history-icon">{c.video ? '📹' : '📞'}</span>
+                <span className="call-history-text">
+                  {c.video ? 'Video call' : 'Voice call'}
+                  {c.direction === 'missed' ? ' (missed)' : ''}
+                </span>
+                <span className="call-history-time">{formatCallDate(c.time || c.timestamp)}</span>
+              </div>
+            );
+          }
+          const msg = entry.msg;
         const isMatch =
           searchQuery &&
           msg.text?.toLowerCase().includes(searchQuery.toLowerCase());
@@ -5294,7 +5900,7 @@ newSocket.on("receiveMessage", (data) => {
             )}
 
             {/* Message Text */}
-            {!msg.file && msg.text && <div style={{ wordBreak: 'break-word' }}>{msg.text}</div>}
+            {!msg.file && msg.text && <div style={{ wordBreak: 'break-word' }}>{linkify(msg.text)}</div>}
 
             {/* Image */}
             {msg.file && msg.fileType?.startsWith('image/') && (
@@ -5338,8 +5944,18 @@ newSocket.on("receiveMessage", (data) => {
               <VoiceBubble msg={msg} />
             )}
 
+            {/* Video: render inline instead of a file card */}
+            {msg.file && msg.fileType?.startsWith('video/') && (
+              <video
+                src={msg.file}
+                controls
+                className="chat-inline-video"
+                preload="metadata"
+              />
+            )}
+
             {/* Document */}
-            {msg.file && !msg.fileType?.startsWith('image/') && !msg.fileType?.startsWith('audio/') && (
+            {msg.file && !msg.fileType?.startsWith('image/') && !msg.fileType?.startsWith('audio/') && !msg.fileType?.startsWith('video/') && (
               <div
                 style={{
                   display: 'flex',
@@ -5416,13 +6032,14 @@ newSocket.on("receiveMessage", (data) => {
               <span className="timestamp">{formatTime(msg.timestamp)}</span>
               {isYou && (
                 <div className={`message-status ${msg.read ? 'read' : ''}`}>
-                  <span className="tick">{msg.read ? '✅' : msg.delivered ? '✓✓' : '✓'}</span>
+                  <WhatsAppTicks read={msg.read} delivered={msg.delivered} />
                 </div>
               )}
             </div>
           </div>
         );
-      })}
+        });
+        })()}
       <div ref={messagesEndRef} />
     </div>
 
@@ -5434,13 +6051,18 @@ newSocket.on("receiveMessage", (data) => {
           <>
           <div className="mobile-input-row">
             <form className="mobile-input-form" onSubmit={handleSendMessage}>
-              <input
+              <textarea
                 ref={messageInputRef}
-                type="text"
+                rows={1}
+                enterKeyHint="enter"
                 value={desktopDraft}
-                onChange={(e) => setDesktopDraft(e.target.value)}
+                onChange={(e) => {
+                  setDesktopDraft(e.target.value);
+                  e.target.style.height = 'auto';
+                  e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px';
+                }}
                 placeholder={replyTo ? 'Reply to message...' : 'Message'}
-                required
+                aria-label="Message"
               />
               <button
                 type="button"
@@ -5458,20 +6080,24 @@ newSocket.on("receiveMessage", (data) => {
               >
                 <Camera size={22} strokeWidth={2.2} />
               </button>
-              <button type="submit" className="mobile-send-btn" aria-label="Send">
-                ➤
-              </button>
+              {desktopDraft.trim() ? (
+                <button type="submit" className="mobile-send-btn" aria-label="Send">
+                  ➤
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className={`mobile-voice-btn ${mobileRecording ? 'recording' : ''}`}
+                  onPointerDown={(e) => { e.preventDefault(); setShowMobileAttach(false); startVoiceRecord(e); }}
+                  onPointerUp={(e) => { e.preventDefault(); stopVoiceRecord(e); }}
+                  onPointerCancel={(e) => { e.preventDefault(); stopVoiceRecord(e); }}
+                  onPointerLeave={(e) => { e.preventDefault(); stopVoiceRecord(e); }}
+                  aria-label="Hold to record"
+                >
+                  {mobileRecording ? <span className="mobile-voice-btn-dot" /> : <Mic size={22} strokeWidth={2.2} />}
+                </button>
+              )}
             </form>
-            <button
-              type="button"
-              className={`mobile-voice-btn ${mobileRecording ? 'recording' : ''}`}
-              onPointerDown={(e) => { e.preventDefault(); setShowMobileAttach(false); startVoiceRecord(e); }}
-              onPointerUp={(e) => { e.preventDefault(); stopVoiceRecord(e); }}
-              onPointerLeave={(e) => { e.preventDefault(); stopVoiceRecord(e); }}
-              aria-label="Hold to record"
-            >
-              {mobileRecording ? <span className="mobile-voice-btn-dot" /> : <Mic size={22} strokeWidth={2.2} />}
-            </button>
           </div>
 
           {replyTo && (
@@ -5482,7 +6108,7 @@ newSocket.on("receiveMessage", (data) => {
           )}
 
           {mobileRecording && (
-            <div className="mobile-recording-bar">🔴 Recording… {recDuration}s <small>(release to send)</small></div>
+            <div className="mobile-recording-bar">🔴 Recording… {recDuration}s <small>(release to send · swipe up to cancel)</small><button type="button" className="rec-cancel-btn" onClick={cancelVoiceRecord}>Cancel</button></div>
           )}
           </>
           )}
@@ -5607,7 +6233,7 @@ newSocket.on("receiveMessage", (data) => {
         </form>
 
         {mobileRecording && (
-          <div className="mobile-recording-bar desktop">🔴 Recording… {recDuration}s <small>(release to send)</small></div>
+          <div className="mobile-recording-bar desktop">🔴 Recording… {recDuration}s <small>(release to send)</small><button type="button" className="rec-cancel-btn" onClick={cancelVoiceRecord}>Cancel</button></div>
         )}
 
         <input
@@ -6010,7 +6636,7 @@ newSocket.on("receiveMessage", (data) => {
 
 
   return (
-    <div className={`dashboard-layout ${isMobile && mobileChatOpen ? 'chat-open' : ''}`}>
+    <div className={`dashboard-layout ${isMobile && (mobileChatOpen || !!selectedChat?.id || !!selectedGroup?.id) ? 'chat-open' : ''}`}>
       <style
         dangerouslySetInnerHTML={{
           __html: `
@@ -6309,29 +6935,30 @@ setContacts(prev => {
       )
     ) : activeTab === 'statuses' ? (
       <div className="status-desktop-panel">
-        <div className="status-desktop-avatar">
-          <StatusAvatar src={myStatusPhoto} count={myStatuses.length} seen={false} size={110} />
-          {!myStatuses.length && (
-            <button
-              className="my-status-add"
-              onClick={() => setStatusAddSheet(true)}
-              aria-label="Add status"
-              style={{ width: 30, height: 30, fontSize: 20 }}
-            >
-              +
-            </button>
-          )}
-        </div>
         <h2>Share statuses</h2>
-        <p>Share photos, videos and text that disappear after 24 hours.....</p>
-        <div className="status-desktop-actions">
-          {myStatuses.length ? (
-            <>
-              <button className="status-desktop-btn" onClick={() => setStatusViewer({ userId: user.id, index: 0 })}>My Status</button>
-              <button className="status-desktop-btn alt" onClick={() => setStatusAddSheet(true)}>Add status</button>
-            </>
+      </div>
+    ) : activeTab === 'calls' ? (
+      <div className="calls-desktop-panel">
+        <div className="calls-desktop-list">
+          {calls.length === 0 ? (
+            <p className="calls-desktop-empty">No calls yet</p>
           ) : (
-            <button className="status-desktop-btn" onClick={() => setStatusAddSheet(true)}>Add status</button>
+            calls.map((call) => (
+              <div key={call.id} className="calls-desktop-item" style={{ cursor: 'pointer' }}>
+                <img src={call.groupId ? 'https://via.placeholder.com/50/4a00e0/fff?text=G' : (call.photo || 'https://via.placeholder.com/50')} alt={call.name} />
+                <div className="calls-desktop-info">
+                  <h4>{call.groupId ? (groupsList.find((g) => String(g.id) === String(call.groupId))?.name || 'Group call') : call.name}</h4>
+                  <p>
+                    <span className={`call-dir ${call.direction === 'missed' ? 'missed' : ''}`}>
+                      {call.direction === 'outgoing' ? '↗' : call.direction === 'missed' ? '↘' : '↙'}
+                    </span>{' '}
+                    {call.direction === 'outgoing' ? 'Outgoing' : call.direction === 'missed' ? 'Missed' : 'Incoming'} {call.video ? 'video' : 'voice'} {call.groupId ? 'group ' : ''}call
+                    {call.durationSec ? ` • ${fmtCallTime(call.durationSec)}` : ''}
+                  </p>
+                  <small>{call.time ? new Date(call.time).toLocaleString() : ''}</small>
+                </div>
+              </div>
+            ))
           )}
         </div>
       </div>
@@ -6685,27 +7312,46 @@ setContacts(prev => {
   </div>
 )}
 
-     {/* Camera Capture Modal */}
-{showCameraModal && !capturedPhoto && (
+{/* Camera Capture Modal */}
+{showCameraModal && (
   <div className="camera-modal-overlay">
     <div className="camera-modal">
-<div className="camera-header">
-        <button
-          onClick={goBackPage}
-          aria-label="Close camera"
-          style={{ background: 'transparent', border: 'none', color: '#075e54', fontWeight: 700, cursor: 'pointer' }}
-        >
-          x
-        </button>
-        <h3 style={{ fontSize: '18px', color: '#075e54' }}>Take a Photo</h3>
-        <div style={{ width: 24 }} />
-      </div>
-      <div className="camera-container">
-        <video ref={videoRef} autoPlay playsInline />
-      </div>
-      <div className="camera-footer">
-        <button onClick={handleCapturePhoto} className="capture-btn" aria-label="Capture photo">Capture</button>
-      </div>
+      {!capturedPhoto ? (
+        <>
+          <div className="camera-header">
+            <button
+              onClick={handleCloseCamera}
+              aria-label="Close camera"
+              className="camera-header-x"
+            >
+              ✕
+            </button>
+            <h3 style={{ fontSize: '18px', color: '#075e54' }}>Take a Photo</h3>
+            <div style={{ width: 24 }} />
+          </div>
+          <div className="camera-container">
+            <video ref={videoRef} autoPlay playsInline />
+          </div>
+          <div className="camera-footer">
+            <button onClick={handleCapturePhoto} className="capture-btn" aria-label="Capture photo">Capture</button>
+          </div>
+        </>
+      ) : (
+        <div className="camera-preview-container">
+          <img src={capturedPhoto} alt="Captured photo" />
+          <div className="camera-preview-footer">
+            <button onClick={handleOpenCamera} className="camera-back-btn" aria-label="Retake photo">Back</button>
+            <input
+              type="text"
+              value={caption}
+              onChange={(e) => setCaption(e.target.value)}
+              placeholder="Add a caption..."
+              className="camera-caption-input"
+            />
+            <button onClick={handleSendPhoto} className="camera-send-btn" aria-label="Send photo">➤</button>
+          </div>
+        </div>
+      )}
     </div>
   </div>
 )}
@@ -6828,13 +7474,14 @@ setContacts(prev => {
     {calls.length === 0 && <p style={{ padding: '12px 16px', color: '#8a8f99', fontSize: '0.9rem' }}>No calls yet</p>}
     {calls.map(call => (
       <div key={call.id} className="call-item" style={{ cursor: 'pointer' }}>
-        <img src={call.photo || 'https://via.placeholder.com/50'} alt={call.name} />
+        <img src={call.groupId ? 'https://via.placeholder.com/50/4a00e0/fff?text=G' : (call.photo || 'https://via.placeholder.com/50')} alt={call.name} />
        <div className="call-info">
-  <h4>{call.name}</h4>
+  <h4>{call.groupId ? (groupsList.find(g => String(g.id) === String(call.groupId))?.name || 'Group call') : call.name}</h4>
   <p>
     {call.direction === 'incoming' && 'Incoming'}
     {call.direction === 'outgoing' && 'Outgoing'}
     {call.direction === 'missed' && 'Missed'}
+    {call.groupId ? ' group' : ''}
     {call.video && ' Video'}
   </p>
   <small style={{ color: '#888', fontSize: '0.9rem' }}>{call.time ? new Date(call.time).toLocaleString() : ''}{call.durationSec ? ` • ${fmtCallTime(call.durationSec)}` : ''}</small>
@@ -7237,7 +7884,14 @@ setContacts(prev => {
     </div>
     <video ref={statusVideoRef} autoPlay playsInline className="status-camera-video" />
     <div className="status-camera-bottom">
-      <div className="status-capture-btn" onClick={captureStatusPhoto} aria-label="Capture photo" />
+      <div className={`status-capture-btn ${statusRecording ? 'recording' : ''}`} onPointerDown={statusCapturePointerDown} onPointerUp={statusCapturePointerUp} onPointerLeave={statusCapturePointerUp} aria-label="Tap photo, hold to record video" />
+      <div className="status-camera-hint">
+        {statusRecording ? (
+          <span className="status-rec-live"><span className="status-rec-dot" /> Recording {statusRecordSec}s</span>
+        ) : (
+          'Tap for photo · hold for video'
+        )}
+      </div>
     </div>
   </div>
 )}
@@ -7268,7 +7922,11 @@ setContacts(prev => {
       <button onClick={() => setStatusCapture(null)}>Cancel</button>
       <button className="status-composer-send" onClick={sendStatusImage}>Send</button>
     </div>
-    <img src={statusCapture.dataUrl} alt="status" />
+    {statusCapture.type === 'video' ? (
+      <video src={statusCapture.dataUrl} className="status-capture-video" controls />
+    ) : (
+      <img src={statusCapture.dataUrl} alt="status" />
+    )}
     <input
       className="status-caption-input"
       value={statusCaptureCaption}
@@ -7297,7 +7955,9 @@ setContacts(prev => {
       ))}
     </div>
     <div className="status-viewer-content" onClick={handleViewerTap}>
-      {currentStatusForViewer.type === 'image' ? (
+      {currentStatusForViewer.type === 'video' ? (
+        <StatusVideoView src={currentStatusForViewer.file} onEnded={() => setVideoStatusEnded(true)} />
+      ) : currentStatusForViewer.type === 'image' ? (
         <img src={currentStatusForViewer.file} alt="status" className="status-viewer-image" />
       ) : (
         <div className="status-text-view">
@@ -7318,35 +7978,125 @@ setContacts(prev => {
         <span>{timeAgo(currentStatusForViewer.createdAt)}</span>
       </div>
     </div>
-    {currentStatusForViewer.type === 'image' && currentStatusForViewer.text && (
+    {(currentStatusForViewer.type === 'image' || currentStatusForViewer.type === 'video') && currentStatusForViewer.text && (
       <p className="status-viewer-caption">{currentStatusForViewer.text}</p>
+    )}
+    {String(viewerUser.user.id) !== String(user.id) && (
+      <div className="status-viewer-reply" onClick={(e) => e.stopPropagation()}>
+        <input
+          value={statusReplyText}
+          onChange={(e) => setStatusReplyText(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter' && statusReplyText.trim()) sendStatusReply(); }}
+          placeholder={`Reply to ${viewerUser.user.name}`}
+          aria-label="Reply to status"
+        />
+        <button
+          className="status-reply-send"
+          onClick={() => sendStatusReply()}
+          disabled={!statusReplyText.trim()}
+          aria-label="Send reply"
+        >
+          ➤
+        </button>
+      </div>
     )}
   </div>
 )}
 
 {/* ===== FULL-SCREEN CALL OVERLAY (voice + video) ===== */}
-{activeCall && (
+{activeCall && callMinimized && (
+  <div className="call-minimized-bar" onClick={() => setCallMinimized(false)}>
+    <div className="call-min-info">
+      <span className="call-min-name">{activeCall.peerName}</span>
+      <span className="call-min-status">
+        {activeCall.mode === 'incoming'
+          ? 'Incoming call…'
+          : activeCall.mode === 'outgoing'
+            ? 'Ringing…'
+            : <span className="call-elapsed">{fmtCallTime(activeCall.elapsed)}</span>}
+      </span>
+    </div>
+    <div className="call-min-actions" onClick={(e) => e.stopPropagation()}>
+      {activeCall.mode === 'incoming' && (
+        <button className="call-min-accept" onClick={acceptCall} aria-label="Answer"><Phone size={18} strokeWidth={2.2} /></button>
+      )}
+      <button
+        className="call-min-decline"
+        onClick={() => { if (activeCall.mode === 'incoming') rejectCall(); else hangupCall(); }}
+        aria-label="End call"
+      >
+        <Phone size={18} strokeWidth={2.2} style={{ transform: 'rotate(135deg)' }} />
+      </button>
+    </div>
+  </div>
+)}
+
+{activeCall && !callMinimized && (
   <div className={`call-overlay ${activeCall.type === 'video' ? 'video-call' : 'voice-call'}`}>
-    {/* Peer video (fullscreen once connected) */}
-    {activeCall.mode === 'active' && activeCall.type === 'video' && (
-      <>
-        <video
-          ref={peerVideoRef}
-          className="call-peer-video"
-          autoPlay
-          playsInline
-          style={{ objectFit: 'cover', width: '100%', height: '100%' }}
-        />
-        {(!remoteStreamRef.current || activeCall.peerCameraOn === false) && (
-          <div className="call-peer-fallback">
-            {activeCall.peerCameraOn === false ? (
-              <div className="call-cam-off">Video is off</div>
-            ) : (
-              <img src={activeCall.peerPhoto} alt={activeCall.peerName} />
+    <button className="call-back-btn" onClick={() => setCallMinimized(true)} aria-label="Back to app">‹</button>
+    {/* Peer video (fullscreen once connected) / group mesh grid */}
+    {activeCall.group ? (
+      activeCall.mode === 'active' && activeCall.type === 'video' && (() => {
+        const entries = Object.keys(groupTiles);
+        const perPage = 4;
+        const pages = Math.max(1, Math.ceil(entries.length / perPage));
+        const page = Math.min(groupCallPage, pages - 1);
+        const pageTiles = entries.slice(page * perPage, page * perPage + perPage);
+        const gridClass = pageTiles.length <= 1 ? 'gcall-1' : pageTiles.length === 2 ? 'gcall-2' : 'gcall-4';
+        return (
+          <div className={`gcall-grid ${gridClass}`}>
+            {pageTiles.length > 0 && pageTiles.map((pid) => {
+              const peerName = contacts.find((c) => String(c.id) === String(pid))?.name || 'Member';
+              return (
+                <div key={pid} className="gcall-tile">
+                  <video
+                    key={pid}
+                    ref={(el) => { if (el && el.srcObject !== groupTiles[pid]) el.srcObject = groupTiles[pid]; }}
+                    className="gcall-tile-video"
+                    autoPlay
+                    playsInline
+                    style={{ objectFit: 'cover', width: '100%', height: '100%' }}
+                  />
+                  <span className="gcall-tile-name">{peerName}</span>
+                </div>
+              );
+            })}
+            {pageTiles.length === 0 && (
+              <div className="call-peer-fallback">
+                <img src={activeCall.peerPhoto} alt={activeCall.peerName} />
+              </div>
+            )}
+            {pages > 1 && (
+              <div className="gcall-pager" onClick={(e) => e.stopPropagation()}>
+                <button onClick={() => setGroupCallPage((p) => Math.max(0, p - 1))} disabled={page === 0} aria-label="Previous page">‹</button>
+                <span>{page + 1} / {pages}</span>
+                <button onClick={() => setGroupCallPage((p) => Math.min(pages - 1, p + 1))} disabled={page >= pages - 1} aria-label="Next page">›</button>
+              </div>
             )}
           </div>
-        )}
-      </>
+        );
+      })()
+    ) : (
+      activeCall.mode === 'active' && activeCall.type === 'video' && (
+        <>
+          <video
+            ref={peerVideoRef}
+            className="call-peer-video"
+            autoPlay
+            playsInline
+            style={{ objectFit: 'cover', width: '100%', height: '100%' }}
+          />
+          {(!remoteStreamRef.current || activeCall.peerCameraOn === false) && (
+            <div className="call-peer-fallback">
+              {activeCall.peerCameraOn === false ? (
+                <div className="call-cam-off">Video is off</div>
+              ) : (
+                <img src={activeCall.peerPhoto} alt={activeCall.peerName} />
+              )}
+            </div>
+          )}
+        </>
+      )
     )}
 
     {/* Own camera preview / PiP */}
@@ -7371,7 +8121,16 @@ setContacts(prev => {
           {activeCall.mode === 'outgoing' && 'Ringing…'}
           {activeCall.mode === 'incoming' && 'Incoming video call…'}
           {activeCall.mode !== 'active' && (activeCall.peerName || '') }
-          {activeCall.mode === 'active' && activeCall.type === 'voice' && <span className="call-elapsed">{fmtCallTime(activeCall.elapsed)}</span>}
+          {activeCall.mode === 'active' && activeCall.type === 'voice' && (
+            <>
+              <span className="call-elapsed">{fmtCallTime(activeCall.elapsed)}</span>
+              {activeCall.group && (
+                <span className="call-group-joined">
+                  · {Math.max(1, 1 + Object.keys(groupTiles).length)} {Object.keys(groupTiles).length === 0 ? 'person' : 'people'}
+                </span>
+              )}
+            </>
+          )}
         </p>
       </div>
     )}
@@ -7407,7 +8166,7 @@ setContacts(prev => {
           <button className="call-ctrl decline" onClick={rejectCall} aria-label="Decline"><Phone size={26} strokeWidth={2} style={{ transform: 'rotate(135deg)' }} /></button>
         </>
       ) : activeCall.mode === 'outgoing' ? (
-        <button className="call-ctrl decline big" onClick={() => { socket.emit('call:timeout', { to: callPeerIdRef.current, callId: activeCall.callId, type: activeCall.type }); setActiveCall(null); }} aria-label="Cancel call">
+        <button className="call-ctrl decline big" onClick={() => { if (activeCall.group) { socket.emit('call:groupTimeout', { groupId: activeCall.groupId, callId: activeCall.callId, type: activeCall.type, callerName: user.name }); } else { socket.emit('call:timeout', { to: callPeerIdRef.current, callId: activeCall.callId, type: activeCall.type }); } setActiveCall(null); }} aria-label="Cancel call">
           <Phone size={26} strokeWidth={2} style={{ transform: 'rotate(135deg)' }} />
         </button>
       ) : (
@@ -7471,9 +8230,28 @@ setContacts(prev => {
         {mediaViewer.tab === 'media' && (
           mediaList.length ? (
             <div className="media-grid">
-              {mediaList.map((m, i) => (
-                <img key={String(m._id || i)} src={m.file || m.dataUrl} alt="media" onClick={() => window.open(m.file || m.dataUrl, '_blank')} />
-              ))}
+              {mediaList.map((m, i) => {
+                const src = m.file || m.dataUrl;
+                const isVideo = (m.fileType || '').startsWith('video/');
+                return isVideo
+                  ? (
+                    <video
+                      key={String(m._id || i)}
+                      src={src}
+                      className="media-grid-item"
+                      onClick={() => setPreviewImage({ src, caption: m.text, fileName: m.fileName, fileType: m.fileType })}
+                    />
+                  )
+                  : (
+                    <img
+                      key={String(m._id || i)}
+                      src={src}
+                      className="media-grid-item"
+                      alt="media"
+                      onClick={() => setPreviewImage({ src, caption: m.text, fileName: m.fileName, fileType: m.fileType })}
+                    />
+                  );
+              })}
             </div>
           ) : <div className="media-viewer-empty">No media available</div>
         )}
@@ -7511,6 +8289,38 @@ setContacts(prev => {
     </div>
   );
 })()}
+
+  {/* Full-screen image/video preview overlay (from chat photo click or media viewer) */}
+  {(() => {
+    if (!previewImage) return null;
+    const src = previewImage.src || previewImage.dataUrl;
+    const isVideo = (previewImage.fileType || '').startsWith('video/');
+    return (
+      <div className="photo-preview-overlay" onClick={() => setPreviewImage(null)}>
+        <button className="preview-close" onClick={() => setPreviewImage(null)} aria-label="Close">✕</button>
+        {isVideo ? (
+          <video
+            className="photo-preview-media"
+            src={src}
+            controls
+            autoPlay
+            playsInline
+            onClick={(e) => e.stopPropagation()}
+          />
+        ) : (
+          <img
+            className="photo-preview-media"
+            src={src}
+            alt={previewImage.caption || 'Preview'}
+            onClick={(e) => e.stopPropagation()}
+          />
+        )}
+        {previewImage.caption && (
+          <div className="preview-caption" onClick={(e) => e.stopPropagation()}>{previewImage.caption}</div>
+        )}
+      </div>
+    );
+  })()}
 
 </div>
   );

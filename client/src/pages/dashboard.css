@@ -460,6 +460,57 @@
   line-height: 1;
 }
 
+/* WhatsApp-style delivery ticks (double tick, blue when read) */
+.wa-ticks {
+  display: inline-flex;
+  align-items: baseline;
+  line-height: 1;
+  white-space: nowrap;
+}
+.wa-ticks .wa-tick {
+  font-size: 1rem;
+  color: #8696a0;
+  font-weight: 600;
+  line-height: 1;
+}
+.wa-ticks .wa-tick + .wa-tick {
+  margin-left: -9px;
+  transform: translateY(3px);
+}
+.wa-ticks .wa-tick.read {
+  color: #53bdeb;
+}
+
+/* Clickable links inside messages */
+.msg-link {
+  color: #53bdeb;
+  text-decoration: underline;
+  word-break: break-all;
+}
+
+/* WhatsApp-style in-chat call history rows */
+.call-history-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 12px;
+  margin: 10px auto;
+  width: fit-content;
+  max-width: 92%;
+  background: rgba(0, 0, 0, 0.06);
+  color: #41525d;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+.call-history-row.missed .call-history-icon {
+  filter: grayscale(1) brightness(0.6);
+}
+.call-history-row .call-history-time {
+  color: #8696a0;
+}
+
 
 /* Message Action Button (⋮) - Hidden by default */
 .message .message-actions {
@@ -864,6 +915,109 @@
   border-radius: 50%;
 }
 
+.camera-header-x {
+  background: transparent;
+  border: none;
+  color: #075e54;
+  font-weight: 700;
+  cursor: pointer;
+  font-size: 1.1rem;
+}
+
+/* Full-screen camera on mobile */
+@media (max-width: 768px) {
+  .camera-modal-overlay {
+    background: #000;
+    padding: 0;
+  }
+  .camera-modal {
+    width: 100vw;
+    max-width: none;
+    height: 100vh;
+    height: 100dvh;
+    border-radius: 0;
+  }
+  .camera-container video {
+    position: static;
+    transform: none;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+  .camera-preview-container {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    background: #000;
+    position: relative;
+  }
+  .camera-preview-container > img {
+    flex: 1;
+    min-height: 0;
+    width: 100%;
+    object-fit: contain;
+  }
+}
+
+/* Captured-photo preview inside the camera modal */
+.camera-preview-container {
+  position: relative;
+  flex: 1;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.camera-preview-container > img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+.camera-preview-footer {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.7));
+  box-sizing: border-box;
+}
+.camera-back-btn,
+.camera-send-btn {
+  flex-shrink: 0;
+  border: none;
+  border-radius: 50%;
+  background: #00a884;
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+.camera-back-btn {
+  width: 46px;
+  height: 46px;
+  font-size: 0.95rem;
+}
+.camera-send-btn {
+  width: 46px;
+  height: 46px;
+  font-size: 1.3rem;
+}
+.camera-caption-input {
+  flex: 1;
+  min-width: 0;
+  padding: 11px 14px;
+  border: none;
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.95);
+  outline: none;
+  font-size: 0.95rem;
+}
+
 /* === PHOTO PREVIEW === */
 .photo-preview-overlay {
   position: fixed;
@@ -884,6 +1038,41 @@
   display: flex;
   flex-direction: column;
   position: relative;
+}
+
+.photo-preview-media {
+  max-width: 96vw;
+  max-height: 88vh;
+  object-fit: contain;
+  border-radius: 6px;
+}
+
+.preview-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  background: rgba(255, 255, 255, 0.25);
+  color: #fff;
+  border: none;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  font-size: 1.2rem;
+  cursor: pointer;
+  z-index: 5;
+}
+
+.preview-caption {
+  position: absolute;
+  bottom: 18px;
+  left: 0;
+  width: 100%;
+  text-align: center;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.55);
+  padding: 10px 16px;
+  font-size: 0.95rem;
+  box-sizing: border-box;
 }
 
 .preview-actions {
@@ -2121,6 +2310,7 @@
     height: 100dvh;
     z-index: 50;
     background: #e5ddd5;
+    overflow: hidden; /* only .messages scrolls -> header stays pinned */
   }
 
   /* Keep the chat header + input pinned; only messages scroll */
@@ -2128,6 +2318,18 @@
   .dashboard-layout.chat-open .right-panel .chat-header-mobile,
   .dashboard-layout.chat-open .right-panel .mobile-compose {
     flex-shrink: 0;
+    position: sticky;
+    left: 0;
+    right: 0;
+  }
+  .dashboard-layout.chat-open .right-panel .chat-header,
+  .dashboard-layout.chat-open .right-panel .chat-header-mobile {
+    top: 0;
+    z-index: 11;
+  }
+  .dashboard-layout.chat-open .right-panel .mobile-compose {
+    bottom: 0;
+    z-index: 11;
   }
 
   .dashboard-layout.chat-open .sidebar,
@@ -2188,7 +2390,8 @@
     min-width: 0;
   }
 
-  .mobile-input-form input {
+  .mobile-input-form input,
+  .mobile-input-form textarea {
     flex: 1;
     min-width: 0;
     border: none;
@@ -2196,6 +2399,11 @@
     padding: 9px 6px;
     font-size: 1rem;
     background: transparent;
+    resize: none;
+    font-family: inherit;
+    line-height: 1.35;
+    max-height: 120px;
+    overflow-y: auto;
   }
 
   .mobile-input-form .mobile-attach-btn,
@@ -2243,7 +2451,7 @@
   }
 
   /* WhatsApp mobile has no visible send button — keyboard Enter sends */
-  .mobile-input-form .mobile-send-btn {
+  .mobile-input-form .mobile-send-btn.hidden {
     display: none;
   }
 
@@ -2686,6 +2894,53 @@
   background: rgba(255, 255, 255, 0.35);
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
   cursor: pointer;
+  touch-action: none;
+  user-select: none;
+}
+
+.status-capture-btn.recording {
+  background: rgba(255, 59, 48, 0.55);
+  border-color: #ff3b30;
+}
+
+.status-camera-hint {
+  position: absolute;
+  bottom: -38px;
+  left: 0;
+  right: 0;
+  text-align: center;
+  color: #fff;
+  font-size: 0.85rem;
+  opacity: 0.9;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+
+.status-rec-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+
+.status-rec-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #ff3b30;
+  animation: statusRecPulse 1s infinite;
+}
+
+@keyframes statusRecPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.status-capture-video {
+  width: 100%;
+  max-height: 60vh;
+  object-fit: contain;
+  border-radius: 12px;
+  background: #000;
 }
 
 /* ---- Text composer (one default colorful style, WhatsApp-like) ---- */
@@ -2912,6 +3167,108 @@
   text-align: center;
 }
 
+/* ---- Status video (viewer) ---- */
+.status-video-wrap {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.status-viewer-video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+
+.status-video-pause {
+  position: absolute;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  font-size: 1.1rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 1;
+  transition: opacity 0.2s;
+}
+
+.status-video-pause.paused {
+  opacity: 0.9;
+}
+
+.status-video-progress {
+  position: absolute;
+  bottom: 10px;
+  left: 24px;
+  right: 24px;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.35);
+  overflow: hidden;
+}
+
+.status-video-progress span {
+  display: block;
+  height: 100%;
+  background: #fff;
+  transition: width 0.2s linear;
+}
+
+/* ---- Status reply bar ---- */
+.status-viewer-reply {
+  position: absolute;
+  bottom: 14px;
+  left: 14px;
+  right: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.55);
+  border-radius: 22px;
+  padding: 6px 6px 6px 16px;
+  z-index: 5;
+}
+
+.status-viewer-reply input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #fff;
+  font-size: 0.95rem;
+}
+
+.status-viewer-reply input::placeholder {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.status-reply-send {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  border: none;
+  background: #25d366;
+  color: #fff;
+  font-size: 1.1rem;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.status-reply-send:disabled {
+  background: #4a5560;
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
 /* ===== Status ring avatars (shared mobile + desktop) ===== */
 .status-ring-avatar {
   flex-shrink: 0;
@@ -2964,6 +3321,61 @@
   gap: 12px;
   margin-top: 8px;
 }
+
+/* ===== Desktop calls panel (right big panel) ===== */
+.calls-desktop-panel {
+  height: 100%;
+  overflow-y: auto;
+  background: #f7f8fa;
+  padding: 16px;
+}
+.calls-desktop-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 720px;
+  margin: 0 auto;
+}
+.calls-desktop-empty {
+  text-align: center;
+  color: #8a8f99;
+  padding: 40px 0;
+  margin: 0;
+}
+.calls-desktop-item {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 14px;
+  background: #fff;
+  border-radius: 12px;
+  border: 1px solid #eceff1;
+}
+.calls-desktop-item img {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+.calls-desktop-info {
+  min-width: 0;
+  flex: 1;
+}
+.calls-desktop-info h4 {
+  margin: 0;
+  font-size: 0.98rem;
+  color: #1f2933;
+}
+.calls-desktop-info p {
+  margin: 2px 0 0;
+  font-size: 0.85rem;
+  color: #56626b;
+}
+.calls-desktop-info small {
+  color: #8a8f99;
+  font-size: 0.78rem;
+}
 .status-desktop-btn {
   padding: 11px 22px;
   border-radius: 24px;
@@ -3000,6 +3412,17 @@
 }
 .message.sent .voice-bubble { background: #d9fdd3; }
 .message.received .voice-bubble { background: #fff; }
+
+/* Inline video messages */
+.chat-inline-video {
+  max-width: 100%;
+  max-height: 300px;
+  border-radius: 8px;
+  display: block;
+  background: #000;
+  width: 260px;
+  height: auto;
+}
 .voice-play {
   width: 36px;
   height: 36px;
@@ -3060,6 +3483,24 @@
   padding: 6px 10px;
   border-radius: 8px;
   margin: 4px 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.rec-cancel-btn {
+  background: rgba(255, 255, 255, 0.22);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  border-radius: 999px;
+  padding: 3px 12px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.rec-cancel-btn:hover {
+  background: rgba(255, 255, 255, 0.38);
 }
 .mobile-recording-bar.desktop {
   margin: 6px 0 0;
@@ -3140,7 +3581,7 @@
   height: 100% !important;
 }
 .call-own-video.pip {
-  top: 16px;
+  bottom: 110px;
   right: 16px;
   width: 150px !important;
   height: 220px !important;
@@ -3206,6 +3647,76 @@
   font-size: 0.9rem;
   font-variant-numeric: tabular-nums;
 }
+.call-group-joined {
+  color: rgba(255,255,255,0.7);
+  font-size: 0.85rem;
+}
+.gcall-grid {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 100%;
+  display: grid;
+  gap: 4px;
+  padding: 4px;
+  background: #000;
+  box-sizing: border-box;
+}
+.gcall-grid.gcall-1 { grid-template-columns: 1fr; grid-template-rows: 1fr; }
+.gcall-grid.gcall-2 { grid-template-columns: 1fr 1fr; }
+.gcall-screen-two, .gcall-4 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+.gcall-screen-many { grid-template-columns: 1fr 1fr; grid-template-rows: auto; overflow-y: auto; }
+.gcall-tile {
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: 6px;
+  background: #111;
+}
+.gcall-tile-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover !important;
+  display: block;
+}
+.gcall-tile-name {
+  position: absolute;
+  left: 8px; bottom: 8px;
+  max-width: 80%;
+  padding: 3px 8px;
+  border-radius: 8px;
+  background: rgba(0,0,0,0.55);
+  color: #fff;
+  font-size: 0.75rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  z-index: 2;
+}
+.gcall-pager {
+  position: absolute;
+  bottom: 96px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  border-radius: 20px;
+  background: rgba(0,0,0,0.55);
+  z-index: 5;
+  color: #fff;
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+.gcall-pager button {
+  border: none;
+  background: none;
+  color: #fff;
+  font-size: 1.1rem;
+  cursor: pointer;
+  padding: 2px 8px;
+}
+.gcall-pager button:disabled { opacity: 0.3; cursor: default; }
 .call-controls {
   display: flex;
   align-items: center;
@@ -3270,6 +3781,81 @@
 }
 .call-speaker-menu button:hover { background: rgba(255,255,255,0.12); }
 .cs-icon { font-size: 1.1rem; }
+
+/* Call back (minimize) button + minimized ringing/active banner */
+.call-back-btn {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  z-index: 30;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255,255,255,0.16);
+  color: #fff;
+  font-size: 1.6rem;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.call-back-btn:hover { background: rgba(255,255,255,0.3); }
+
+.call-minimized-bar {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  z-index: 999998;
+  background: #123b34;
+  color: #fff;
+  border-radius: 14px;
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+  cursor: pointer;
+  border: 1px solid rgba(255,255,255,0.2);
+}
+.call-min-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.call-min-name {
+  font-weight: 600;
+  font-size: 0.95rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.call-min-status {
+  font-size: 0.8rem;
+  color: rgba(255,255,255,0.75);
+}
+.call-min-actions {
+  display: flex;
+  gap: 10px;
+  flex-shrink: 0;
+}
+.call-min-accept,
+.call-min-decline {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  border: none;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.call-min-accept { background: #25D366; }
+.call-min-decline { background: #e02f5b; }
 
 /* ===== Media / Links / Docs full-screen ===== */
 .media-viewer-overlay {
@@ -3341,12 +3927,16 @@
   grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
   gap: 10px;
 }
-.media-grid img {
+.media-grid img,
+.media-grid .media-grid-item {
   width: 100%;
   aspect-ratio: 1;
   object-fit: cover;
   border-radius: 8px;
   cursor: pointer;
+}
+.media-grid video.media-grid-item {
+  object-fit: cover;
 }
 .links-list, .docs-list { display: flex; flex-direction: column; gap: 10px; }
 .link-item, .doc-item {

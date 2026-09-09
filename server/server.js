@@ -594,13 +594,13 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
   socket.on("postStatus", async (data) => {
     const { type, text, bg, file } = data || {};
     try {
-      const isImage = type === 'image';
+      const isMedia = type === 'image' || type === 'video';
       const status = await Status.create({
         user: socket.userId,
-        type: isImage ? 'image' : 'text',
-        text: isImage ? (text || '') : String(text || '').slice(0, 120),
+        type: isMedia ? type : 'text',
+        text: String(text || '').slice(0, 120),
         bg: bg || 'default',
-        file: isImage ? (file || '') : '',
+        file: isMedia ? (file || '') : '',
       });
 
       const owner = await User.findById(socket.userId).select('name photo').lean().exec();
@@ -648,8 +648,11 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
 
   // ==================== CALLS (voice/video) ====================
 
+  // In-memory group call registry: callId -> { type, groupId, callerId, callerName, members:Set<userId> }
+  const groupCalls = new Map();
+
   // Persist a finished call for both participants and notify them to refresh.
-  async function logCall(callerId, calleeId, type, status, durationSec) {
+  async function logCall(callerId, calleeId, type, status, durationSec, opts) {
     try {
       const call = await Call.create({
         caller: callerId,
@@ -657,9 +660,13 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
         type: type === 'video' ? 'video' : 'voice',
         status: status === 'missed' ? 'missed' : 'ended',
         durationSec: Math.max(0, Math.round(durationSec || 0)),
+        groupId: opts?.groupId || null,
+        callerName: opts?.callerName || '',
       });
       emitToUser(callerId, 'call:historyUpdated', { callId: String(call._id) });
-      emitToUser(calleeId, 'call:historyUpdated', { callId: String(call._id) });
+      if (String(calleeId) !== String(callerId)) {
+        emitToUser(calleeId, 'call:historyUpdated', { callId: String(call._id) });
+      }
     } catch (err) {
       console.error('logCall error:', err.message);
     }
@@ -679,6 +686,87 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
       callerName: peer ? peer.name : undefined,
     });
     socket.emit('call:ringing', { callId });
+  });
+
+  // Group call: ring every member (mesh; each side builds its own peer).
+  socket.on('call:inviteGroup', async ({ groupId, type, callId, name, photo, memberIds }) => {
+    if (!groupId || !callId || !Array.isArray(memberIds)) return;
+    const me = await User.findById(socket.userId).select('name photo').lean().exec();
+    groupCalls.set(callId, {
+      type,
+      groupId: String(groupId),
+      callerId: String(socket.userId),
+      callerName: name || me?.name || 'Unknown',
+      members: new Set([String(socket.userId)]),
+    });
+    memberIds.forEach((uid) => {
+      if (String(uid) === String(socket.userId)) return;
+      emitToUser(uid, 'call:groupIncoming', {
+        callId,
+        type,
+        groupId: String(groupId),
+        from: String(socket.userId),
+        fromName: me?.name || 'Unknown',
+        fromPhoto: photo || me?.photo || 'https://via.placeholder.com/50',
+        groupName: name,
+      });
+    });
+    socket.emit('call:ringing', { callId });
+  });
+
+  // Member answers a group call -> give them the current roster and tell the
+  // rest (including the caller) so every pair can wire up WebRTC.
+  socket.on('call:acceptGroup', ({ to, callId, type }) => {
+    if (!to || !callId) return;
+    let ca = groupCalls.get(callId);
+    if (!ca) {
+      ca = { type, groupId: null, callerId: String(to), callerName: 'Group', members: new Set([String(to), String(socket.userId)]) };
+      groupCalls.set(callId, ca);
+    } else {
+      ca.members.add(String(socket.userId));
+    }
+    const joined = [...ca.members];
+    socket.emit('call:groupJoined', {
+      callId,
+      type,
+      groupId: ca.groupId,
+      members: joined.filter((mid) => String(mid) !== String(socket.userId)).map((mid) => ({ id: mid })),
+    });
+    joined.forEach((mid) => {
+      if (String(mid) === String(socket.userId)) return;
+      emitToUser(mid, 'call:memberJoined', { callId, type, userId: String(socket.userId), groupId: ca.groupId });
+    });
+    // The caller (initiator) opens the active call UI too.
+    emitToUser(to, 'call:accepted', { callId, type });
+  });
+
+  // Member leaves a group call -> notify everyone else.
+  socket.on('call:memberLeft', ({ to, callId, type }) => {
+    const ca = groupCalls.get(callId);
+    if (!ca) return;
+    ca.members.delete(String(socket.userId));
+    [...ca.members].forEach((mid) => emitToUser(mid, 'call:memberLeft', { callId, userId: String(socket.userId), type }));
+    if (ca.members.size === 0) groupCalls.delete(callId);
+  });
+
+  // Member ends their group-call session -> log their own record + notify others.
+  socket.on('call:groupEnd', ({ groupId, callId, type, durationSec, callerName }) => {
+    const secs = Math.max(0, Math.round(durationSec || 0));
+    logCall(socket.userId, socket.userId, type, secs > 0 ? 'ended' : 'missed', secs, { groupId, callerName });
+    const ca = groupCalls.get(callId);
+    if (ca) {
+      ca.members.delete(String(socket.userId));
+      [...ca.members].forEach((mid) => emitToUser(mid, 'call:memberLeft', { callId, userId: String(socket.userId), type }));
+      if (ca.members.size === 0) groupCalls.delete(callId);
+    }
+    socket.emit('call:endedLocal', { callId });
+  });
+
+  // Caller cancels a group ring (nobody answered) -> one missed group record.
+  socket.on('call:groupTimeout', ({ groupId, callId, type, callerName }) => {
+    logCall(socket.userId, socket.userId, type, 'missed', 0, { groupId, callerName });
+    groupCalls.delete(callId);
+    socket.emit('call:endedLocal', { callId });
   });
 
   // Callee accepts -> caller opens the active call UI.

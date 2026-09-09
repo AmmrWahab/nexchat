@@ -11,6 +11,10 @@ const callSchema = new mongoose.Schema({
   //                (we store one record per participant via direction)
   status: { type: String, enum: ["missed", "ended"], default: "ended" },
   durationSec: { type: Number, default: 0 },
+  // Group calls: caller = the member who logged the call; groupId points at
+  // the group chat so history rows can be interleaved in the thread.
+  groupId: { type: mongoose.Schema.Types.ObjectId, ref: "Group", default: null },
+  callerName: { type: String, default: "" },
   createdAt: { type: Date, default: Date.now },
 });
 

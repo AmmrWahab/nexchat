@@ -43,6 +43,9 @@ router.get("/calls", async (req, res) => {
         durationSec: c.durationSec || 0,
         // classify: outgoing / incoming / missed
         direction: c.status === "missed" ? "missed" : (iCalled ? "outgoing" : "incoming"),
+        // group-call info (if any)
+        groupId: c.groupId ? String(c.groupId) : null,
+        callerName: c.callerName || "",
       };
     });
     res.json({ calls });
