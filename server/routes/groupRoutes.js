@@ -53,15 +53,11 @@ router.post('/groups/create', auth, async (req, res) => {
   }
 });
 
-// GET /api/groups — return all groups the current user is a member of (plus
-// groups they were removed from, flagged `removed`, so their history persists)
+// GET /api/groups — return all groups the current user is a member of
 router.get('/groups', auth, async (req, res) => {
   try {
-    const groups = await Group.find({
-      $or: [{ members: req.userId }, { formerMembers: req.userId }],
-    })
+    const groups = await Group.find({ members: req.userId })
       .populate('admin', 'name photo')
-      .populate('admins', 'name photo')
       .populate('members', 'name photo')
       .sort({ createdAt: -1 });
 
@@ -73,8 +69,6 @@ router.get('/groups', auth, async (req, res) => {
         .sort({ createdAt: -1 })
         .exec();
       const g = group.toObject();
-      g.removed = (group.formerMembers || []).map(String).includes(String(req.userId));
-      g.admins = (group.admins || []).map(String);
       if (last) {
         g.lastMessage = {
           text: last.message,

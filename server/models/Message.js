@@ -13,8 +13,6 @@ const messageSchema = new mongoose.Schema({
   delivered: { type: Boolean, default: false },
   read: { type: Boolean, default: false },
   clientMessageId: String,
-  // True when this message is a forwarded copy of an original message.
-  forwarded: { type: Boolean, default: false },
 
   createdAt: { type: Date, default: Date.now }
 });

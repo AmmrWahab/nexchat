@@ -18,7 +18,6 @@ import Message from "./models/Message.js"; // add this on top
 import groupRoutes from './routes/groupRoutes.js'; // ✅ Group routes
 import statusRoutes, { getStatusViewerIds } from './routes/statusRoutes.js'; // ✅ Status routes
 import callRoutes from './routes/callRoutes.js'; // ✅ Call routes
-import profileRoutes from './routes/profileRoutes.js'; // ✅ Profile / block / report
 import Call from './models/Call.js'; // ✅ Call model
 import { promisify } from 'util';
 const verifyAsync = promisify(jwt.verify);
@@ -79,7 +78,6 @@ app.use('/api', authRoutes);
 app.use('/api', groupRoutes);
 app.use('/api', statusRoutes);
 app.use('/api', callRoutes);
-app.use('/api', profileRoutes);
 
 // Google Auth Routes
 app.get('/api/auth/google',
@@ -204,7 +202,10 @@ io.on('connection', (socket) => {
   //  reaching" the receiver. Early emits must never be lost.)
 
 socket.on("sendMessage", async (data) => {
-  const { to, message, from, file, fileName, fileType, replyTo, messageId, duration, forwarded } = data;
+    console.log("📨 [DEBUG] Full data received:", JSON.stringify(data, null, 2)); // 🔥 Full payload
+  const { to, message, from, file, fileName, fileType, replyTo, messageId, duration } = data; // 👈 Make sure you receive `messageId`
+    console.log("📄 [DEBUG] Extracted fields:", { to, message, from, messageId }); // 🔥 Check values
+  const receiverSocketIds = getSocketIds(to);
   if (!from || !to) {
     console.error("❌ Invalid from/to:", { from, to });
     return;
@@ -215,22 +216,9 @@ socket.on("sendMessage", async (data) => {
   }
 
   try {
-    const sender = await User.findById(from).select("name photo").exec();
+    const sender = await User.findById(from).select("name").exec();
     if (!sender) return console.error("Sender not found");
-
-    const senderBlockedIds = (sender.blocked || []).map(String);
-
-    // I blocked this person -> their message is NOT written at all.
-    if (senderBlockedIds.includes(String(to))) {
-      socket.emit("messageRejected", { to, messageId, reason: "blocked" });
-      return;
-    }
-
-    // Load the receiver to check whether THEY blocked me.
-    const receiver = await User.findById(to).select("name blocked").exec();
-    const receiverBlockedIds = receiver ? (receiver.blocked || []).map(String) : [];
-    const theyBlockedMe = receiverBlockedIds.includes(String(socket.userId)) || receiverBlockedIds.includes(String(from));
-
+console.log("💾 [DB] Attempting to save message..."); // 🔥
     const newMsg = await Message.create({
       from,
       to,
@@ -239,79 +227,51 @@ socket.on("sendMessage", async (data) => {
       fileName,
       fileType,
       duration,
-      forwarded: !!forwarded,
       replyTo: replyTo ? {
         sender: replyTo.sender,
         text: replyTo.text,
         messageId: replyTo.messageId
       } : null,
-      delivered: !theyBlockedMe && !!getSocketIds(to),
+      delivered: !!receiverSocketIds,
       clientMessageId: data.messageId 
     });
+     console.log("✅ [SUCCESS] Saved to DB:", {
+      _id: newMsg._id,
+      message: newMsg.message,
+      delivered: newMsg.delivered,
+      clientMessageId: newMsg.clientMessageId
+    });
+    
 
-    if (theyBlockedMe) {
-      // They blocked us. Do NOT deliver; message stays at a single tick for the
-      // sender. It is persisted (delivered:false) so their history is intact.
-      console.log(`📥 Stored undelivered (blocked) message from ${from} to ${to}`);
-      return;
-    }
-
-    const receiverSocketIds = getSocketIds(to);
     if (receiverSocketIds) {
       // ✅ Send message to ALL of the recipient's connected sockets
       receiverSocketIds.forEach((sid) => {
         io.to(sid).emit("receiveMessage", {
+          
           _id: newMsg._id,
           from,
-          to,
           fromName: sender.name,
-          fromPhoto: sender.photo,
           message,
           file,
           fileName,
           fileType,
           duration,
-          forwarded: !!forwarded,
           replyTo: replyTo,
           timestamp: newMsg.createdAt.getTime(),
           messageId // 👈 Send back to client
         });
       });
 
-      // ✅ Snapshot of successful call
-      const snap = () => ({ chatId: to, messageId: messageId || newMsg._id.toString() });
-
-      // Confirm delivery on EVERY device of the sender, not just the one that
-      // sent it — otherwise a second device would never learn its message ticked.
-      emitToUser(from, "messageDelivered", snap());
-      if (socket && socket.id) {
-        io.to(socket.id).emit("messageDelivered", snap());
-      }
+      // ✅ BONUS: Notify sender that their message was delivered
+      socket.emit("messageDelivered", {
+        chatId: to,
+        messageId: messageId || newMsg._id.toString()
+      });
     } else {
       console.log(`📥 Stored undelivered message for ${to}`);
     }
-
-    // 🔥 Cross-device echo: the sender's OTHER devices (tabs) should also see
-    // this message.
-    emitToUser(from, "receiveMessage", {
-      _id: newMsg._id,
-      from,
-      to,
-      fromName: sender.name,
-      fromPhoto: sender.photo,
-      message,
-      file,
-      fileName,
-      fileType,
-      duration,
-      forwarded: !!forwarded,
-      replyTo: replyTo,
-      timestamp: newMsg.createdAt.getTime(),
-      messageId,
-      source: 'self'
-    }, [socket.id]);
   } catch (err) {
-    console.error("❌ [CRITICAL] Error in sendMessage:", err);
+    console.error("❌ [CRITICAL] Error in sendMessage:", err); // Full error
   }
 });
 
@@ -335,75 +295,6 @@ socket.on("sendMessage", async (data) => {
           timestamp: Date.now(),
         });
       });
-    }
-  });
-
-  // ✅ Load 1:1 message history when the user opens a conversation. Returns
-  //    both directions so ANY device (even one that never saw the chat) can
-  //    render the full thread. Also marks received messages delivered (and
-  //    tells the sender) since the recipient is now definitely online.
-  socket.on("fetchMessages", async ({ to }) => {
-    if (!to) return;
-    try {
-      const uid = String(socket.userId);
-      const me = await User.findById(uid).select("blocked").exec();
-      const blockedSet = new Set((me?.blocked || []).map(String));
-      const peerBlocked = blockedSet.has(String(to));
-
-      const messages = await Message.find({
-        $or: [
-          { from: uid, to },
-          { from: to, to: uid },
-        ],
-      })
-        .populate("from", "name photo")
-        .sort({ createdAt: 1 })
-        .limit(200)
-        .exec();
-
-      // WhatsApp semantics: a user I blocked cannot reach me. Hide their
-      // messages from MY history view, but keep my own outgoing messages.
-      const visible = peerBlocked
-        ? messages.filter((m) => String(m.from._id) === uid)
-        : messages;
-
-      const msgs = visible.map((m) => ({
-        _id: m._id,
-        from: String(m.from._id),
-        fromName: m.from.name || "Unknown",
-        fromPhoto: m.from.photo,
-        message: m.message,
-        file: m.file,
-        fileName: m.fileName,
-        fileType: m.fileType,
-        duration: m.duration,
-        forwarded: !!m.forwarded,
-        replyTo: m.replyTo,
-        timestamp: new Date(m.createdAt).getTime(),
-        delivered: m.delivered,
-        read: m.read,
-        messageId: m.clientMessageId,
-      }));
-
-      io.to(socket.id).emit("messagesHistory", { to, messages: msgs });
-
-      // Messages FROM the peer TO me are now definitely received on this device.
-      // (Skip this for blocked peers so they never see a delivered tick.)
-      const pending = messages.filter(
-        (m) => String(m.from._id) === String(to) && !m.delivered && !peerBlocked
-      );
-      if (pending.length > 0) {
-        const ids = pending.map((m) => m._id);
-        await Message.updateMany({ _id: { $in: ids } }, { $set: { delivered: true } });
-        pending.forEach((m) =>
-          emitToUser(String(to), "messageDelivered", {
-            chatId: uid,
-            messageId: m.clientMessageId || String(m._id),
-          })
-        );
-      }
-    } catch (err) {
-      console.error("fetchMessages error:", err.message);
     }
   });
 
@@ -488,7 +379,7 @@ socket.on("sendMessage", async (data) => {
 
   // ✅ Handle group message
   socket.on("sendGroupMessage", async (data) => {
-    const { groupId, message, file, fileName, fileType, messageId, duration, forwarded } = data;
+    const { groupId, message, file, fileName, fileType, messageId, duration } = data;
     if (!groupId) return;
     try {
       const sender = await User.findById(socket.userId).select("name photo").exec();
@@ -497,10 +388,7 @@ socket.on("sendMessage", async (data) => {
       const group = await Group.findById(groupId).exec();
       if (!group) return;
       // Only members can send
-      if (!group.members.map(String).includes(String(socket.userId))) {
-        socket.emit("groupMessageRejected", { groupId, reason: "not-member" });
-        return;
-      }
+      if (!group.members.map(String).includes(String(socket.userId))) return;
 
       const newMsg = await GroupMessage.create({
         group: groupId,
@@ -510,9 +398,7 @@ socket.on("sendMessage", async (data) => {
         fileName,
         fileType,
         duration,
-        forwarded: !!forwarded,
-        clientMessageId: data.messageId,
-        deliveredBy: [socket.userId],
+        clientMessageId: data.messageId
       });
 
       const payload = {
@@ -526,13 +412,13 @@ socket.on("sendMessage", async (data) => {
         fileName,
         fileType,
         duration,
-        forwarded: !!forwarded,
         timestamp: newMsg.createdAt.getTime(),
         messageId
       };
 
       // Send to every member's sockets (except sender's own — sender already shows optimistically)
       group.members.forEach((memberId) => {
+        const sid = String(memberId) === String(socket.userId) ? socket.id : null;
         emitToUser(memberId, "receiveGroupMessage", payload, [socket.id]);
       });
 
@@ -548,44 +434,6 @@ socket.on("sendMessage", async (data) => {
     }
   });
 
-  // ✅ Group delivery ack: a member's device actually received a group message.
-  //    Record them in deliveredBy; once every OTHER member has received it, tell
-  //    the sender so their tick flips from a single to a double tick.
-  socket.on("groupMessageReceived", async ({ groupId, messageId }) => {
-    if (!groupId || !messageId) return;
-    try {
-      const msg = await GroupMessage.findOne({
-        _id: messageId,
-        group: groupId,
-      }).exec();
-      if (!msg) return;
-
-      const group = await Group.findById(groupId).exec();
-      if (!group || !group.members.map(String).includes(String(socket.userId))) return;
-
-      if (!msg.deliveredBy.map(String).includes(String(socket.userId))) {
-        msg.deliveredBy.push(socket.userId);
-        await msg.save();
-      }
-
-      const senderId = String(msg.from);
-      const otherMemberIds = (group.members || []).map(String).filter((id) => id !== senderId);
-      const deliveredIds = (msg.deliveredBy || []).map(String);
-      const allReceived =
-        otherMemberIds.length > 0 &&
-        otherMemberIds.every((id) => deliveredIds.includes(id));
-      if (allReceived && String(socket.userId) !== senderId) {
-        emitToUser(senderId, "groupMessageAllReceived", {
-          groupId,
-          messageId: msg._id.toString(),
-          clientMessageId: msg.clientMessageId,
-        });
-      }
-    } catch (err) {
-      console.error("groupMessageReceived error:", err.message);
-    }
-  });
-
   // ✅ Load group message history when a member opens a group
   socket.on("fetchGroupMessages", async (data) => {
     const { groupId } = data;
@@ -593,10 +441,7 @@ socket.on("sendMessage", async (data) => {
     try {
       const group = await Group.findById(groupId).exec();
       if (!group) return;
-      const meId = String(socket.userId);
-      const isMember = group.members.map(String).includes(meId);
-      const isFormer = (group.formerMembers || []).map(String).includes(meId);
-      if (!isMember && !isFormer) return;
+      if (!group.members.map(String).includes(String(socket.userId))) return;
 
       const history = await GroupMessage.find({ group: groupId })
         .populate('from', 'name photo')
@@ -604,30 +449,13 @@ socket.on("sendMessage", async (data) => {
         .limit(200)
         .exec();
 
-      // Persist that this member received these messages (drives the sender's
-      // single->double tick even if they come online after the send).
-      let changedIds = [];
-      for (const m of history) {
-        if (!m.deliveredBy.map(String).includes(meId)) {
-          m.deliveredBy.push(socket.userId);
-          await m.save();
-          changedIds.push({
-            _id: m._id.toString(),
-            clientMessageId: m.clientMessageId,
-            from: String(m.from),
-          });
-        }
-      }
-
       const msgs = history.map(m => {
-        const senderId = String(m.from._id);
-        const otherMemberIds = (group.members || []).map(String).filter(id => id !== senderId);
+        const otherMemberIds = (group.members || []).map(String).filter(id => id !== String(m.from._id));
         const readByIds = (m.readBy || []).map(String);
-        const deliveredIds = (m.deliveredBy || []).map(String);
         return {
           _id: m._id,
           groupId,
-          from: senderId,
+          from: String(m.from._id),
           fromName: m.from.name || 'Unknown',
           fromPhoto: m.from.photo,
           message: m.message,
@@ -635,38 +463,16 @@ socket.on("sendMessage", async (data) => {
           fileName: m.fileName,
           fileType: m.fileType,
           duration: m.duration,
-          forwarded: !!m.forwarded,
-          system: !!m.system,
           timestamp: new Date(m.createdAt).getTime(),
           // WhatsApp-style group read tick: green only once every OTHER member
           // has seen the message. `allRead` is computed server-side so every
           // device of the sender agrees on the same tick state.
           readBy: readByIds,
           allRead: otherMemberIds.length > 0 && otherMemberIds.every(id => readByIds.includes(id)),
-          deliveredBy: deliveredIds,
-          allReceived: otherMemberIds.length > 0 && otherMemberIds.every(id => deliveredIds.includes(id)),
         };
       });
 
       io.to(socket.id).emit("groupMessagesHistory", { groupId, messages: msgs });
-
-      // If the just-recorded deliveries flipped any message to "all received",
-      // tell its sender so their tick updates immediately.
-      for (const ch of changedIds) {
-        const target = history.find((m) => String(m._id) === String(ch._id));
-        if (!target) continue;
-        const senderId = ch.from;
-        const otherMemberIds = (group.members || []).map(String).filter(id => id !== senderId);
-        const deliveredIds = (target.deliveredBy || []).map(String);
-        const allReceived = otherMemberIds.length > 0 && otherMemberIds.every(id => deliveredIds.includes(id));
-        if (allReceived && senderId !== meId) {
-          emitToUser(senderId, "groupMessageAllReceived", {
-            groupId,
-            messageId: ch._id,
-            clientMessageId: ch.clientMessageId,
-          });
-        }
-      }
     } catch (err) {
       console.error("fetchGroupMessages error:", err.message);
     }
@@ -782,96 +588,6 @@ socket.on("sendMessage", async (data) => {
     }
   });
 
-  // ✅ Make another member an admin. Only an existing admin (creator included)
-  //    may do this.
-  socket.on("group:makeAdmin", async ({ groupId, targetUserId }) => {
-    if (!groupId || !targetUserId) return;
-    try {
-      const group = await Group.findById(groupId).exec();
-      if (!group) return;
-      const me = String(socket.userId);
-      const admins = [String(group.admin), ...(group.admins || []).map(String)];
-      if (!admins.includes(me)) return;
-      if (!group.members.map(String).includes(String(targetUserId))) return;
-      if (!(group.admins || []).map(String).includes(String(targetUserId))) {
-        group.admins.push(targetUserId);
-        await group.save();
-      }
-      // Tell everyone the roster changed.
-      const populated = await Group.findById(groupId)
-        .populate('admin', 'name photo')
-        .populate('admins', 'name photo')
-        .populate('members', 'name photo')
-        .exec();
-      group.members.forEach((mid) => {
-        emitToUser(mid, "groupRosterChanged", { group: populated });
-      });
-      const adminIds = [String(populated.admin._id), ...(populated.admins || []).map((a) => String(a._id))];
-      emitToUser(String(targetUserId), "groupRosterChanged", { group: populated });
-      emitToUser(String(targetUserId), "groupYouAreAdmin", { groupId });
-    } catch (err) {
-      console.error("group:makeAdmin error:", err.message);
-    }
-  });
-
-  // ✅ Remove a member from a group. Only an admin may do this, and the
-  //    original creator can never be removed. The removed member keeps their
-  //    message history but becomes read-only.
-  socket.on("group:removeMember", async ({ groupId, targetUserId }) => {
-    if (!groupId || !targetUserId) return;
-    try {
-      const group = await Group.findById(groupId).exec();
-      if (!group) return;
-      const me = String(socket.userId);
-      const admins = [String(group.admin), ...(group.admins || []).map(String)];
-      if (!admins.includes(me)) return;
-      if (String(targetUserId) === String(group.admin)) return; // creator is sacred
-      if (!group.members.map(String).includes(String(targetUserId))) return;
-
-      group.members = group.members.filter((m) => String(m) !== String(targetUserId));
-      group.admins = (group.admins || []).filter((m) => String(m) !== String(targetUserId));
-      if (!(group.formerMembers || []).map(String).includes(String(targetUserId))) {
-        group.formerMembers.push(targetUserId);
-      }
-      await group.save();
-
-      // System history message for everyone (including the removed user).
-      const adminName = await User.findById(socket.userId).select('name').lean().exec();
-      const targetName = await User.findById(targetUserId).select('name').lean().exec();
-      const sysMsg = await GroupMessage.create({
-        group: groupId,
-        from: socket.userId,
-        message: `${adminName?.name || 'Someone'} removed ${targetName?.name || 'a member'}`,
-        system: true,
-        clientMessageId: `sys-rem-${Date.now()}`,
-        deliveredBy: group.members.map(String),
-      });
-
-      const payload = {
-        groupId,
-        message: sysMsg.message,
-        system: true,
-        _id: sysMsg._id,
-        from: socket.userId,
-        fromName: adminName?.name || 'System',
-        fromPhoto: '',
-        timestamp: sysMsg.createdAt.getTime(),
-      };
-
-      // Everyone remaining sees the roster change + system message.
-      group.members.forEach((mid) => emitToUser(mid, "groupRosterChanged", { group }));
-      group.members.forEach((mid) => emitToUser(mid, "receiveGroupMessage", payload));
-      // ALSO broadcast the roster+system message to the removed user's devices.
-      emitToUser(String(targetUserId), "groupRosterChanged", { group });
-      emitToUser(String(targetUserId), "receiveGroupMessage", payload);
-
-      // Tell the removed user they've been removed.
-      emitToUser(String(targetUserId), "groupYouWereRemoved", { groupId });
-    } catch (err) {
-      console.error("group:removeMember error:", err.message);
-    }
-  });
-
   // ✅ Post a WhatsApp-style status. Only the poster's contacts (people they
   //    chat with) receive the realtime `statusPosted` event; the feed itself
   //    also enforces the same visibility rule.
@@ -935,10 +651,6 @@ socket.on("sendMessage", async (data) => {
   // In-memory group call registry: callId -> { type, groupId, callerId, callerName, members:Set<userId> }
   const groupCalls = new Map();
 
-  // In-memory active 1:1 call registry so history ALWAYS records the ORIGINAL
-  // initiator as caller, regardless of which side rejects/ends/times out.
-  const activeCalls = new Map(); // callId -> { caller, callee, type }
-
   // Persist a finished call for both participants and notify them to refresh.
   async function logCall(callerId, calleeId, type, status, durationSec, opts) {
     try {
@@ -963,7 +675,6 @@ socket.on("sendMessage", async (data) => {
   // Caller starts a call -> ring the callee on all their devices.
   socket.on('call:invite', async ({ to, type, callId, name, photo }) => {
     if (!to || !callId) return;
-    activeCalls.set(callId, { caller: String(socket.userId), callee: String(to), type });
     const peer = await User.findById(to).select('name photo').lean().exec();
     const me = await User.findById(socket.userId).select('name photo').lean().exec();
     emitToUser(to, 'call:incoming', {
@@ -980,7 +691,6 @@ socket.on("sendMessage", async (data) => {
   // Group call: ring every member (mesh; each side builds its own peer).
   socket.on('call:inviteGroup', async ({ groupId, type, callId, name, photo, memberIds }) => {
     if (!groupId || !callId || !Array.isArray(memberIds)) return;
-    activeCalls.set(callId, { caller: String(socket.userId), callee: null, type });
     const me = await User.findById(socket.userId).select('name photo').lean().exec();
     groupCalls.set(callId, {
       type,
@@ -1030,13 +740,12 @@ socket.on("sendMessage", async (data) => {
     emitToUser(to, 'call:accepted', { callId, type });
   });
 
-  // Member leaves a group call -> notify everyone else (and close my other devices).
+  // Member leaves a group call -> notify everyone else.
   socket.on('call:memberLeft', ({ to, callId, type }) => {
     const ca = groupCalls.get(callId);
     if (!ca) return;
     ca.members.delete(String(socket.userId));
     [...ca.members].forEach((mid) => emitToUser(mid, 'call:memberLeft', { callId, userId: String(socket.userId), type }));
-    emitToUser(socket.userId, 'call:endedLocal', { callId });
     if (ca.members.size === 0) groupCalls.delete(callId);
   });
 
@@ -1050,61 +759,45 @@ socket.on("sendMessage", async (data) => {
       [...ca.members].forEach((mid) => emitToUser(mid, 'call:memberLeft', { callId, userId: String(socket.userId), type }));
       if (ca.members.size === 0) groupCalls.delete(callId);
     }
-    emitToUser(socket.userId, 'call:endedLocal', { callId });
+    socket.emit('call:endedLocal', { callId });
   });
 
   // Caller cancels a group ring (nobody answered) -> one missed group record.
   socket.on('call:groupTimeout', ({ groupId, callId, type, callerName }) => {
     logCall(socket.userId, socket.userId, type, 'missed', 0, { groupId, callerName });
     groupCalls.delete(callId);
-    emitToUser(socket.userId, 'call:endedLocal', { callId });
+    socket.emit('call:endedLocal', { callId });
   });
 
-  // Callee accepts -> caller opens the active call UI. Also tell my OTHER
-  // sockets to stop ringing, since this device is joining.
+  // Callee accepts -> caller opens the active call UI.
   socket.on('call:accept', ({ to, callId, type }) => {
     if (!to || !callId) return;
     emitToUser(to, 'call:accepted', { callId, type });
-    emitToUser(socket.userId, 'call:ringEnded', { callId });
   });
 
-  // Callee declines -> mark missed for the caller. Every device of the callee
-  // must stop ringing (item 3: rejecting on one device ends the ring on all).
+  // Callee declines -> mark missed for the caller.
   socket.on('call:reject', ({ to, callId, type }) => {
     if (!to) return;
-    const entry = activeCalls.get(callId);
-    const callerId = entry?.caller || String(to);
-    const calleeId = entry?.callee || String(socket.userId);
-    logCall(callerId, calleeId, type, 'missed', 0);
-    activeCalls.delete(callId);
-    emitToUser(socket.userId, 'call:rejectedRemote', { callId, type });
+    logCall(socket.userId, to, type, 'missed', 0);
+    socket.emit('call:rejectedRemote', { callId, type });
     emitToUser(to, 'call:rejected', { callId, type });
   });
 
-  // Either side hangs up -> both close; the ORIGINAL caller records the call so
-  // both accounts agree on direction no matter who hangs up first.
+  // Either side hangs up -> both close; the CALLER records the finished call
+  // (caller was ringed to accept, so caller always initiated).
   socket.on('call:end', ({ to, callId, type, durationSec }) => {
     if (!to) return;
     const secs = Math.max(0, Math.round(durationSec || 0));
-    const entry = activeCalls.get(callId);
-    const callerId = entry?.caller || String(socket.userId);
-    const calleeId = entry?.callee || String(to);
-    logCall(callerId, calleeId, type, secs > 0 ? 'ended' : 'missed', secs);
-    activeCalls.delete(callId);
-    emitToUser(socket.userId, 'call:endedLocal', { callId });
+    logCall(socket.userId, to, type, secs > 0 ? 'ended' : 'missed', secs);
+    socket.emit('call:endedLocal', { callId });
     emitToUser(to, 'call:ended', { callId });
   });
 
-  // Caller timeout (callee never answered) -> mark missed on all caller devices.
+  // Caller timeout (callee never answered) -> mark missed.
   socket.on('call:timeout', ({ to, callId, type }) => {
     if (!to) return;
-    const entry = activeCalls.get(callId);
-    const callerId = entry?.caller || String(socket.userId);
-    const calleeId = entry?.callee || String(to);
-    logCall(callerId, calleeId, type, 'missed', 0);
-    activeCalls.delete(callId);
+    logCall(socket.userId, to, type, 'missed', 0);
     emitToUser(to, 'call:timedOut', { callId });
-    emitToUser(socket.userId, 'call:timedOutS', { callId });
   });
 
   // WebRTC signaling relay between the two peers.
@@ -1176,7 +869,6 @@ socket.on("sendMessage", async (data) => {
           io.to(socket.id).emit("receiveMessage", {
             _id: msg._id,
             from: msg.from._id,
-            to: msg.to,
             fromName: msg.from.name,
             message: msg.message,
             file: msg.file,
