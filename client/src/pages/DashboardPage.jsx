@@ -226,6 +226,7 @@ export default function DashboardPage() {
   // ✅ Status feature (WhatsApp-style, mobile)
   const [statusFeed, setStatusFeed] = useState([]);
   const [statusAddSheet, setStatusAddSheet] = useState(false);
+  const [desktopCallPick, setDesktopCallPick] = useState(false);
   const [statusComposerOpen, setStatusComposerOpen] = useState(false);
   const [statusText, setStatusText] = useState('');
   const [statusCameraOpen, setStatusCameraOpen] = useState(false);
@@ -254,6 +255,35 @@ export default function DashboardPage() {
   const [callMinimized, setCallMinimized] = useState(false);
   const [mediaViewer, setMediaViewer] = useState(null); // { type:'dm'|'group', chatId, chatName, tab }
   const callStartAtRef = useRef(0);
+
+  // -------- Profile / block / forward-extra state --------
+  const [blockedIds, setBlockedIds] = useState(() => new Set());
+  const blockedIdsRef = useRef(blockedIds);
+  useEffect(() => { blockedIdsRef.current = blockedIds; }, [blockedIds]);
+  const [showMyProfile, setShowMyProfile] = useState(false);   // own profile page
+  const [myProfile, setMyProfile] = useState(null);            // { name, photo, about, phone, blocked:[ids] }
+  const [peerProfile, setPeerProfile] = useState(null);        // fetched contact profile
+  const [profileField, setProfileField] = useState(null);      // 'name' | 'about' | null
+  const [nameDraft, setNameDraft] = useState('');
+  const [aboutDraft, setAboutDraft] = useState('');
+  const [reportReason, setReportReason] = useState('');
+  const [reportDetails, setReportDetails] = useState('');
+  const [showReportModal, setShowReportModal] = useState(false);
+  // Camera launched WITHOUT an open chat -> after capture choose recipients.
+  const [cameraSendTarget, setCameraSendTarget] = useState(null); // { type:'dm'|'group', id, name }
+  const [cameraNeedsRecipient, setCameraNeedsRecipient] = useState(false);
+  const [showRecipientPicker, setShowRecipientPicker] = useState(false);
+  const [cameraRecipients, setCameraRecipients] = useState([]); // multi-select recipients
+  // New-message indicator (item 8): floating badge when scrolled up.
+  const [newMsgBadge, setNewMsgBadge] = useState(0);
+  const newMsgBadgeRef = useRef(0);
+  const messagesScrollRef = useRef(null);
+  const atBottomRef = useRef(true);
+  const headerHiddenRef = useRef(false);
+
+  // -------- DM history load-on-open (item 1) --------
+  const dmHistoryLoadedRef = useRef(new Set()); // chat ids whose history we pulled
+
   const pcRef = useRef(null);
   const localStreamRef = useRef(null);
   const remoteStreamRef = useRef(null);
@@ -1162,12 +1192,15 @@ const saveFile = async (fileUrl, fileName = "download", forceOpen = false) => {
 };
 
   // Start camera
-const handleOpenCamera = () => {
+const handleOpenCamera = (needsRecipient) => {
+  setCameraNeedsRecipient(!!needsRecipient);
   setShowCameraModal(true);
   setCapturedPhoto(null);
   setCaption('');
   setIsEditing(false);
   setShowCropper(false);
+  setShowRecipientPicker(false);
+  setCameraRecipients([]);
 
   // Wait for modal to render
   setTimeout(() => {
@@ -1240,24 +1273,21 @@ const handleCloseCamera = () => {
   setShowCameraModal(false);
   setCapturedPhoto(null);
   setCaption('');
+  setIsEditing(false);
+  setCameraNeedsRecipient(false);
+  setShowRecipientPicker(false);
+  setCameraRecipients([]);
 };
 
 // Send photo
-const handleSendPhoto = () => {
-  if (!user.id) {
-    alert('Not logged in');
-    return;
-  }
-  if (!capturedPhoto || !socket) return;
-  const isGroup = !!selectedGroup;
-  if (!isGroup && !selectedChat) return;
-
+const sendPhotoTo = (target) => {
+  if (!capturedPhoto || !socket || !target) return;
   const messageText = caption;
   const tempId = `photo-${Date.now()}-${Math.random()}`;
 
-  if (isGroup) {
+  if (target.type === 'group') {
     socket.emit('sendGroupMessage', {
-      groupId: selectedGroup.id,
+      groupId: target.id,
       message: messageText,
       file: capturedPhoto,
       fileName: 'photo.jpg',
@@ -1270,8 +1300,8 @@ const handleSendPhoto = () => {
 
     setGroupMessages(prev => ({
       ...prev,
-      [selectedGroup.id]: [
-        ...(prev[selectedGroup.id] || []),
+      [target.id]: [
+        ...(prev[target.id] || []),
         {
           id: tempId,
           text: messageText,
@@ -1288,31 +1318,31 @@ const handleSendPhoto = () => {
     }));
 
     setGroupsList(prev => {
-      const exists = prev.some(g => String(g.id) === String(selectedGroup.id));
+      const exists = prev.some(g => String(g.id) === String(target.id));
       return exists ? prev.map(g =>
-        String(g.id) === String(selectedGroup.id)
+        String(g.id) === String(target.id)
           ? { ...g, lastMsg: 'You: 📷 Photo', lastTime: Date.now() }
           : g
       ) : prev;
     });
   } else {
     socket.emit('sendMessage', {
-      to: selectedChat.id,
+      to: target.id,
       message: messageText,
       file: capturedPhoto,
       fileName: 'photo.jpg',
       fileType: 'image/jpeg', // ✅ Send fileType
       from: user.id,
       fromName: user.name,
-      fromPhoto: selectedChat.photo,
+      fromPhoto: target.photo || selectedChat?.photo,
       messageId: tempId  // ✅ Now valid
     });
 
     setMessages(prev => {
       const updated = {
         ...prev,
-        [selectedChat.id]: [
-          ...(prev[selectedChat.id] || []),
+        [target.id]: [
+          ...(prev[target.id] || []),
           {
             id: tempId,
             text: messageText,
@@ -1334,11 +1364,37 @@ const handleSendPhoto = () => {
       return updated;
     });
   }
+};
+
+const handleSendPhoto = () => {
+  if (!user.id) {
+    alert('Not logged in');
+    return;
+  }
+  if (!capturedPhoto || !socket) return;
+  const isGroup = !!selectedGroup;
+
+  // Camera opened from the bottom nav (no chat open): pick recipients first.
+  if (cameraNeedsRecipient) {
+    setShowRecipientPicker(true);
+    return;
+  }
+  if (!isGroup && !selectedChat) return;
+
+  const photo = capturedPhoto;
+  const target = {
+    type: isGroup ? 'group' : 'dm',
+    id: isGroup ? selectedGroup.id : selectedChat.id,
+    name: isGroup ? selectedGroup.name : selectedChat.name,
+    photo: isGroup ? selectedGroup.dp : selectedChat.photo,
+  };
+  sendPhotoTo(target);
 
   // Reset
   setCapturedPhoto(null);
   setCaption('');
   setIsEditing(false);
+  setCameraNeedsRecipient(false);
 };
 
 
@@ -2306,10 +2362,61 @@ useEffect(() => {
   // Auto-scroll to bottom when a DM is open and its messages change.
   // (Only DMs: group chats use their own unread-position scroll logic.)
 useEffect(() => {
-  if (selectedChat && messagesEndRef.current) {
+  if (selectedChat && messagesEndRef.current && atBottomRef.current) {
     messagesEndRef.current.scrollIntoView({ behavior: 'instant' });
   }
 }, [selectedChat, messages]);
+
+  // -------- Chat scroll tracking (new-message indicator + header hide) --------
+  const isScrollNearBottom = () => {
+    const el = messagesScrollRef.current;
+    if (!el) return true;
+    return el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  };
+
+  const scrollChatToBottom = () => {
+    if (messagesEndRef.current) messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    setNewMsgBadge(0);
+    newMsgBadgeRef.current = 0;
+  };
+
+  const bindChatScroll = () => {
+    requestAnimationFrame(() => {
+      const el = document.querySelector('.messages');
+      if (!el) return;
+      messagesScrollRef.current = el;
+      el.onscroll = () => {
+        atBottomRef.current = isScrollNearBottom();
+        if (atBottomRef.current && newMsgBadgeRef.current > 0) {
+          newMsgBadgeRef.current = 0;
+          setNewMsgBadge(0);
+        }
+        // Mobile: hide the sticky chat header when scrolling DOWN through the
+        // conversation and reveal it when scrolling UP (item 4).
+        if (isMobile && isMobileRef.current && (selectedChat?.id || selectedGroup?.id)) {
+          const header = el.closest('.chat-container')?.querySelector('.chat-header');
+          if (header) {
+            const dirDown = el.scrollTop > headerHiddenRef.current ? 1 : -1;
+            headerHiddenRef.current = el.scrollTop;
+            if (el.scrollTop > 90 && dirDown > 0 && !header.classList.contains('scroll-hidden')) {
+              header.classList.add('scroll-hidden');
+            }
+            if (dirDown < 0 && header.classList.contains('scroll-hidden')) {
+              header.classList.remove('scroll-hidden');
+            }
+          }
+        }
+      };
+    });
+  };
+
+  // Rebind the scroll container whenever the open chat changes or it remounts.
+  useEffect(() => {
+    if (!selectedChat?.id && !selectedGroup?.id) return;
+    const t = setTimeout(bindChatScroll, 120);
+    const t2 = setTimeout(bindChatScroll, 600);
+    return () => { clearTimeout(t); clearTimeout(t2); };
+  }, [selectedChat?.id, selectedGroup?.id, isMobile]);
 
   // Scroll a just-opened group to the oldest unread message if there are
   // unread messages (WhatsApp-style); otherwise to the latest (bottom).
@@ -2466,15 +2573,18 @@ newSocket.on('userStatusSnapshot', (snapshot) => {
   // ✅ GLOBAL listener: runs once per socket
 newSocket.on("receiveMessage", (data) => {
   const senderId = String(data.from);
-  const displayName = senderId === user.id ? "You" : data.fromName || "Unknown";
-
-  
+  const isOwn = senderId === user.id;
+  const displayName = isOwn ? "You" : data.fromName || "Unknown";
+  // My own message echoed from another device belongs to the conversation with
+  // the RECIPIENT (data.to); incoming messages key under the sender.
+  const chatKey = isOwn ? String(data.to || '') : senderId;
+  if (!chatKey) return;
 
   setMessages((prev) => {
-    const chat = prev[senderId] || [];
+    const chat = prev[chatKey] || [];
 
     // ✅ 1. If this is my own message and I sent it with messageId
-    if (senderId === user.id && data.messageId) {
+    if (isOwn && data.messageId) {
       const existingIndex = chat.findIndex(m => m.id === data.messageId);
 
       if (existingIndex > -1) {
@@ -2485,20 +2595,17 @@ newSocket.on("receiveMessage", (data) => {
           delivered: true,
         };
 
-        const updated = { ...prev, [senderId]: updatedChat };
+        const updated = { ...prev, [chatKey]: updatedChat };
         safeSetItem('chatMessages', updated);
         return updated;
       }
     }
 
-    // ✅ 2. Otherwise, it's a new message from someone else
-    // If this DM chat is currently open and the user is at the bottom of it,
-    // treat the incoming message as read right away (WhatsApp behavior) —
-    // otherwise it would sit as an unread badge even though they're looking.
+    // ✅ 2. Otherwise it's a new message for this conversation.
     const isOpenChat = selectedChatRef.current &&
-      String(selectedChatRef.current.id) === String(senderId) &&
+      String(selectedChatRef.current.id) === String(chatKey) &&
       (isMobileRef.current ? mobileChatOpenRef.current : true);
-    const atBottom = (el => !!el && el.scrollHeight - el.scrollTop - el.clientHeight < 60)(
+    const atBottom = (el => !!el && el.scrollHeight - el.scrollTop - el.clientHeight < 80)(
       typeof document !== 'undefined' ? document.querySelector('.messages') : null
     );
     const autoRead = Boolean(isOpenChat && atBottom);
@@ -2511,9 +2618,9 @@ newSocket.on("receiveMessage", (data) => {
       fileName: data.fileName,
       fileType: data.fileType,
       duration: data.duration,
+      forwarded: !!data.forwarded,
       replyTo: data.replyTo ? {
         ...data.replyTo,
-        
       } : null,
       photo: data.fromPhoto || 'https://placehold.co/50x50',
       delivered: true,
@@ -2521,64 +2628,122 @@ newSocket.on("receiveMessage", (data) => {
     };
 
     const updatedChat = [...chat, newMessage];
-    const updated = { ...prev, [senderId]: updatedChat };
+    const updated = { ...prev, [chatKey]: updatedChat };
     safeSetItem('chatMessages', updated);
     if (autoRead) {
-      newSocket.emit('markAsRead', { chatId: senderId, readerId: user.id });
+      newSocket.emit('markAsRead', { chatId: chatKey, readerId: user.id });
     }
     return updated;
   });
 
-
-  
-
-    
-
-    // 3. Upsert contact
-    setContacts(prev => {
-      const exists = prev.some(c => String(c.id) === senderId);
-      if (exists) {
-        return prev.map(c =>
-          String(c.id) === senderId
-            ? { ...c, lastMsg: data.message, time: data.time, online: true }
-            : c
-        );
+  // New-message indicator: only when the chat is open but user scrolled up.
+  if (selectedChatRef.current && String(selectedChatRef.current.id) === String(chatKey) && !isOwn) {
+    if (typeof document !== 'undefined') {
+      const el = document.querySelector('.messages');
+      const nearBottom = !el || el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+      if (!nearBottom) {
+        newMsgBadgeRef.current += 1;
+        setNewMsgBadge(newMsgBadgeRef.current);
       }
-      const newContact = {
-        id: senderId,
-        name: data.fromName || senderId,
-        photo: data.fromPhoto || 'https://placehold.co/50x50',
+    }
+  }
 
-        lastMsg: data.message,
-        time: data.time,
-        online: true
-      };
-      const updated = [newContact, ...prev];
-      // Persist to this user's server-side address book so the chat
-      // stays visible on any device/account.
-      fetch(`${API_URL}/api/contacts`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${localStorage.getItem('token')}`,
-        },
-        body: JSON.stringify({ userId: senderId }),
-      }).catch(err => console.error('Failed to save received-sender contact', err));
-      return updated;
-    });
-
-
+    // 3. Upsert contact (never for my own echoes)
+    if (!isOwn) {
+      setContacts(prev => {
+        const exists = prev.some(c => String(c.id) === senderId);
+        if (exists) {
+          return prev.map(c =>
+            String(c.id) === senderId
+              ? { ...c, lastMsg: data.message, time: data.time, online: true }
+              : c
+          );
+        }
+        const newContact = {
+          id: senderId,
+          name: data.fromName || senderId,
+          photo: data.fromPhoto || 'https://placehold.co/50x50',
+          lastMsg: data.message,
+          time: data.time,
+          online: true
+        };
+        const updated = [newContact, ...prev];
+        // Persist to this user's server-side address book so the chat
+        // stays visible on any device/account.
+        fetch(`${API_URL}/api/contacts`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${localStorage.getItem('token')}`,
+          },
+          body: JSON.stringify({ userId: senderId }),
+        }).catch(err => console.error('Failed to save received-sender contact', err));
+        return updated;
+      });
+    }
 
     // 5. ✅ Mark as read only if active chat AND tab is focused
-    // 5. ✅ Mark as read only if active chat AND tab is focused
-            if (selectedChatRef.current?.id === senderId && isTabFocusedRef.current) {
+            if (!isOwn && selectedChatRef.current?.id === chatKey && isTabFocusedRef.current) {
             setTimeout(() => {
-              console.log('📤 Auto-marking as read (message received)', { chatId: senderId });
               markAsReadRef.current();
             }, 0); // let React apply setMessages first
           }
-
       });
+
+    // ✅ DM history loaded from the server when opening a 1:1 chat
+    // (includes messages sent by the other person while I was offline).
+    newSocket.on('messagesHistory', ({ to, messages }) => {
+      if (!to) return;
+      const key = String(to);
+      setMessages(prev => {
+        const existing = prev[key] || [];
+        const combined = new Map();
+        existing.forEach(m => combined.set(String(m.id || m.messageId || ''), m));
+        (messages || []).forEach(m => {
+          const kid = String(m.messageId || m._id);
+          const prevMsg = combined.get(kid);
+          if (prevMsg) {
+            // Server truth for status on messages I sent; keep my local read
+            // state for messages I received.
+            const isMine = String(m.from) === String(user.id);
+            combined.set(kid, {
+              ...prevMsg,
+              id: String(m._id || prevMsg.id),
+              delivered: isMine ? !!m.delivered : prevMsg.delivered,
+              read: isMine ? !!m.read : prevMsg.read,
+            });
+          } else {
+            combined.set(kid, {
+              id: String(m.messageId || m._id),
+              messageId: m.messageId,
+              text: m.message,
+              sender: String(m.from) === String(user.id) ? 'You' : (m.fromName || 'Unknown'),
+              timestamp: m.timestamp || Date.now(),
+              file: m.file,
+              fileName: m.fileName,
+              fileType: m.fileType,
+              duration: m.duration,
+              forwarded: !!m.forwarded,
+              replyTo: m.replyTo || null,
+              photo: m.fromPhoto || 'https://placehold.co/50x50',
+              delivered: !!m.delivered,
+              read: String(m.from) === String(user.id) ? !!m.read : false,
+            });
+          }
+        });
+        const merged = Array.from(combined.values())
+          .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+        const updated = { ...prev, [key]: merged };
+        safeSetItem('chatMessages', updated);
+        return updated;
+      });
+      // Mark as read now if this chat is currently open and user at bottom.
+      if (selectedChatRef.current && String(selectedChatRef.current.id) === String(key)) {
+        const el = typeof document !== 'undefined' ? document.querySelector('.messages') : null;
+        const nearBottom = !el || el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+        if (nearBottom) setTimeout(() => markAsReadRef.current(), 0);
+      }
+    });
       
 
     // ✅ Listen for read receipts (when someone reads your messages)
@@ -2659,15 +2824,22 @@ newSocket.on("receiveMessage", (data) => {
               fileName: data.fileName,
               fileType: data.fileType,
               duration: data.duration,
+              forwarded: !!data.forwarded,
+              system: !!data.system,
               photo: data.fromPhoto || 'https://placehold.co/50x50',
               // My own message echoed to my other devices is NEVER "read" just
               // because a device has the group open (read ticks come from the
               // server once ALL members have seen the message).
               read: isOpenGroup && !isOwnMessage,
               delivered: !isOwnMessage,
+              allReceived: false,
             }],
           };
         });
+        // Ack real-time receipt so the sender's tick can flip to all-received.
+        if (!isOwnMessage && data._id) {
+          newSocket.emit('groupMessageReceived', { groupId: gid, messageId: data._id });
+        }
         // Tell the server this member has seen the group's messages so senders
         // can advance their read ticks (only for messages from OTHERS).
         if (isOpenGroup && !isOwnMessage) {
@@ -2700,6 +2872,109 @@ newSocket.on("receiveMessage", (data) => {
           });
           return changed ? { ...prev, [gid]: next } : prev;
         });
+      });
+
+      // ✅ Group message ALL members have received it → double tick (server
+      //    computed, so every device of the sender shows the same state).
+      newSocket.on('groupMessageAllReceived', ({ groupId, messageId, clientMessageId }) => {
+        const gid = String(groupId);
+        setGroupMessages(prev => {
+          const list = prev[gid] || [];
+          let changed = false;
+          const next = list.map(m => {
+            if ((m.id === messageId || m.id === clientMessageId) && !m.allReceived) {
+              changed = true;
+              return { ...m, allReceived: true, delivered: true };
+            }
+            return m;
+          });
+          return changed ? { ...prev, [gid]: next } : prev;
+        });
+      });
+
+      // ✅ Group roster changed (member added / removed / made admin). Refresh
+      //    the group locally so the member list + admin badges stay current.
+      newSocket.on('groupRosterChanged', ({ group }) => {
+        if (!group) return;
+        const gid = String(group._id || group.id);
+        const toId = (v) => (v && v._id ? String(v._id) : v ? String(v) : '');
+        const memberIds = (group.members || []).map(toId);
+        const adminIds = [toId(group.admin), ...(group.admins || []).map(toId)].filter(Boolean);
+        const formerIds = (group.formerMembers || []).map(toId);
+        setGroupsList(prev => prev.map(g => {
+          if (String(g._id || g.id) !== gid) return g;
+          const wasRemoved = !memberIds.includes(String(user.id)) && formerIds.includes(String(user.id));
+          return {
+            ...g,
+            id: gid,
+            _id: gid,
+            name: group.name,
+            dp: group.dp,
+            memberCount: memberIds.length,
+            members: memberIds,
+            admin: toId(group.admin),
+            admins: adminIds,
+            removed: wasRemoved,
+          };
+        }));
+        if (selectedGroupRef.current && String(selectedGroupRef.current.id) === gid) {
+          const wasRemoved = !memberIds.includes(String(user.id)) && formerIds.includes(String(user.id));
+          const normalized = {
+            ...selectedGroupRef.current,
+            id: gid,
+            name: group.name,
+            dp: group.dp,
+            memberCount: memberIds.length,
+            members: memberIds,
+            admin: toId(group.admin),
+            admins: adminIds,
+            formerMembers: formerIds,
+            removed: wasRemoved,
+          };
+          selectedGroupRef.current = normalized;
+          setSelectedGroup(normalized);
+        }
+      });
+
+      // ✅ I was made an admin of a group.
+      newSocket.on('groupYouAreAdmin', ({ groupId }) => {
+        const gid = String(groupId);
+        setGroupsList(prev => prev.map(g =>
+          String(g._id || g.id) === gid ? { ...g, admins: [...(g.admins || []), String(user.id)] } : g
+        ));
+        if (selectedGroupRef.current && String(selectedGroupRef.current.id) === gid) {
+          const normalized = {
+            ...selectedGroupRef.current,
+            admins: [...(selectedGroupRef.current.admins || []), String(user.id)],
+          };
+          selectedGroupRef.current = normalized;
+          setSelectedGroup(normalized);
+        }
+      });
+
+      // ✅ I was removed from a group: keep it in my list (read-only history)
+      //    but no longer treat it as an active chat.
+      newSocket.on('groupYouWereRemoved', ({ groupId }) => {
+        const gid = String(groupId);
+        setGroupsList(prev => prev.map(g =>
+          String(g._id || g.id) === gid
+            ? { ...g, removed: true }
+            : g
+        ));
+        // Stop treating the group as "open, member" — flip the read-only flag.
+        if (selectedGroupRef.current && String(selectedGroupRef.current.id) === gid) {
+          const normalized = { ...selectedGroupRef.current, removed: true };
+          selectedGroupRef.current = normalized;
+          setSelectedGroup(normalized);
+        }
+      });
+
+      // ✅ I tried to send to a group I'm no longer a part of.
+      newSocket.on('groupMessageRejected', ({ groupId, reason }) => {
+        const gid = String(groupId);
+        setGroupsList(prev => prev.map(g =>
+          String(g._id || g.id) === gid ? { ...g, removed: true } : g
+        ));
       });
 
       // ✅ Group read receipt: ALL other members have read a message → green tick
@@ -2735,6 +3010,8 @@ newSocket.on("receiveMessage", (data) => {
             fileName: m.fileName,
             fileType: m.fileType,
             duration: m.duration,
+            forwarded: !!m.forwarded,
+            system: !!m.system,
             photo: m.fromPhoto || 'https://placehold.co/50x50',
             delivered: true,
             // On load, mark MY OWN messages as "delivered but not read by all"
@@ -2742,6 +3019,7 @@ newSocket.on("receiveMessage", (data) => {
             // member has seen them). Received messages don't show ticks.
             read: String(m.from) !== user.id,
             allRead: !!m.allRead,
+            allReceived: !!m.allReceived,
             readBy: m.readBy || [],
           }))];
           // Dedupe by id/messageId so reopening a group replaces rather than
@@ -2960,31 +3238,71 @@ newSocket.on("receiveMessage", (data) => {
           };
         }, []);
 
-        // Save whenever chat changes
+        // Save the full chat view snapshot whenever it changes (chat, tab, section).
         useEffect(() => {
-          if (selectedChat?.id) {
-            localStorage.setItem('selectedChat', JSON.stringify(selectedChat));
+          const snap = {
+            selectedChat: selectedChat?.id ? { ...selectedChat } : null,
+            selectedGroupId: selectedGroup?.id || null,
+            view,
+            activeTab,
+          };
+          // Clearing an open chat also clears the snapshot so a refresh lands on
+          // the default Chats view instead of a stale chat.
+          if (!snap.selectedChat && !snap.selectedGroupId) {
+            localStorage.removeItem('chatSnapshot');
+          } else {
+            localStorage.setItem('chatSnapshot', JSON.stringify(snap));
           }
-        }, [selectedChat]);
+        }, [selectedChat, selectedGroup?.id, view, activeTab]);
 
-        // Restore the previous chat ONLY if that person/group still exists in this
-        // account's contact list or groups (prevents ghost chats after a refresh).
+        // Restore the previous view + open chat/group after data loads, but ONLY
+        // if that person/group still exists in this account's contacts/groups
+        // (prevents ghost chats after a refresh).
         useEffect(() => {
           if (!dataReady) return;
-          const saved = localStorage.getItem('selectedChat');
-          const parsed = saved ? JSON.parse(saved) : null;
-          if (!parsed?.id) return;
-          const stillExists =
-            contacts.some(c => String(c.id) === String(parsed.id)) ||
-            groupsList.some(g => String(g.id) === String(parsed.id));
-          if (stillExists) {
-            setSelectedChat(parsed);
-            selectedChatRef.current = parsed;
+          let saved;
+          try { saved = JSON.parse(localStorage.getItem('chatSnapshot')); } catch (e) { saved = null; }
+          if (!saved || (!saved.selectedChat?.id && !saved.selectedGroupId)) return;
+
+          const chatStillExists =
+            saved.selectedChat?.id &&
+            contacts.some(c => String(c.id) === String(saved.selectedChat.id));
+          const groupStillExists =
+            saved.selectedGroupId &&
+            groupsList.some(g => String(g.id) === String(saved.selectedGroupId));
+
+          if (chatStillExists) {
+            if (saved.view) setView(saved.view);
+            if (saved.activeTab !== undefined) setActiveTab(saved.activeTab);
+            const chat = contacts.find(c => String(c.id) === String(saved.selectedChat.id)) || saved.selectedChat;
+            setSelectedChat(chat);
+            selectedChatRef.current = chat;
+            setSelectedGroup(null);
+            selectedGroupRef.current = null;
+            if (socket) socket.emit('fetchMessages', { to: chat.id });
+          } else if (groupStillExists) {
+            if (saved.view) setView(saved.view);
+            if (saved.activeTab !== undefined) setActiveTab(saved.activeTab);
+            const grp = groupsList.find(g => String(g.id) === String(saved.selectedGroupId));
+            setSelectedChat(null);
+            selectedChatRef.current = null;
+            const normalized = grp ? {
+              id: grp._id || grp.id,
+              name: grp.name,
+              dp: grp.dp,
+              memberCount: grp.memberCount || (grp.members?.length || 0),
+              members: grp.members || [],
+              admin: grp.admin,
+              admins: grp.admins || [],
+              removed: !!grp.removed,
+            } : { id: saved.selectedGroupId, name: 'Group' };
+            setSelectedGroup(normalized);
+            selectedGroupRef.current = normalized;
+            if (socket) socket.emit('fetchGroupMessages', { groupId: normalized.id });
           } else {
-            localStorage.removeItem('selectedChat');
-            setSelectedChat(prev => (prev && String(prev.id) === String(parsed.id) ? null : prev));
+            localStorage.removeItem('chatSnapshot');
           }
-        }, [dataReady, groupsList]);
+        }, [dataReady, groupsList, contacts]);
 
         // NOTE: no auto "mark as read" on mount for a restored chat — a direct
         // message must only become a read (green) tick when the receiving user
@@ -3121,6 +3439,117 @@ newSocket.on("receiveMessage", (data) => {
             }
           }, [navigate]);
 
+        // Load OWN profile (about + people I've blocked) once signed in.
+        useEffect(() => {
+          if (!user.id) return;
+          const token = localStorage.getItem('token');
+          fetch(`${API_URL}/api/profile/me`, {
+            headers: { Authorization: `Bearer ${token}` },
+          })
+            .then(r => (r.ok ? r.json() : null))
+            .then(d => {
+              if (!d) return;
+              setMyProfile(d);
+              setBlockedIds(new Set((d.blocked || []).map(String)));
+              if (d.name && d.name !== 'You') {
+                setUser(prev => ({ ...prev, name: d.name, photo: d.photo || prev.photo }));
+                userRef.current = { ...(userRef.current || {}), name: d.name, photo: d.photo || undefined };
+              }
+            })
+            .catch(err => console.error('Failed to load profile', err));
+        }, [user.id]);
+
+        // Fetch a contact's public profile when the info drawer opens or a
+        // 1:1 chat opens (need blockedBy to enforce the "you're blocked" UI).
+        useEffect(() => {
+          if (selectedChat?.id) {
+            setPeerProfile((prev) => ({ ...prev, name: selectedChat.name, photo: selectedChat.photo, loading: true }));
+            fetch(`${API_URL}/api/profile/${selectedChat.id}`, {
+              headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
+            })
+              .then(r => (r.ok ? r.json() : null))
+              .then(d => setPeerProfile((prev) => ({ ...prev, ...(d || {}), loading: false })))
+              .catch(() => setPeerProfile((prev) => ({ ...prev, loading: false })));
+          } else {
+            setPeerProfile(null);
+          }
+        }, [showContactInfo, selectedChat?.id]);
+
+        // Save name/about edits to the backend + update local UI immediately.
+        const saveProfileField = async (field, value) => {
+          if (!field) return;
+          if (!value || !String(value).trim()) return;
+          try {
+            const res = await fetch(`${API_URL}/api/profile/me`, {
+              method: 'PATCH',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${localStorage.getItem('token')}`,
+              },
+              body: JSON.stringify({ [field]: String(value).trim() }),
+            });
+            const data = await res.json();
+            if (!res.ok) {
+              alert(data.error || `Failed to update ${field}`);
+              setProfileField(null);
+              return;
+            }
+            setMyProfile(prev => ({ ...prev, ...data }));
+            if (field === 'name') {
+              setUser(prev => ({ ...prev, name: data.name }));
+              userRef.current = { ...(userRef.current || {}), name: data.name };
+              setContacts(prev => prev.map(c => String(c.id) === String(user.id) ? { ...c, name: data.name } : c));
+            }
+            setProfileField(null);
+          } catch (err) {
+            alert('Failed to update profile');
+            setProfileField(null);
+          }
+        };
+
+        // Block / unblock a contact.
+        const toggleBlock = async (peerId, block) => {
+          try {
+            const res = await fetch(`${API_URL}/api/profile/${peerId}/${block ? 'block' : 'unblock'}`, {
+              method: block ? 'POST' : 'DELETE',
+              headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
+            });
+            if (!res.ok) throw new Error('Block request failed');
+            setBlockedIds(prev => {
+              const next = new Set(prev);
+              if (block) next.add(String(peerId)); else next.delete(String(peerId));
+              return next;
+            });
+            setMyProfile(prev => {
+              if (!prev) return prev;
+              const list = (prev.blocked || []).map(String);
+              return { ...prev, blocked: block ? [...list, String(peerId)] : list.filter(id => id !== String(peerId)) };
+            });
+          } catch (err) {
+            alert('Failed to update block status');
+          }
+        };
+
+        // Report a user (opens the confirm modal first).
+        const submitReport = async (peerId, reason) => {
+          try {
+            const res = await fetch(`${API_URL}/api/profile/${peerId}/report`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${localStorage.getItem('token')}`,
+              },
+              body: JSON.stringify({ reason }),
+            });
+            if (!res.ok) throw new Error('Report failed');
+            setShowReportModal(false);
+            setReportReason('');
+            alert('Thanks! The report has been submitted.');
+          } catch (err) {
+            alert('Failed to submit report. Please try again.');
+          }
+        };
+
         // Handle token from URL after Google login
         useEffect(() => {
           const params = new URLSearchParams(location.search);
@@ -3155,6 +3584,8 @@ newSocket.on("receiveMessage", (data) => {
         const forwardOnRef = useRef(false);
         const groupFlowOnRef = useRef(false);
         const cameraOnRef = useRef(false);
+        const myProfileOnRef = useRef(false);
+        const mediaViewerOnRef = useRef(false);
 
         const pushPage = (screen, saved) => {
           window.history.pushState({ appNav: true }, '');
@@ -3170,7 +3601,13 @@ newSocket.on("receiveMessage", (data) => {
         // Close whichever page is topmost, based on LIVE state (used as a
         // fallback for desktop or when no pushed history entry exists).
         const closeTopLive = () => {
-          if (showCameraModal) {
+          if (showMyProfile) {
+            setShowMyProfile(false);
+            myProfileOnRef.current = false;
+          } else if (mediaViewer) {
+            setMediaViewer(null);
+            mediaViewerOnRef.current = false;
+          } else if (showCameraModal) {
             stopCameraStream();
             setShowCameraModal(false);
             cameraOnRef.current = false;
@@ -3248,6 +3685,14 @@ newSocket.on("receiveMessage", (data) => {
               setShowCameraModal(false);
               cameraOnRef.current = false;
               break;
+            case 'myprofile':
+              setShowMyProfile(false);
+              myProfileOnRef.current = false;
+              break;
+            case 'mediaviewer':
+              setMediaViewer(null);
+              mediaViewerOnRef.current = false;
+              break;
             default:
               break;
           }
@@ -3283,6 +3728,8 @@ newSocket.on("receiveMessage", (data) => {
             { on: showForwardModal, ref: forwardOnRef, key: 'forward' },
             { on: showGroupFlow, ref: groupFlowOnRef, key: 'groupflow' },
             { on: showCameraModal, ref: cameraOnRef, key: 'camera' },
+            { on: showMyProfile, ref: myProfileOnRef, key: 'myprofile' },
+            { on: !!mediaViewer, ref: mediaViewerOnRef, key: 'mediaviewer' },
           ];
           pages.forEach((p) => {
             if (p.on && !p.ref.current) {
@@ -3290,7 +3737,7 @@ newSocket.on("receiveMessage", (data) => {
             }
             p.ref.current = !!p.on;
           });
-        }, [isMobile, selectedChat?.id, selectedGroup?.id, showContactInfo, showGroupInfo, showAddContact, showForwardModal, showGroupFlow, showCameraModal]);
+        }, [isMobile, selectedChat?.id, selectedGroup?.id, showContactInfo, showGroupInfo, showAddContact, showForwardModal, showGroupFlow, showCameraModal, showMyProfile, !!mediaViewer]);
 
         // Handle the system/hardware back button
         useEffect(() => {
@@ -3647,6 +4094,7 @@ newSocket.on("receiveMessage", (data) => {
           setSelectedGroup(null);
           selectedGroupRef.current = null;
           setMobileChatOpen(true);
+          if (socket) socket.emit('fetchMessages', { to: chat.id });
           // Mark read only on an explicit user open (WhatsApp behavior):
           // never auto-send read receipts for chats restored on page load.
           if ((messages[chat.id] || []).some(m => m.sender !== 'You' && !m.read)) {
@@ -3712,6 +4160,8 @@ newSocket.on("receiveMessage", (data) => {
                         memberCount: group.memberCount || (group.members?.length || 0),
                         members: group.members || [],
                         admin: group.admin,
+                        admins: group.admins || [],
+                        removed: !!group.removed,
                       };
                       selectedGroupRef.current = normalized;
                       setSelectedGroup(normalized);
@@ -3758,12 +4208,14 @@ newSocket.on("receiveMessage", (data) => {
                         photo: chat.photo || 'https://via.placeholder.com/50',
                         count: un.length,
                         text,
-                        open: () => {
+open: () => {
                           setSelectedChat(chat);
                           setSelectedGroup(null);
                           selectedGroupRef.current = null;
                           setMobileChatOpen(true);
                           setActiveTab('chats');
+                          if (socket) socket.emit('fetchMessages', { to: chat.id });
+                          setTimeout(() => markAsReadRef.current(), 60);
                         },
                       };
                     });
@@ -3862,6 +4314,13 @@ newSocket.on("receiveMessage", (data) => {
         e.preventDefault();
         const input = messageInputRef.current;
         if (!input?.value.trim()) return;
+        if (selectedGroup.removed) {
+          // Read-only former members can't send.
+          input.value = '';
+          setDesktopDraft('');
+          alert("You were removed from this group and can't send messages.");
+          return;
+        }
         const text = input.value.trim();
         const now = new Date();
         const tempId = `group-temp-${now.getTime()}-${Math.random()}`;
@@ -4496,6 +4955,16 @@ newSocket.on("receiveMessage", (data) => {
                     groupIsMobileHit && msg.id === groupMobileSearchResults[groupMobileSearchIndex];
                   const groupIsMsgSelected = isSelectionMode && selectedMessages.has(msg.id);
 
+                  // System messages (member removed/added etc.) render as a
+                  // centered banner, not a bubble.
+                  if (msg.system) {
+                    return (
+                      <div key={msg.id} className="group-system-message" style={{ textAlign: 'center', color: '#a0a8af', fontSize: '0.8rem', padding: '10px 0' }}>
+                        {msg.text}
+                      </div>
+                    );
+                  }
+
                   return (
                     <div
                       key={msg.id}
@@ -4557,6 +5026,12 @@ newSocket.on("receiveMessage", (data) => {
                           }}
                         >
                           {contacts.find(c => String(c.id) === String(msg.senderId))?.name || msg.sender || msg.fromName || msg.from || 'Member'}
+                        </div>
+                      )}
+
+                      {msg.forwarded && (
+                        <div className="forwarded-label" style={{ fontSize: '0.72rem', fontWeight: 700, color: isYou ? '#9adbd1' : '#128c7e', textTransform: 'uppercase', letterSpacing: '0.3px', marginBottom: '4px' }}>
+                          Forwarded
                         </div>
                       )}
 
@@ -4807,7 +5282,7 @@ newSocket.on("receiveMessage", (data) => {
                         <span className="timestamp">{formatTime(msg.timestamp)}</span>
                         {isYou && (
                           <div className={`message-status ${msg.allRead ? 'read' : ''}`}>
-                            <WhatsAppTicks read={msg.allRead} delivered={msg.delivered} />
+                            <WhatsAppTicks read={msg.allRead} delivered={msg.allReceived} />
                           </div>
                         )}
                       </div>
@@ -4816,11 +5291,20 @@ newSocket.on("receiveMessage", (data) => {
                   });
                   })()}
                 <div ref={messagesEndRef} />
+                {newMsgBadge > 0 && (
+                  <div className="new-msg-indicator" onClick={scrollChatToBottom}>
+                    <span>{newMsgBadge}</span>
+                    <ChevronDown size={14} strokeWidth={2.5} />
+                  </div>
+                )}
               </div>
 
               <div className="message-input" style={{ display: isMobile ? 'none' : 'flex' }}>
                 <form onSubmit={handleSendGroupMessage}>
                   <div className="input-wrapper">
+                    {selectedGroup.removed && (
+                      <div className="blocked-banner">🔒 You were removed from this group. You can still view history.</div>
+                    )}
                     {groupReplyTo && (
                       <div
                         style={{
@@ -4921,6 +5405,9 @@ newSocket.on("receiveMessage", (data) => {
 
               {isMobile && (
                 <div className="mobile-compose">
+                  {selectedGroup.removed && (
+                    <div className="blocked-banner">🔒 You were removed from this group. You can still view history.</div>
+                  )}
                   {!showMobileAttach && (
                   <>
                   <div className="mobile-input-row">
@@ -5060,8 +5547,15 @@ newSocket.on("receiveMessage", (data) => {
   if (!input?.value.trim()) return;
 
   const text = input.value.trim();
-  console.log("📝 Message being sent:", text);
   const now = new Date();
+
+  // Block enforcement (mirrors the server): a user I blocked cannot be messaged.
+  if (blockedIdsRef.current.has(String(selectedChat.id))) {
+    input.value = '';
+    setDesktopDraft('');
+    alert(`You've blocked ${selectedChat.name}. Unblock them to send messages.`);
+    return;
+  }
 
   // ✅ Generate tempId first
   const tempId = `temp-${now.getTime()}-${Math.random()}`;
@@ -5493,6 +5987,16 @@ newSocket.on("receiveMessage", (data) => {
                 <button
                   className="dropdown-item"
                   onClick={() => {
+                    setShowMyProfile(true);
+                    setShowDropdown(false);
+                  }}
+                >
+                  <User size={18} strokeWidth={2.2} style={{ color: '#00a884' }} />
+                  <span>My profile</span>
+                </button>
+                <button
+                  className="dropdown-item"
+                  onClick={() => {
                     setShowContactInfo(true);
                     setShowDropdown(false);
                   }}
@@ -5536,6 +6040,16 @@ newSocket.on("receiveMessage", (data) => {
               </>
             ) : (
               <>
+            <button
+              className="dropdown-item"
+              onClick={() => {
+                setShowMyProfile(true);
+                setShowDropdown(false);
+              }}
+            >
+              <User size={18} strokeWidth={1.8} />
+              <span>My profile</span>
+            </button>
             <button
               className="dropdown-item"
               onClick={() => {
@@ -5781,6 +6295,13 @@ newSocket.on("receiveMessage", (data) => {
                 {selectedMessages.has(msg.id) && (
                   <span style={{ color: 'white', fontSize: '14px' }}>✓</span>
                 )}
+              </div>
+            )}
+
+            {/* Forwarded label */}
+            {msg.forwarded && (
+              <div className="forwarded-label" style={{ fontSize: '0.72rem', fontWeight: 700, color: isYou ? '#9adbd1' : '#128c7e', textTransform: 'uppercase', letterSpacing: '0.3px', marginBottom: '4px' }}>
+                Forwarded
               </div>
             )}
 
@@ -6040,13 +6561,25 @@ newSocket.on("receiveMessage", (data) => {
         );
         });
         })()}
-      <div ref={messagesEndRef} />
-    </div>
+<div ref={messagesEndRef} />
+    {newMsgBadge > 0 && (
+      <div className="new-msg-indicator" onClick={scrollChatToBottom}>
+        <span>{newMsgBadge}</span>
+        <ChevronDown size={14} strokeWidth={2.5} />
+      </div>
+    )}
+  </div>
 
-    {/* Message Input */}
+{/* Message Input */}
     {!isSelectionMode && (
       isMobile ? (
         <div className="mobile-compose">
+          {peerProfile?.blockedBy && (
+            <div className="blocked-banner">🔒 You can't message this contact</div>
+          )}
+          {blockedIds.has(String(selectedChat?.id)) && (
+            <div className="blocked-banner">🔒 You've blocked this contact. Unblock to send messages.</div>
+          )}
           {!showMobileAttach && (
           <>
           <div className="mobile-input-row">
@@ -6166,6 +6699,13 @@ newSocket.on("receiveMessage", (data) => {
       <div className="message-input">
         <form onSubmit={handleSendMessage}>
           <div className="input-wrapper">
+            {(peerProfile?.blockedBy || blockedIds.has(String(selectedChat?.id))) && (
+              <div className="blocked-banner">
+                {peerProfile?.blockedBy
+                  ? '🔒 You can\'t message this contact'
+                  : '🔒 You\'ve blocked this contact. Unblock to send messages.'}
+              </div>
+            )}
             {replyTo && (
               <div
                 style={{
@@ -6374,7 +6914,10 @@ newSocket.on("receiveMessage", (data) => {
           }}
         >
           <img
-            src={selectedChat?.photo || 'https://via.placeholder.com/80'}
+            src={
+              peerProfile?.blockedBy
+                ? 'https://via.placeholder.com/80/ced4da/fff?text=🔒'
+                : (selectedChat?.photo || 'https://via.placeholder.com/80')}
             alt="Profile"
             style={{
               width: '80px',
@@ -6401,8 +6944,11 @@ newSocket.on("receiveMessage", (data) => {
               color: '#666',
             }}
           >
-            {selectedChat?.email || 'user@example.com'}
+            {selectedChat?.email || (peerProfile?.phone ? peerProfile.phone : '')}
           </div>
+          {peerProfile?.blockedBy && (
+            <div className="blocked-banner">🔒 You're blocked</div>
+          )}
         </div>
 
         <div
@@ -6422,7 +6968,11 @@ newSocket.on("receiveMessage", (data) => {
           >
             About
           </div>
-          <div>No about info yet.</div>
+          <div>
+            {peerProfile?.blockedBy
+              ? 'Unavailable'
+              : (peerProfile?.about || 'No about info yet.')}
+          </div>
         </div>
 
         <div
@@ -6447,7 +6997,13 @@ newSocket.on("receiveMessage", (data) => {
             style={{ cursor: 'pointer' }}
             onClick={() => selectedChat && setMediaViewer({ type: 'dm', chatId: selectedChat.id, chatName: selectedChat.name, tab: 'media' })}
           >
-            No media yet
+            {(() => {
+              const dmMedia = (messages[selectedChat?.id] || []).filter(m => m.file);
+              const links = (messages[selectedChat?.id] || []).filter(m => m.text && /https?:\/\//.test(m.text));
+              const docs = dmMedia.filter(m => !m.fileType?.startsWith('image/') && !m.fileType?.startsWith('audio/') && !m.fileType?.startsWith('video/'));
+              const imgCount = dmMedia.filter(m => m.fileType?.startsWith('image/') || m.fileType?.startsWith('video/')).length;
+              return `${imgCount} media, ${links.length} links, ${docs.length} docs`;
+            })()}
           </div>
         </div>
 
@@ -6468,7 +7024,14 @@ newSocket.on("receiveMessage", (data) => {
           >
             Groups in Common
           </div>
-          <div className="action-item">No groups yet</div>
+          {(() => {
+            const common = groupsList.filter(g =>
+              (g.members || []).some(m => String(m._id || m) === String(selectedChat?.id))
+            );
+            return common.length
+              ? common.map(g => <div className="action-item" key={g._id || g.id}>{g.name}</div>)
+              : <div className="action-item">No groups yet</div>;
+          })()}
         </div>
 
         <div
@@ -6478,7 +7041,7 @@ newSocket.on("receiveMessage", (data) => {
     borderTop: '1px solid #eee',
   }}
 >
-  {/* Block */}
+  {/* Block / Unblock */}
   <div
     style={{
       display: 'flex',
@@ -6489,12 +7052,19 @@ newSocket.on("receiveMessage", (data) => {
       color: 'red',
       cursor: 'pointer',
     }}
+    onClick={() => {
+      const peerId = selectedChat.id;
+      const isBlocked = blockedIds.has(String(peerId));
+      if (window.confirm(isBlocked ? `Unblock ${selectedChat?.name}?` : `Block ${selectedChat?.name}? They won't be able to message you.`)) {
+        toggleBlock(peerId, !isBlocked);
+      }
+    }}
   >
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
       <circle cx="12" cy="12" r="10" stroke="red" strokeWidth="2" />
       <line x1="7" y1="7" x2="17" y2="17" stroke="red" strokeWidth="2" />
     </svg>
-    <span>Block {selectedChat?.name}</span>
+    <span>{blockedIds.has(String(selectedChat?.id)) ? `Unblock ${selectedChat?.name}` : `Block ${selectedChat?.name}`}</span>
   </div>
 
   {/* Report */}
@@ -6508,7 +7078,11 @@ newSocket.on("receiveMessage", (data) => {
       color: 'red',
       cursor: 'pointer',
     }}
-    onClick={() => alert(`Report ${selectedChat?.name}`)}
+    onClick={() => {
+      setShowReportModal(true);
+      setReportReason('');
+      setReportDetails('');
+    }}
   >
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
       <path d="M10 8H14M10 12H14M10 16H14M8 21H16C17.1046 21 18 20.1046 18 19V5C18 3.89543 17.1046 3 16 3H8C6.89543 3 6 3.89543 6 5V19C6 20.1046 6.89543 21 8 21Z" stroke="red" strokeWidth="2" strokeLinecap="round" />
@@ -6591,14 +7165,17 @@ newSocket.on("receiveMessage", (data) => {
 
     toForward.forEach((msg, idx) => {
       const tempId = `fwd-${now}-${idx}-${Math.random()}`;
+      const isGroupTarget = target.type === 'group';
       const payload = {
-        to: target.id,
         from: currentUser.id,
         fromName: currentUser.name,
         fromPhoto: target.photo,
         timestamp: now,
         messageId: tempId,
+        forwarded: true,
       };
+      if (isGroupTarget) payload.groupId = target.id;
+      else payload.to = target.id;
       if (msg.file) {
         payload.file = msg.file;
         payload.fileName = msg.fileName;
@@ -6608,25 +7185,48 @@ newSocket.on("receiveMessage", (data) => {
         payload.message = msg.text || '';
       }
 
-      currentSocket.emit('sendMessage', payload);
-
-      setMessages((prev) => ({
-        ...prev,
-        [target.id]: [
-          ...(prev[target.id] || []),
-          {
-            id: tempId,
-            text: payload.message,
-            file: payload.file || undefined,
-            fileName: payload.fileName,
-            fileType: payload.fileType,
-            sender: 'You',
-            timestamp: now,
-            delivered: false,
-            read: false,
-          },
-        ],
-      }));
+      if (isGroupTarget) {
+        currentSocket.emit('sendGroupMessage', payload);
+        setGroupMessages((prev) => ({
+          ...prev,
+          [target.id]: [
+            ...(prev[target.id] || []),
+            {
+              id: tempId,
+              text: payload.message,
+              file: payload.file || undefined,
+              fileName: payload.fileName,
+              fileType: payload.fileType,
+              sender: 'You',
+              senderId: currentUser.id,
+              timestamp: now,
+              forwarded: true,
+              delivered: false,
+              read: false,
+            },
+          ],
+        }));
+      } else {
+        currentSocket.emit('sendMessage', payload);
+        setMessages((prev) => ({
+          ...prev,
+          [target.id]: [
+            ...(prev[target.id] || []),
+            {
+              id: tempId,
+              text: payload.message,
+              file: payload.file || undefined,
+              fileName: payload.fileName,
+              fileType: payload.fileType,
+              sender: 'You',
+              timestamp: now,
+              forwarded: true,
+              delivered: false,
+              read: false,
+            },
+          ],
+        }));
+      }
     });
 
     setShowForwardModal(false);
@@ -6935,13 +7535,51 @@ setContacts(prev => {
       )
     ) : activeTab === 'statuses' ? (
       <div className="status-desktop-panel">
-        <h2>Share statuses</h2>
+        <h2>Status</h2>
+        <p>Share photos and text updates that disappear after 24 hours.</p>
+        <div className="status-desktop-actions">
+          <button className="status-share-btn" onClick={() => setStatusAddSheet(true)}>📷 Share status</button>
+          {myStatuses.length > 0 && (
+            <button className="status-view-btn" onClick={() => setStatusViewer({ userId: user.id, index: 0 })}>My status</button>
+          )}
+        </div>
+        <div className="status-desktop-feed">
+          {feedGroups.length === 0 ? (
+            <p className="status-desktop-empty">Status updates from your contacts appear here</p>
+          ) : (
+            [...feedGroups].map(status => {
+              const hasUnseen = status.statuses.some(s => !s.viewed);
+              return (
+                <div key={String(status.user.id)} className="calls-desktop-item status-desktop-row" style={{ cursor: 'pointer' }} onClick={() => setStatusViewer({ userId: String(status.user.id), index: 0 })}>
+                  <StatusAvatar
+                    src={status.statuses[0]?.file || status.user.photo || 'https://via.placeholder.com/50'}
+                    count={status.statuses.length}
+                    seen={!hasUnseen}
+                  />
+                  <div className="calls-desktop-info">
+                    <h4>{status.user.name}</h4>
+                    <p>{status.statuses.length > 1 ? `${status.statuses.length} updates • ` : ''}• {timeAgo(status.statuses[0]?.createdAt)}</p>
+                  </div>
+                  {hasUnseen && <span className="status-dot" />}
+                </div>
+              );
+            })
+          )}
+        </div>
       </div>
     ) : activeTab === 'calls' ? (
       <div className="calls-desktop-panel">
+        <div className="calls-desktop-head">
+          <h3>Recents</h3>
+          <button className="new-call-btn" onClick={() => setDesktopCallPick(true)}>📞 New call</button>
+        </div>
         <div className="calls-desktop-list">
           {calls.length === 0 ? (
-            <p className="calls-desktop-empty">No calls yet</p>
+            <div className="calls-desktop-empty-wrap">
+              <div className="calls-desktop-empty-icon">📞</div>
+              <p className="calls-desktop-empty">No calls yet</p>
+              <p className="calls-desktop-hint">Make your first call or start a group call.</p>
+            </div>
           ) : (
             calls.map((call) => (
               <div key={call.id} className="calls-desktop-item" style={{ cursor: 'pointer' }}>
@@ -6967,6 +7605,29 @@ setContacts(prev => {
     )
   )}
 </section>
+
+     {/* Desktop new call picker */}
+{desktopCallPick && (
+  <div className="modal-overlay" onClick={() => setDesktopCallPick(false)}>
+    <div className="modal-box" onClick={(e) => e.stopPropagation()}>
+      <h3 style={{ margin: '0 0 12px', fontSize: '1.1rem' }}>New call</h3>
+      {contacts.length === 0 && <p style={{ color: '#8a8f99', textAlign: 'center' }}>No contacts yet — add one first.</p>}
+      <div className="desktop-call-pick-list">
+        {contacts.map(c => (
+          <div key={c.id} className="desktop-call-pick-item">
+            <img src={c.photo || 'https://via.placeholder.com/50'} alt={c.name} />
+            <span>{c.name}</span>
+            <button aria-label={`Voice call ${c.name}`} onClick={() => { setDesktopCallPick(false); setTimeout(() => startCall('voice', c), 60); }}>📞</button>
+            <button aria-label={`Video call ${c.name}`} onClick={() => { setDesktopCallPick(false); setTimeout(() => startCall('video', c), 60); }}>🎥</button>
+          </div>
+        ))}
+      </div>
+      <div style={{ textAlign: 'right', marginTop: 12 }}>
+        <button className="modal-btn" onClick={() => setDesktopCallPick(false)}>Cancel</button>
+      </div>
+    </div>
+  </div>
+)}
 
      {/* Group Info Drawer (only when open) */}
 {showGroupInfo && selectedGroup && (
@@ -7077,68 +7738,141 @@ setContacts(prev => {
         </div>
       </div>
 
-      <div
-        className="section"
-        style={{ padding: '16px', borderTop: '1px solid #eee' }}
-      >
-        <div
-          className="section-title"
-          style={{ fontSize: '14px', color: '#333', marginBottom: '12px' }}
+<div
+          className="section"
+          style={{ padding: '16px', borderTop: '1px solid #eee' }}
         >
-          Media, Links and Docs
+          <div
+            className="section-title"
+            style={{ fontSize: '14px', color: '#333', marginBottom: '12px' }}
+          >
+            Media, Links and Docs
+          </div>
+          <div
+            className="action-item"
+            style={{ cursor: 'pointer' }}
+            onClick={() => selectedGroup && setMediaViewer({ type: 'group', chatId: selectedGroup.id, chatName: selectedGroup.name, tab: 'media' })}
+          >
+            {(() => {
+              const gm = groupMessages[selectedGroup.id] || [];
+              const media = gm.filter(m => m.file);
+              const imgCount = media.filter(m => m.fileType?.startsWith('image/') || m.fileType?.startsWith('video/')).length;
+              const links = gm.filter(m => m.text && /https?:\/\//.test(m.text));
+              const docs = media.filter(m => !m.fileType?.startsWith('image/') && !m.fileType?.startsWith('audio/') && !m.fileType?.startsWith('video/'));
+              return `${imgCount} media, ${links.length} links, ${docs.length} docs`;
+            })()}
+          </div>
         </div>
-        <div
-          className="action-item"
-          style={{ cursor: 'pointer' }}
-          onClick={() => selectedGroup && setMediaViewer({ type: 'group', chatId: selectedGroup.id, chatName: selectedGroup.name, tab: 'media' })}
-        >
-          No media yet
-        </div>
-      </div>
 
-      <div
-        className="section"
-        style={{ padding: '16px', borderTop: '1px solid #eee' }}
-      >
         <div
-          className="section-title"
-          style={{ fontSize: '14px', color: '#333', marginBottom: '12px' }}
+          className="section"
+          style={{ padding: '16px', borderTop: '1px solid #eee' }}
         >
-          Members
+          <div
+            className="section-title"
+            style={{ fontSize: '14px', color: '#333', marginBottom: '12px' }}
+          >
+            Members
+          </div>
+          {(() => {
+            const memberList = Array.isArray(selectedGroup.members) ? selectedGroup.members : [];
+            const adminIdsOfGroup = [String(selectedGroup.admin), ...(selectedGroup.admins || []).map(String)].filter(Boolean);
+            const amAdmin = adminIdsOfGroup.includes(String(user.id));
+            const isCreator = String(selectedGroup.admin) === String(user.id);
+            return memberList.map((m, idx) => {
+              const memberId = String(m?._id || m?.id || m || '');
+              const memberName = m?.name || (contacts.find((c) => String(c.id) === memberId)?.name) || 'Member';
+              const memberPhoto = m?.photo || (contacts.find((c) => String(c.id) === memberId)?.photo) || 'https://via.placeholder.com/40';
+              const isMe = memberId === String(user.id);
+              const isAdmin = adminIdsOfGroup.includes(memberId);
+              const isCreatorMember = String(selectedGroup.admin) === memberId;
+              return (
+                <div
+                  key={memberId || idx}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '12px',
+                    padding: '8px 0',
+                  }}
+                >
+                  <img
+                    src={memberPhoto}
+                    alt={memberName}
+                    style={{
+                      width: '40px',
+                      height: '40px',
+                      borderRadius: '50%',
+                      objectFit: 'cover',
+                      border: '2px solid #ddd',
+                    }}
+                  />
+                  <div style={{ flex: 1, fontSize: '15px', color: '#111' }}>
+                    {memberName}{isMe ? ' (You)' : ''}{isCreatorMember ? ' 👑' : ''}
+                    {isAdmin && !isCreatorMember ? (
+                      <span
+                        style={{
+                          display: 'inline-block',
+                          marginLeft: '8px',
+                          fontSize: '0.7rem',
+                          fontWeight: 700,
+                          color: '#075e54',
+                          background: '#e7f6f2',
+                          padding: '2px 8px',
+                          borderRadius: '10px',
+                        }}
+                      >
+                        ADMIN
+                      </span>
+                    ) : null}
+                  </div>
+                  {amAdmin && !isMe && !isCreatorMember && !selectedGroup.removed && (
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      {!isAdmin && (
+                        <button
+                          onClick={() => {
+                            if (window.confirm(`Make ${memberName} an admin?`)) {
+                              socket.emit('group:makeAdmin', { groupId: selectedGroup.id, targetUserId: memberId });
+                            }
+                          }}
+                          style={{
+                            padding: '5px 10px',
+                            border: '1px solid #075e54',
+                            background: 'white',
+                            color: '#075e54',
+                            borderRadius: '6px',
+                            fontSize: '0.78rem',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          Make admin
+                        </button>
+                      )}
+                      <button
+                        onClick={() => {
+                          if (window.confirm(`Remove ${memberName} from the group?`)) {
+                            socket.emit('group:removeMember', { groupId: selectedGroup.id, targetUserId: memberId });
+                          }
+                        }}
+                        style={{
+                          padding: '5px 10px',
+                          border: '1px solid #e02f5b',
+                          background: 'white',
+                          color: '#e02f5b',
+                          borderRadius: '6px',
+                          fontSize: '0.78rem',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            });
+          })()}
         </div>
-        {(Array.isArray(selectedGroup.members) ? selectedGroup.members : []).map((m, idx) => {
-          const memberId = String(m?._id || m?.id || m || '');
-          const memberName =
-            m?.name ||
-            (contacts.find((c) => String(c.id) === memberId)?.name) ||
-            'Member';
-          const memberPhoto = m?.photo || 'https://via.placeholder.com/40';
-          return (
-            <div
-              key={memberId || idx}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '12px',
-                padding: '8px 0',
-              }}
-            >
-              <img
-                src={memberPhoto}
-                alt={memberName}
-                style={{
-                  width: '40px',
-                  height: '40px',
-                  borderRadius: '50%',
-                  objectFit: 'cover',
-                  border: '2px solid #ddd',
-                }}
-              />
-              <div style={{ fontSize: '15px', color: '#111' }}>{memberName}</div>
-            </div>
-          );
-        })}
-      </div>
 
       <div className="section" style={{ padding: '16px', borderTop: '1px solid #eee' }}>
         {/* Clear Chat */}
@@ -7308,11 +8042,180 @@ setContacts(prev => {
           Clear
         </button>
       </div>
+</div>
+  </div>
+)}
+
+{/* Report Contact Modal */}
+{showReportModal && selectedChat && (
+  <div
+    style={{
+      position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh',
+      background: 'rgba(0, 0, 0, 0.5)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 21000,
+    }}
+    onClick={() => setShowReportModal(false)}
+  >
+    <div
+      style={{ background: 'white', padding: '24px', borderRadius: '12px', width: '90%', maxWidth: '420px', boxShadow: '0 4px 20px rgba(0,0,0,0.2)' }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <h3 style={{ marginBottom: '8px', color: '#333' }}>Report {selectedChat.name}</h3>
+      <p style={{ color: '#666', fontSize: '0.9rem', marginBottom: '16px' }}>
+        We'll review this report. Your conversation with {selectedChat.name} stays between you two.
+      </p>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '12px' }}>
+        {['Spam', 'Harassment', 'Inappropriate content', 'Impersonation', 'Other'].map(r => (
+          <button
+            key={r}
+            onClick={() => setReportReason(r === reportReason ? '' : r)}
+            style={{
+              padding: '8px 12px',
+              borderRadius: '16px',
+              border: reportReason === r ? '2px solid #075e54' : '1px solid #ddd',
+              background: reportReason === r ? '#e7f6f2' : '#fff',
+              color: '#333',
+              fontSize: '0.85rem',
+              cursor: 'pointer',
+            }}
+          >
+            {r}
+          </button>
+        ))}
+      </div>
+      <textarea
+        value={reportDetails}
+        onChange={(e) => setReportDetails(e.target.value)}
+        placeholder="Add details (optional)"
+        rows={3}
+        style={{ width: '100%', padding: '10px', border: '1px solid #ddd', borderRadius: '8px', fontSize: '0.9rem', boxSizing: 'border-box', resize: 'vertical' }}
+      />
+      <div style={{ display: 'flex', gap: '12px', marginTop: '20px', justifyContent: 'flex-end' }}>
+        <button
+          onClick={() => setShowReportModal(false)}
+          style={{ padding: '10px 16px', background: '#f0f0f0', border: '1px solid #ddd', borderRadius: '6px', color: '#333', cursor: 'pointer', fontWeight: 500 }}
+        >
+          Cancel
+        </button>
+        <button
+          onClick={() => submitReport(selectedChat.id, reportReason || reportDetails || 'General')}
+          style={{ padding: '10px 16px', background: '#e02f5b', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 600 }}
+        >
+          Report
+        </button>
+      </div>
     </div>
   </div>
 )}
 
-{/* Camera Capture Modal */}
+{/* My Profile (own name/about/phone) */}
+{showMyProfile && (
+  <>
+    <div
+      className="drawer-overlay"
+      onClick={() => setShowMyProfile(false)}
+      style={{
+        position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+        background: 'rgba(0,0,0,0.5)', zIndex: 998, opacity: 1, visibility: 'visible',
+      }}
+    />
+    <div
+      className="my-profile-drawer"
+      style={{
+        position: 'fixed', top: 0, right: 0,
+        width: isMobile ? '100%' : '400px', height: '100%',
+        background: 'white', boxShadow: '-4px 0 12px rgba(0,0,0,0.15)',
+        zIndex: 999, transform: 'translateX(0)', transition: 'transform 0.3s ease-out', overflowY: 'auto',
+      }}
+    >
+      <div className="drawer-header" style={{ display: 'flex', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid #eee', position: 'sticky', top: 0, background: 'white', zIndex: 10 }}>
+        <button
+          onClick={() => setShowMyProfile(false)}
+          style={{ background: 'none', border: 'none', fontSize: '20px', cursor: 'pointer', color: '#000', padding: '4px', marginRight: '20px' }}
+          aria-label="Close profile"
+        >
+          ✖
+        </button>
+        <div className="drawer-title" style={{ fontSize: '16px', color: '#333', flex: 1, textAlign: 'left' }}>My Profile</div>
+      </div>
+
+      <div className="profile-section" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '24px 16px', gap: '12px' }}>
+        <img
+          src={myProfile?.photo || `https://via.placeholder.com/80/25D366/fff?text=${encodeURIComponent((user.name || '?')[0])}`}
+          alt="Me"
+          style={{ width: '80px', height: '80px', borderRadius: '50%', objectFit: 'cover', border: '3px solid #ddd' }}
+        />
+        <div className="saved-name" style={{ fontSize: '18px', fontWeight: '500', color: '#111' }}>
+          {myProfile?.name || user.name}
+        </div>
+        <div className="email" style={{ fontSize: '14px', color: '#666' }}>{myProfile?.phone || ''}</div>
+      </div>
+
+      {profileField === 'name' ? (
+        <div className="section" style={{ padding: '16px', borderTop: '1px solid #eee' }}>
+          <div className="section-title" style={{ fontSize: '14px', color: '#333', marginBottom: '8px' }}>Name</div>
+          <input
+            autoFocus
+            maxLength={10}
+            value={nameDraft}
+            onChange={(e) => setNameDraft(e.target.value)}
+            placeholder="Your name"
+            style={{ width: '100%', padding: '10px', border: '1px solid #ddd', borderRadius: '8px', fontSize: '1rem', boxSizing: 'border-box' }}
+            onKeyDown={(e) => e.key === 'Enter' && saveProfileField('name', nameDraft)}
+          />
+          <div style={{ display: 'flex', gap: '10px', marginTop: '12px', justifyContent: 'flex-end' }}>
+            <button onClick={() => { setProfileField(null); setNameDraft(''); }} style={{ padding: '8px 14px', background: '#f0f0f0', border: '1px solid #ddd', borderRadius: '6px', cursor: 'pointer' }}>Cancel</button>
+            <button onClick={() => saveProfileField('name', nameDraft)} style={{ padding: '8px 14px', background: '#075e54', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 600 }}>Save</button>
+          </div>
+        </div>
+      ) : (
+        <div className="section" style={{ padding: '16px', borderTop: '1px solid #eee' }}>
+          <div className="section-title" style={{ fontSize: '14px', color: '#333', marginBottom: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span>Name</span>
+            <button onClick={() => { setNameDraft(myProfile?.name || user.name || ''); setProfileField('name'); }} style={{ background: 'none', border: 'none', cursor: 'pointer' }} aria-label="Edit name">
+              <PencilLine size={18} strokeWidth={1.8} />
+            </button>
+          </div>
+          <div>{myProfile?.name || user.name || '—'}</div>
+        </div>
+      )}
+
+      {profileField === 'about' ? (
+        <div className="section" style={{ padding: '16px', borderTop: '1px solid #eee' }}>
+          <div className="section-title" style={{ fontSize: '14px', color: '#333', marginBottom: '8px' }}>About</div>
+          <textarea
+            autoFocus
+            maxLength={100}
+            value={aboutDraft}
+            onChange={(e) => setAboutDraft(e.target.value)}
+            placeholder="Write something about you…"
+            rows={3}
+            style={{ width: '100%', padding: '10px', border: '1px solid #ddd', borderRadius: '8px', fontSize: '0.95rem', boxSizing: 'border-box', resize: 'vertical' }}
+          />
+          <div style={{ fontSize: '0.75rem', color: '#999', textAlign: 'right' }}>{aboutDraft.length}/100</div>
+          <div style={{ display: 'flex', gap: '10px', marginTop: '8px', justifyContent: 'flex-end' }}>
+            <button onClick={() => { setProfileField(null); setAboutDraft(''); }} style={{ padding: '8px 14px', background: '#f0f0f0', border: '1px solid #ddd', borderRadius: '6px', cursor: 'pointer' }}>Cancel</button>
+            <button onClick={() => saveProfileField('about', aboutDraft)} style={{ padding: '8px 14px', background: '#075e54', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 600 }}>Save</button>
+          </div>
+        </div>
+      ) : (
+        <div className="section" style={{ padding: '16px', borderTop: '1px solid #eee' }}>
+          <div className="section-title" style={{ fontSize: '14px', color: '#333', marginBottom: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span>About</span>
+            <button onClick={() => { setAboutDraft(myProfile?.about || ''); setProfileField('about'); }} style={{ background: 'none', border: 'none', cursor: 'pointer' }} aria-label="Edit about">
+              <PencilLine size={18} strokeWidth={1.8} />
+            </button>
+          </div>
+          <div>{myProfile?.about || 'Add about info…'}</div>
+        </div>
+      )}
+
+      <div className="section" style={{ padding: '16px', borderTop: '1px solid #eee' }}>
+        <div className="section-title" style={{ fontSize: '14px', color: '#333', marginBottom: '8px' }}>Blocked contacts</div>
+        <div>{blockedIds.size} blocked</div>
+      </div>
+    </div>
+  </>
+)}
 {showCameraModal && (
   <div className="camera-modal-overlay">
     <div className="camera-modal">
@@ -7352,9 +8255,83 @@ setContacts(prev => {
           </div>
         </div>
       )}
+</div>
+  </div>
+)}
+
+{/* Camera recipient picker (bottom-nav camera with no open chat) */}
+{showRecipientPicker && (
+  <div
+    style={{
+      position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh',
+      background: 'rgba(0, 0, 0, 0.5)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 22000,
+    }}
+    onClick={() => setShowRecipientPicker(false)}
+  >
+    <div
+      style={{ background: 'white', borderRadius: '12px', width: '90%', maxWidth: '440px', maxHeight: '80vh', display: 'flex', flexDirection: 'column', boxShadow: '0 4px 20px rgba(0,0,0,0.2)', overflow: 'hidden' }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div style={{ padding: '16px', borderBottom: '1px solid #eee', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <h3 style={{ margin: 0, color: '#333', fontSize: '1.05rem' }}>Send photo to</h3>
+        <button onClick={() => setShowRecipientPicker(false)} style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer' }} aria-label="Close">✕</button>
+      </div>
+      <div style={{ overflowY: 'auto', flex: 1, padding: '8px 0' }}>
+        {[...contacts.map(c => ({ type: 'dm', id: c.id, name: c.name, photo: c.photo })),
+          ...groupsList.map(g => ({ type: 'group', id: g._id || g.id, name: g.name, photo: g.dp }))]
+          .map(r => {
+            const checked = cameraRecipients.some(x => x.type === r.type && String(x.id) === String(r.id));
+            return (
+              <div
+                key={`${r.type}-${r.id}`}
+                onClick={() => {
+                  setCameraRecipients(prev => checked ? prev.filter(x => !(x.type === r.type && String(x.id) === String(r.id))) : [...prev, r]);
+                }}
+                style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '10px 16px', cursor: 'pointer' }}
+              >
+                <img
+                  src={r.photo || (r.type === 'group' ? 'https://via.placeholder.com/40/4a00e0/fff?text=G' : 'https://via.placeholder.com/40')}
+                  alt={r.name}
+                  style={{ width: '40px', height: '40px', borderRadius: '50%', objectFit: 'cover' }}
+                />
+                <span style={{ flex: 1, fontWeight: 500, color: '#111' }}>{r.name}{r.type === 'group' ? ' (Group)' : ''}</span>
+                <span
+                  style={{
+                    width: '20px', height: '20px', borderRadius: '50%',
+                    border: checked ? '6px solid #075e54' : '2px solid #ccc',
+                    boxSizing: 'border-box',
+                  }}
+                />
+              </div>
+            );
+          })}
+      </div>
+      <div style={{ padding: '12px 16px', borderTop: '1px solid #eee', display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
+        <button
+          onClick={() => {
+            const photo = capturedPhoto;
+            const cap = caption;
+            const recipients = [...cameraRecipients];
+            setShowRecipientPicker(false);
+            setCapturedPhoto(null);
+            setCaption('');
+            setCameraRecipients([]);
+            setIsEditing(false);
+            setCameraNeedsRecipient(false);
+            recipients.forEach(r => sendPhotoTo(r));
+          }}
+          disabled={cameraRecipients.length === 0}
+          style={{
+            padding: '10px 18px', background: cameraRecipients.length ? '#075e54' : '#ccc', color: 'white', border: 'none', borderRadius: '6px', cursor: cameraRecipients.length ? 'pointer' : 'not-allowed', fontWeight: 600,
+          }}
+        >
+          Send ({cameraRecipients.length})
+        </button>
+      </div>
     </div>
   </div>
 )}
+
      {/* ========== MOBILE-ONLY UI =========== */}
   <div className="mobile-ui">
     {/* Dynamic Mobile Content */}
@@ -7606,7 +8583,7 @@ setContacts(prev => {
   <Phone size={24} strokeWidth={1.8} />
   <small>Calls</small>
 </button>
-      <button onClick={handleOpenCamera}>
+      <button onClick={() => handleOpenCamera(true)}>
         <Video size={24} strokeWidth={1.8} />
         <small>Camera</small>
       </button>
@@ -7714,14 +8691,14 @@ setContacts(prev => {
               c.name?.toLowerCase().includes(forwardSearchQuery.toLowerCase())
             )
             .map((contact) => {
-              const isChecked = selectedForwardChats.has(String(contact.id));
+              const key = `dm:${contact.id}`;
+              const isChecked = selectedForwardChats.has(key);
               return (
                 <div
-                  key={contact.id}
+                  key={key}
                   onClick={() =>
                     setSelectedForwardChats((prev) => {
                       const next = new Set(prev);
-                      const key = String(contact.id);
                       if (next.has(key)) next.delete(key);
                       else next.add(key);
                       return next;
@@ -7770,13 +8747,86 @@ setContacts(prev => {
                 </div>
               );
             })}
+          {(
+            (groupsList || []).filter((g) => !g.removed)
+              .filter((g) => String(g._id || g.id) !== String(selectedChat?.id))
+              .filter((g) => g.name?.toLowerCase().includes(forwardSearchQuery.toLowerCase()))
+          ).length > 0 && (
+            <div style={{ fontSize: '0.85rem', color: '#999', marginBottom: '6px', marginTop: '10px' }}>
+              Groups
+            </div>
+          )}
+          {(groupsList || []).filter((g) => !g.removed)
+            .filter((g) => String(g._id || g.id) !== String(selectedChat?.id))
+            .filter((g) => g.name?.toLowerCase().includes(forwardSearchQuery.toLowerCase()))
+            .map((group) => {
+              const gid = group._id || group.id;
+              const key = `group:${gid}`;
+              const isChecked = selectedForwardChats.has(key);
+              return (
+                <div
+                  key={key}
+                  onClick={() =>
+                    setSelectedForwardChats((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(key)) next.delete(key);
+                      else next.add(key);
+                      return next;
+                    })
+                  }
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '12px',
+                    padding: '10px 8px',
+                    borderRadius: '8px',
+                    cursor: 'pointer',
+                    background: isChecked ? '#e8f5f0' : 'transparent',
+                  }}
+                  onMouseEnter={(e) => {
+                    if (!isChecked) e.currentTarget.style.background = '#f0f2f5';
+                  }}
+                  onMouseLeave={(e) => {
+                    if (!isChecked) e.currentTarget.style.background = 'transparent';
+                  }}
+                >
+                  <span
+                    style={{
+                      width: '22px',
+                      height: '22px',
+                      borderRadius: '50%',
+                      border: `2px solid ${isChecked ? '#075e54' : '#ccc'}`,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      background: isChecked ? '#075e54' : 'white',
+                      flexShrink: 0,
+                    }}
+                  >
+                    {isChecked && <span style={{ color: 'white', fontSize: '13px' }}>✓</span>}
+                  </span>
+                  <img
+                    src={group.dp || 'https://via.placeholder.com/40/4a00e0/fff?text=G'}
+                    alt={group.name}
+                    style={{ width: '40px', height: '40px', borderRadius: '50%', objectFit: 'cover' }}
+                  />
+                  <div>
+                    <div style={{ fontWeight: '600' }}>{group.name}</div>
+                    <div style={{ fontSize: '0.8rem', color: '#666' }}>{group.memberCount || (group.members?.length || 0)} members</div>
+                  </div>
+                </div>
+              );
+            })}
           {contacts.filter(
             (c) =>
               String(c.id) !== String(selectedChat?.id) &&
               c.name?.toLowerCase().includes(forwardSearchQuery.toLowerCase())
+          ).length === 0 &&
+          (groupsList || []).filter((g) => !g.removed).filter((g) =>
+            g.name?.toLowerCase().includes(forwardSearchQuery.toLowerCase())
           ).length === 0 && (
             <div style={{ color: '#999', textAlign: 'center', padding: '16px' }}>
-              No chats found
+              No chats or groups found
             </div>
           )}
         </div>
@@ -7815,9 +8865,18 @@ setContacts(prev => {
             <button
               disabled={selectedForwardChats.size === 0}
               onClick={() => {
-                const targets = contacts.filter((c) =>
-                  selectedForwardChats.has(String(c.id))
-                );
+                const targets = [];
+                selectedForwardChats.forEach((key) => {
+                  if (key.startsWith('group:')) {
+                    const gid = key.replace(/^group:/, '');
+                    const g = (groupsList || []).find((grp) => String(grp._id || grp.id) === gid);
+                    if (g) targets.push({ type: 'group', id: gid, name: g.name, photo: g.dp });
+                  } else {
+                    const cid = key.replace(/^dm:/, '');
+                    const c = contacts.find((ct) => String(ct.id) === cid);
+                    if (c) targets.push({ type: 'dm', id: cid, name: c.name, photo: c.photo });
+                  }
+                });
                 targets.forEach((t) => forwardSelectedMessages(t));
                 setSelectedForwardChats(new Set());
                 setForwardSearchQuery('');

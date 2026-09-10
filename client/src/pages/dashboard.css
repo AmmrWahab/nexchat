@@ -366,6 +366,7 @@
   min-height: 0;
   padding: 16px;
   overflow-y: auto;
+  position: relative;
   background: #e5ddd5;
   display: flex;
   flex-direction: column;
@@ -3957,4 +3958,195 @@
   padding: 40px 10px;
   text-align: center;
   color: #8a8f99;
+}
+
+/* ===== Blocked / read-only banners ===== */
+.blocked-banner {
+  flex: 0 0 auto;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  font-size: 0.85rem;
+  color: #9f1b1b;
+  background: #ffe7e7;
+  border-top: 1px solid #f3c9c9;
+  text-align: center;
+}
+.mobile-compose > .blocked-banner {
+  border-bottom: 1px solid #f3c9c9;
+  border-top: none;
+}
+
+/* ===== Forwarded label ===== */
+.forwarded-label {
+  display: block;
+  font-size: 0.75rem;
+  color: #128c7e;
+  font-weight: 600;
+  margin-bottom: 1px;
+}
+
+/* ===== System messages in groups ===== */
+.group-system-message {
+  display: flex;
+  justify-content: center;
+  margin: 10px 0;
+}
+.group-system-bubble {
+  background: #f5f5f5;
+  border: 1px solid #e5e5e5;
+  border-radius: 18px;
+  padding: 5px 14px;
+  font-size: 0.8rem;
+  color: #555;
+  text-align: center;
+  max-width: 80%;
+}
+
+/* ===== New message floating indicator ===== */
+.new-msg-indicator {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #ffffffdd;
+  backdrop-filter: blur(4px);
+  border: 1px solid #d5dbdb;
+  border-radius: 20px;
+  padding: 6px 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+  font-size: 0.85rem;
+  color: #077c6b;
+  z-index: 9;
+}
+.new-msg-indicator span { font-weight: 700; }
+
+/* ===== Mobile header auto-hide on scroll ===== */
+@media (max-width: 768px) {
+  .dashboard-layout.chat-open .right-panel .chat-header,
+  .dashboard-layout.chat-open .right-panel .chat-header-mobile {
+    transition: transform 0.25s ease;
+  }
+  .dashboard-layout.chat-open .right-panel .chat-header-mobile.scroll-hidden,
+  .dashboard-layout.chat-open .right-panel .chat-header.scroll-hidden {
+    transform: translateY(-101%);
+  }
+}
+
+/* ===== Desktop Status panel ===== */
+.status-share-btn, .status-view-btn {
+  background: #25d366;
+  color: #fff;
+  border: none;
+  border-radius: 24px;
+  padding: 10px 18px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.status-view-btn { background: #00a884; }
+.status-desktop-feed {
+  width: 100%;
+  max-width: 720px;
+  margin: 18px auto 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  text-align: left;
+}
+.status-desktop-row { padding: 10px 14px; }
+.status-desktop-empty {
+  color: #8a8f99;
+  font-size: 0.9rem;
+  text-align: center;
+}
+.status-desktop-panel {
+  justify-content: flex-start;
+  padding-top: 32px;
+}
+
+/* ===== Desktop Calls panel ===== */
+.calls-desktop-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  max-width: 720px;
+  margin: 0 auto 12px;
+  padding: 0 4px;
+}
+.calls-desktop-head h3 { margin: 0; color: #1f2933; }
+.new-call-btn {
+  background: #00a884;
+  color: #fff;
+  border: none;
+  border-radius: 24px;
+  padding: 8px 16px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.calls-desktop-empty-wrap {
+  text-align: center;
+  padding: 60px 20px;
+}
+.calls-desktop-empty-icon {
+  font-size: 2.6rem;
+  margin-bottom: 10px;
+}
+.calls-desktop-hint {
+  color: #8a8f99;
+  font-size: 0.9rem;
+  margin: 6px 0 0;
+}
+.calls-desktop-empty { color: #1f2933; font-size: 1.05rem; font-weight: 600; }
+
+/* ===== Desktop new-call picker ===== */
+.desktop-call-pick-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 48vh;
+  overflow-y: auto;
+}
+.desktop-call-pick-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #f5f6f7;
+}
+.desktop-call-pick-item img {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+.desktop-call-pick-item span { flex: 1; font-weight: 500; font-size: 0.92rem; }
+.desktop-call-pick-item button {
+  background: #00a884;
+  border: none;
+  color: #fff;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+/* ===== Mobile video-call controls pinned to bottom ===== */
+@media (max-width: 768px) {
+  .call-overlay {
+    justify-content: flex-end;
+    padding-bottom: max(28px, env(safe-area-inset-bottom));
+  }
+  .call-overlay .call-avatar-zone { min-height: 0; }
+  .call-controls {
+    width: 100%;
+    padding: 16px 12px max(20px, env(safe-area-inset-bottom));
+  }
 }

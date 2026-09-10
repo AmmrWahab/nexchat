@@ -30,7 +30,18 @@ const userSchema = new mongoose.Schema({
     type: String,
     default: 'https://via.placeholder.com/150'
   },
+  about: {
+    type: String,
+    default: '',
+    trim: true,
+    maxlength: 100
+  },
   contacts: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  }],
+  // Users that THIS user has blocked.
+  blocked: [{
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
   }],
