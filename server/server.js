@@ -843,27 +843,30 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
   });
 
   // Callee declines -> mark missed for the caller.
-  socket.on('call:reject', ({ to, callId, type }) => {
+  socket.on('call:reject', async ({ to, callId, type }) => {
     if (!to) return;
-    logCall(socket.userId, to, type, 'missed', 0);
+    const peer = await User.exists({ _id: to }).catch(() => null);
+    if (peer) logCall(socket.userId, to, type, 'missed', 0);
     socket.emit('call:rejectedRemote', { callId, type });
     emitToUser(to, 'call:rejected', { callId, type });
   });
 
   // Either side hangs up -> both close; the CALLER records the finished call
   // (caller was ringed to accept, so caller always initiated).
-  socket.on('call:end', ({ to, callId, type, durationSec }) => {
+  socket.on('call:end', async ({ to, callId, type, durationSec }) => {
     if (!to) return;
     const secs = Math.max(0, Math.round(durationSec || 0));
-    logCall(socket.userId, to, type, secs > 0 ? 'ended' : 'missed', secs);
+    const peer = await User.exists({ _id: to }).catch(() => null);
+    if (peer) logCall(socket.userId, to, type, secs > 0 ? 'ended' : 'missed', secs);
     socket.emit('call:endedLocal', { callId });
     emitToUser(to, 'call:ended', { callId });
   });
 
   // Caller timeout (callee never answered) -> mark missed.
-  socket.on('call:timeout', ({ to, callId, type }) => {
+  socket.on('call:timeout', async ({ to, callId, type }) => {
     if (!to) return;
-    logCall(socket.userId, to, type, 'missed', 0);
+    const peer = await User.exists({ _id: to }).catch(() => null);
+    if (peer) logCall(socket.userId, to, type, 'missed', 0);
     emitToUser(to, 'call:timedOut', { callId });
   });
 

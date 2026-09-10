@@ -29,10 +29,15 @@ router.get("/calls", async (req, res) => {
       .limit(100)
       .exec();
 
-    const calls = rows.map((c) => {
+    const calls = [];
+    for (const c of rows) {
+      // Skip malformed/orphaned rows (e.g. a participant id that no longer
+      // resolves to a User, or a legacy row whose callee holds a Group id).
+      // One bad row must never take down the whole history for an account.
+      if (!c.caller || !c.callee || !c.caller._id || !c.callee._id) continue;
       const iCalled = String(c.caller._id) === String(userId);
       const other = iCalled ? c.callee : c.caller;
-      return {
+      calls.push({
         id: c._id.toString(),
         userId: String(other._id),
         name: other.name || "Unknown",
@@ -46,8 +51,8 @@ router.get("/calls", async (req, res) => {
         // group-call info (if any)
         groupId: c.groupId ? String(c.groupId) : null,
         callerName: c.callerName || "",
-      };
-    });
+      });
+    }
     res.json({ calls });
   } catch (err) {
     console.error("GET /api/calls error:", err);
