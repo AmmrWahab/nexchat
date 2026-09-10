@@ -2308,28 +2308,40 @@
     width: 100%;
     height: 100vh;
     height: 100dvh;
+    max-height: 100dvh;
     z-index: 50;
     background: #e5ddd5;
     overflow: hidden; /* only .messages scrolls -> header stays pinned */
   }
 
-  /* Keep the chat header + input pinned; only messages scroll */
+  /* Keep the chat header + input pinned; only messages scroll.
+     The header is a normal (position static, flex-shrink 0) flex item at the
+     top of a non-scrolling flex shell, so no browser/scroll quirk can carry
+     it away while the message list scrolls. */
   .dashboard-layout.chat-open .right-panel .chat-header,
   .dashboard-layout.chat-open .right-panel .chat-header-mobile,
   .dashboard-layout.chat-open .right-panel .mobile-compose {
     flex-shrink: 0;
-    position: sticky;
-    left: 0;
-    right: 0;
+    position: relative;
   }
   .dashboard-layout.chat-open .right-panel .chat-header,
   .dashboard-layout.chat-open .right-panel .chat-header-mobile {
-    top: 0;
     z-index: 11;
   }
   .dashboard-layout.chat-open .right-panel .mobile-compose {
-    bottom: 0;
     z-index: 11;
+  }
+
+  /* The chat shell must exactly fill the fixed panel. The app-wide inline
+     .chat-container { height: 100vh } rule would make it taller than this
+     100dvh panel whenever the URL bar / on-screen keyboard shrinks the
+     visible viewport, pushing the chat header up out of the visible area
+     and clipping the composer. Force it to fill the panel exactly. */
+  .dashboard-layout.chat-open .right-panel .chat-container {
+    flex: 1 1 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    max-height: 100% !important;
   }
 
   .dashboard-layout.chat-open .sidebar,

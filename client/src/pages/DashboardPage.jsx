@@ -3098,6 +3098,42 @@ newSocket.on("receiveMessage", (data) => {
           };
         }, []);
 
+        // Keep the mobile chat panel pinned to the *visual* viewport. iOS
+        // Safari does not shrink the layout viewport when it auto-pans the
+        // page up to keep a focused input above the keyboard, so a fixed
+        // 100vh/100dvh panel (and its chat header) gets carried off the top
+        // of the screen. Mirror visualViewport offset/size onto the panel so
+        // the header always stays visible while the conversation scrolls.
+        useEffect(() => {
+          if (!isMobile) return undefined;
+          if (typeof window === 'undefined' || !window.visualViewport) return undefined;
+          const vv = window.visualViewport;
+          const update = () => {
+            const panel = document.querySelector('.right-panel');
+            if (!panel) return;
+            panel.style.top = vv.offsetTop + 'px';
+            panel.style.height = vv.height + 'px';
+            panel.style.bottom = 'auto';
+          };
+          const clear = () => {
+            const panel = document.querySelector('.right-panel');
+            if (!panel) return;
+            panel.style.top = '';
+            panel.style.height = '';
+            panel.style.bottom = '';
+          };
+          update();
+          vv.addEventListener('resize', update);
+          vv.addEventListener('scroll', update);
+          window.addEventListener('resize', update);
+          return () => {
+            vv.removeEventListener('resize', update);
+            vv.removeEventListener('scroll', update);
+            window.removeEventListener('resize', update);
+            clear();
+          };
+        }, [isMobile]);
+
         // Save whenever chat changes
         useEffect(() => {
           if (selectedChat?.id) {
