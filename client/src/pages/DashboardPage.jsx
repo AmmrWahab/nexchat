@@ -143,6 +143,8 @@ export default function DashboardPage() {
   const [groupMessages, setGroupMessages] = useState({});
   const selectedGroupRef = useRef(null);
   const prefetchedGroupHistoryRef = useRef(new Set());
+  const prefetchedHistoryRef = useRef(new Set());
+  const contactsRef = useRef([]);
   const groupOpenAtRef = useRef(0);
   const groupsListRef = useRef([]);
   const groupMessageElsRef = useRef({});
@@ -2393,14 +2395,63 @@ useEffect(() => {
    // ✅ Add: Listen for user status updates
 
 // Inside useEffect where you set up socket
-newSocket.on('messageDelivered', ({ chatId, messageId }) => {
+newSocket.on('messageDelivered', ({ chatId, messageId, _id }) => {
   console.log('📩 Message delivered to recipient', { chatId, messageId });
   setMessages(prev => {
     const chat = prev[chatId] || [];
     const updatedChat = chat.map(msg =>
-      msg.id === messageId ? { ...msg, delivered: true } : msg
+      (msg.id === messageId || msg.localId === messageId || msg.id === _id)
+        ? { ...msg, delivered: true, id: _id || msg.id, localId: messageId || msg.localId }
+        : msg
     );
     const updated = { ...prev, [chatId]: updatedChat };
+    safeSetItem('chatMessages', updated);
+    return updated;
+  });
+});
+
+// ✅ 1:1 conversation history (server-authoritative) — lets every device of
+//    the same account rebuild identical conversation state on connect/open.
+newSocket.on('messagesHistory', ({ chatId, messages }) => {
+  const cid = String(chatId);
+  if (!Array.isArray(messages)) return;
+  setMessages(prev => {
+    const existing = prev[cid] || [];
+    const fresh = messages.map(m => ({
+      id: m._id?.toString() || m.messageId || `dm-${m.timestamp}`,
+      localId: m.messageId || null,
+      text: m.message,
+      sender: String(m.from) === user.id ? 'You' : (m.fromName || 'Unknown'),
+      senderId: String(m.from),
+      timestamp: m.timestamp || Date.now(),
+      file: m.file,
+      fileName: m.fileName,
+      fileType: m.fileType,
+      duration: m.duration,
+      replyTo: m.replyTo ? { sender: m.replyTo.sender, text: m.replyTo.text, messageId: m.replyTo.messageId } : null,
+      photo: m.fromPhoto || 'https://placehold.co/50x50',
+      delivered: m.delivered,
+      read: !!m.read,
+    }));
+    // Merge: server copies (fresh) win over local copies with the same id/localId.
+    const seen = new Map();
+    existing.forEach(m => seen.set(m.localId || m.id, m));
+    fresh.forEach(m => seen.set(m.localId || m.id, m));
+    const ordered = [...seen.values()].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+    const idsCmp = (arr) => arr.map(m => m.localId || m.id).join('|');
+    if (existing.length === ordered.length && idsCmp(existing) === idsCmp(ordered)) return prev;
+    return { ...prev, [cid]: ordered };
+  });
+});
+
+// ✅ Cross-device read-state sync: another device of THIS account read this
+//    conversation, so clear the unread badge / mark received messages read.
+newSocket.on('conversationRead', ({ chatId }) => {
+  const cid = String(chatId);
+  setMessages(prev => {
+    const chat = prev[cid];
+    if (!chat || !chat.some(m => m.sender !== 'You' && !m.read)) return prev;
+    const updated = { ...prev, [cid]: chat.map(m => m.sender !== 'You' ? { ...m, read: true } : m) };
     safeSetItem('chatMessages', updated);
     return updated;
   });
@@ -2466,30 +2517,61 @@ newSocket.on('userStatusSnapshot', (snapshot) => {
   // ✅ GLOBAL listener: runs once per socket
 newSocket.on("receiveMessage", (data) => {
   const senderId = String(data.from);
-  const displayName = senderId === user.id ? "You" : data.fromName || "Unknown";
+  const isOwn = senderId === user.id;
+  const chatKey = isOwn ? String(data.to) : senderId;
+  const displayName = isOwn ? "You" : data.fromName || "Unknown";
+  if (!chatKey) return;
 
   
 
   setMessages((prev) => {
-    const chat = prev[senderId] || [];
+    const chat = prev[chatKey] || [];
 
-    // ✅ 1. If this is my own message and I sent it with messageId
-    if (senderId === user.id && data.messageId) {
-      const existingIndex = chat.findIndex(m => m.id === data.messageId);
+    // ✅ 1. Self-echo: this is my own message pushed to my OTHER device.
+    //    Adopt the server _id if this device already has the optimistic bubble
+    //    (same client messageId); otherwise append it to the conversation.
+    if (isOwn) {
+      if (data.messageId) {
+        const existingIndex = chat.findIndex(m => m.id === data.messageId || m.localId === data.messageId);
 
-      if (existingIndex > -1) {
-        const updatedChat = [...chat];
-        updatedChat[existingIndex] = {
-          ...updatedChat[existingIndex],
-          id: data._id?.toString() || updatedChat[existingIndex].id,
-          delivered: true,
-        };
+        if (existingIndex > -1) {
+          const updatedChat = [...chat];
+          updatedChat[existingIndex] = {
+            ...updatedChat[existingIndex],
+            id: data._id?.toString() || updatedChat[existingIndex].id,
+            localId: data.messageId,
+            delivered: true,
+          };
 
-        const updated = { ...prev, [senderId]: updatedChat };
-        safeSetItem('chatMessages', updated);
-        return updated;
+          const updated = { ...prev, [chatKey]: updatedChat };
+          safeSetItem('chatMessages', updated);
+          return updated;
+        }
       }
+      const newOwn = {
+        id: data._id?.toString() || `own-${Date.now()}`,
+        localId: data.messageId,
+        text: data.message,
+        sender: 'You',
+        timestamp: data.timestamp || Date.now(),
+        file: data.file,
+        fileName: data.fileName,
+        fileType: data.fileType,
+        duration: data.duration,
+        replyTo: data.replyTo ? { ...data.replyTo } : null,
+        photo: data.fromPhoto || 'https://placehold.co/50x50',
+        delivered: true,
+        read: false,
+      };
+      if (chat.some(m => m.id === newOwn.id || (newOwn.localId && m.localId === newOwn.localId))) return prev;
+      const updated = { ...prev, [chatKey]: [...chat, newOwn] };
+      safeSetItem('chatMessages', updated);
+      return updated;
     }
+
+    // ✅ 2. Incoming message from someone else. Dedupe: it may already be
+    //    present locally because a history fetch returned the same message.
+    if (data._id && chat.some(m => m.id === String(data._id))) return prev;
 
     // ✅ 2. Otherwise, it's a new message from someone else
     // If this DM chat is currently open and the user is at the bottom of it,
@@ -2504,6 +2586,7 @@ newSocket.on("receiveMessage", (data) => {
     const autoRead = Boolean(isOpenChat && atBottom);
     const newMessage = {
       id: data._id?.toString() || `fallback-${Date.now()}`,
+      localId: data.messageId,
       text: data.message,
       sender: displayName,
       timestamp: data.timestamp || Date.now(),
@@ -2521,7 +2604,7 @@ newSocket.on("receiveMessage", (data) => {
     };
 
     const updatedChat = [...chat, newMessage];
-    const updated = { ...prev, [senderId]: updatedChat };
+    const updated = { ...prev, [chatKey]: updatedChat };
     safeSetItem('chatMessages', updated);
     if (autoRead) {
       newSocket.emit('markAsRead', { chatId: senderId, readerId: user.id });
@@ -2534,8 +2617,8 @@ newSocket.on("receiveMessage", (data) => {
 
     
 
-    // 3. Upsert contact
-    setContacts(prev => {
+    // 3. Upsert contact (self-echoes must never upsert the sender as a contact)
+    if (!isOwn) setContacts(prev => {
       const exists = prev.some(c => String(c.id) === senderId);
       if (exists) {
         return prev.map(c =>
@@ -2571,7 +2654,7 @@ newSocket.on("receiveMessage", (data) => {
 
     // 5. ✅ Mark as read only if active chat AND tab is focused
     // 5. ✅ Mark as read only if active chat AND tab is focused
-            if (selectedChatRef.current?.id === senderId && isTabFocusedRef.current) {
+            if (!isOwn && selectedChatRef.current?.id === senderId && isTabFocusedRef.current) {
             setTimeout(() => {
               console.log('📤 Auto-marking as read (message received)', { chatId: senderId });
               markAsReadRef.current();
@@ -2713,6 +2796,22 @@ newSocket.on("receiveMessage", (data) => {
               changed = true;
               return { ...m, allRead: true, read: true };
             }
+            return m;
+          });
+          return changed ? { ...prev, [gid]: next } : prev;
+        });
+      });
+
+      // ✅ Cross-device group read-state sync: another device of THIS account
+      //    opened this group, so clear the unread badge / mark messages read.
+      newSocket.on('groupRead', ({ groupId }) => {
+        const gid = String(groupId);
+        setGroupMessages(prev => {
+          const list = prev[gid];
+          if (!list) return prev;
+          let changed = false;
+          const next = list.map(m => {
+            if (m.sender !== 'You' && !m.read) { changed = true; return { ...m, read: true }; }
             return m;
           });
           return changed ? { ...prev, [gid]: next } : prev;
@@ -2912,6 +3011,7 @@ newSocket.on("receiveMessage", (data) => {
         // Fetch reliably once the socket is connected and the group list
         // is loaded, then again whenever groups are added/change.
         useEffect(() => { groupsListRef.current = groupsList; }, [groupsList]);
+        useEffect(() => { contactsRef.current = contacts; }, [contacts]);
         useEffect(() => {
           if (!socket || !socket.connected) return;
           if (!groupsList.length) return;
@@ -2942,6 +3042,44 @@ newSocket.on("receiveMessage", (data) => {
           if (socket.connected) onConnect();
           return () => socket.off('connect', onConnect);
         }, [socket]);
+
+        // ✅ 1:1 DM cross-device sync: prefetch each DM's conversation history
+        //    once the socket + contacts are ready (mirrors the group prefetch),
+        //    so a brand-new device sees the same conversations immediately.
+        useEffect(() => {
+          if (!socket || !socket.connected) return;
+          const ids = [...new Set((contacts || []).map(c => c && String(c.id)).filter(Boolean))];
+          if (!ids.length) return;
+          ids.forEach(id => {
+            if (!prefetchedHistoryRef.current.has(id)) {
+              prefetchedHistoryRef.current.add(id);
+              socket.emit('fetchMessages', { chatId: id });
+            }
+          });
+        }, [socket, contacts]);
+        // Also prefetch DM history once the socket connects, using the latest contacts.
+        useEffect(() => {
+          if (!socket) return;
+          const onConnect = () => {
+            if (!socket.connected) return;
+            [...new Set((contactsRef.current || []).map(c => c && String(c.id)).filter(Boolean))].forEach(id => {
+              if (!prefetchedHistoryRef.current.has(id)) {
+                prefetchedHistoryRef.current.add(id);
+                socket.emit('fetchMessages', { chatId: id });
+              }
+            });
+          };
+          socket.on('connect', onConnect);
+          if (socket.connected) onConnect();
+          return () => socket.off('connect', onConnect);
+        }, [socket]);
+
+        // ✅ Re-fetch the active DM's history whenever its chat is opened so a
+        //    stale device refreshes to the latest server state.
+        useEffect(() => {
+          if (!socket || !socket.connected || !selectedChat?.id) return;
+          socket.emit('fetchMessages', { chatId: selectedChat.id });
+        }, [socket, selectedChat?.id]);
     
 
 

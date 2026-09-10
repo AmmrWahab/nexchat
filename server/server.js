@@ -244,28 +244,39 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
     
 
     if (receiverSocketIds) {
-      // ✅ Send message to ALL of the recipient's connected sockets
+      // ✅ Build one authoritative payload. `to` is included so ANY device of the
+      //    sender can place a self-echo in the correct conversation, and every
+      //    device renders the same server _id / state.
+      const payload = {
+        _id: newMsg._id,
+        to,
+        from,
+        fromName: sender.name,
+        message,
+        file,
+        fileName,
+        fileType,
+        duration,
+        replyTo: replyTo,
+        timestamp: newMsg.createdAt.getTime(),
+        messageId // 👈 Send back to client
+      };
+
+      // ✅ Recipient: deliver to ALL of their connected sockets
       receiverSocketIds.forEach((sid) => {
-        io.to(sid).emit("receiveMessage", {
-          
-          _id: newMsg._id,
-          from,
-          fromName: sender.name,
-          message,
-          file,
-          fileName,
-          fileType,
-          duration,
-          replyTo: replyTo,
-          timestamp: newMsg.createdAt.getTime(),
-          messageId // 👈 Send back to client
-        });
+        io.to(sid).emit("receiveMessage", payload);
       });
 
-      // ✅ BONUS: Notify sender that their message was delivered
-      socket.emit("messageDelivered", {
+      // ✅ Sender's other devices: echo the message (excluding the socket that
+      //    sent it — that device already shows the message optimistically).
+      emitToUser(from, "receiveMessage", payload, [socket.id]);
+
+      // ✅ BONUS: Notify the sender on EVERY device that their message was
+      //    delivered (so all synchronized devices advance to the same tick).
+      emitToUser(from, "messageDelivered", {
         chatId: to,
-        messageId: messageId || newMsg._id.toString()
+        messageId: messageId || newMsg._id.toString(),
+        _id: newMsg._id.toString()
       });
     } else {
       console.log(`📥 Stored undelivered message for ${to}`);
@@ -274,6 +285,54 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
     console.error("❌ [CRITICAL] Error in sendMessage:", err); // Full error
   }
 });
+
+  // ✅ Load 1:1 message history when a chat is opened / prefetched.
+  //    Returns BOTH directions (sent + received) so every device of a user
+  //    can rebuild the same conversation state, regardless of which device
+  //    actually sent or received each message.
+  socket.on("fetchMessages", async (data) => {
+    const { chatId } = data || {};
+    if (!chatId) return;
+    try {
+      const me = socket.userId;
+      const messages = await Message.find({
+        $or: [
+          { from: me, to: chatId },
+          { from: chatId, to: me },
+        ]
+      })
+        .populate("from", "name")
+        .sort({ createdAt: 1 })
+        .limit(200)
+        .exec();
+
+      const msgs = messages.map(m => ({
+        _id: m._id.toString(),
+        from: String(m.from._id),
+        fromName: m.from.name || 'Unknown',
+        message: m.message,
+        file: m.file,
+        fileName: m.fileName,
+        fileType: m.fileType,
+        duration: m.duration,
+        replyTo: m.replyTo ? {
+          sender: m.replyTo.sender,
+          text: m.replyTo.text,
+          messageId: m.replyTo.messageId,
+        } : null,
+        timestamp: new Date(m.createdAt).getTime(),
+        read: !!m.read,
+        delivered: !!m.delivered,
+        messageId: m.clientMessageId,
+      }));
+
+      // Emit to every one of this user's sockets so all synced devices get the
+      // same authoritative history.
+      emitToUser(me, "messagesHistory", { chatId: String(chatId), messages: msgs });
+    } catch (err) {
+      console.error("fetchMessages error:", err.message);
+    }
+  });
 
   // ✅ Handle read receipt
   socket.on("markAsRead", async ({ chatId, readerId }) => {
@@ -296,6 +355,10 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
         });
       });
     }
+
+    // ✅ Cross-device read-state sync: tell the READER's own other devices that
+    //    this conversation is now read so their unread badge clears everywhere.
+    emitToUser(readerId, "conversationRead", { chatId: String(chatId) });
   });
 
   // ✅ Group read receipt: a member has seen the group's messages. For every
@@ -336,6 +399,10 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
           }
         }
       }
+
+      // ✅ Cross-device read-state sync for groups: clear the reader's own
+      //    unread badge on every one of their devices.
+      emitToUser(readerId, "groupRead", { groupId: String(groupId) });
     } catch (err) {
       console.error("markGroupRead error:", err.message);
     }
@@ -886,7 +953,8 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
           // 3. ✅ Notify the original sender that their message was DELIVERED
           emitToUser(msg.from._id.toString(), "messageDelivered", {
             chatId: msg.to.toString(),
-            messageId: msg.clientMessageId
+            messageId: msg.clientMessageId,
+            _id: msg._id.toString()
           });
 
           console.log(`✅ Delivered stored message ${msg._id} from ${msg.from._id} to ${msg.to}`);
