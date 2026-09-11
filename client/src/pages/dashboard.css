@@ -1029,7 +1029,7 @@
   display: flex;
   justify-content: center;
   align-items: center;
-  z-index: 20000;
+  z-index: 200000;
 }
 
 .photo-preview {
