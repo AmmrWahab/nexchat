@@ -805,6 +805,8 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
     });
     // The caller (initiator) opens the active call UI too.
     emitToUser(to, 'call:accepted', { callId, type });
+    // Also stop the ringing UI on the accepting member's OTHER devices.
+    emitToUser(socket.userId, 'call:endedLocal', { callId }, [socket.id]);
   });
 
   // Member leaves a group call -> notify everyone else.
@@ -827,6 +829,8 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
       if (ca.members.size === 0) groupCalls.delete(callId);
     }
     socket.emit('call:endedLocal', { callId });
+    // Also close the group-call UI on this member's OTHER devices.
+    emitToUser(socket.userId, 'call:endedLocal', { callId }, [socket.id]);
   });
 
   // Caller cancels a group ring (nobody answered) -> one missed group record.
@@ -834,12 +838,16 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
     logCall(socket.userId, socket.userId, type, 'missed', 0, { groupId, callerName });
     groupCalls.delete(callId);
     socket.emit('call:endedLocal', { callId });
+    // Also close the ringing group-call UI on the caller's OTHER devices.
+    emitToUser(socket.userId, 'call:endedLocal', { callId }, [socket.id]);
   });
 
   // Callee accepts -> caller opens the active call UI.
   socket.on('call:accept', ({ to, callId, type }) => {
     if (!to || !callId) return;
     emitToUser(to, 'call:accepted', { callId, type });
+    // Also stop the ringing UI on the accepting user's OTHER devices.
+    emitToUser(socket.userId, 'call:endedLocal', { callId }, [socket.id]);
   });
 
   // Callee declines -> mark missed for the caller.
@@ -849,6 +857,8 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
     if (peer) logCall(socket.userId, to, type, 'missed', 0);
     socket.emit('call:rejectedRemote', { callId, type });
     emitToUser(to, 'call:rejected', { callId, type });
+    // Also close the ringing/active call UI on the rejecting user's OTHER devices.
+    emitToUser(socket.userId, 'call:endedLocal', { callId }, [socket.id]);
   });
 
   // Either side hangs up -> both close; the CALLER records the finished call
@@ -860,6 +870,8 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
     if (peer) logCall(socket.userId, to, type, secs > 0 ? 'ended' : 'missed', secs);
     socket.emit('call:endedLocal', { callId });
     emitToUser(to, 'call:ended', { callId });
+    // Also close the call UI on the hanging-up user's OTHER devices.
+    emitToUser(socket.userId, 'call:endedLocal', { callId }, [socket.id]);
   });
 
   // Caller timeout (callee never answered) -> mark missed.
@@ -868,6 +880,8 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
     const peer = await User.exists({ _id: to }).catch(() => null);
     if (peer) logCall(socket.userId, to, type, 'missed', 0);
     emitToUser(to, 'call:timedOut', { callId });
+    // Also close the ringing "calling..." UI on the caller's OTHER devices.
+    emitToUser(socket.userId, 'call:endedLocal', { callId }, [socket.id]);
   });
 
   // WebRTC signaling relay between the two peers.
