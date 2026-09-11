@@ -49,7 +49,11 @@ const io = new Server(server, {
     methods: ['GET', 'POST'],
     credentials: true
   },
-  transports: ['websocket', 'polling']
+  transports: ['websocket', 'polling'],
+  // Photos/videos are sent as base64 over the socket; the 1MB default
+  // silently drops them. Raise the cap well above what clients send
+  // (real guard against Mongo's 16MB doc limit lives per-message below).
+  maxHttpBufferSize: 50 * 1024 * 1024
 });
 
 // Middleware
@@ -58,7 +62,7 @@ app.use(cors({
   credentials: true
 }));
 
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
 
 // Session (required for OAuth)
 app.use(
@@ -201,6 +205,11 @@ io.on('connection', (socket) => {
   //  handler for it yet and silently DROPS it -> messages appear "not
   //  reaching" the receiver. Early emits must never be lost.)
 
+  // Base64 inflates binary by ~33%. A 12MB base64 string keeps the stored
+  // message document safely under Mongo's 16MB BSON limit while still
+  // allowing most captured photos and short videos through.
+  const MAX_FILE_BASE64 = 12 * 1024 * 1024;
+
 socket.on("sendMessage", async (data) => {
     console.log("📨 [DEBUG] Full data received:", JSON.stringify(data, null, 2)); // 🔥 Full payload
   const { to, message, from, file, fileName, fileType, replyTo, messageId, duration } = data; // 👈 Make sure you receive `messageId`
@@ -208,6 +217,10 @@ socket.on("sendMessage", async (data) => {
   const receiverSocketIds = getSocketIds(to);
   if (!from || !to) {
     console.error("❌ Invalid from/to:", { from, to });
+    return;
+  }
+  if (typeof file === 'string' && file.length > MAX_FILE_BASE64) {
+    socket.emit('messageSendError', { to, reason: 'file_too_large', message: 'This file is too large to send (max ~9 MB).' });
     return;
   }
   if (typeof message === 'string' && (message.includes('<div') || message.startsWith('{/*'))) {
@@ -448,6 +461,10 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
   socket.on("sendGroupMessage", async (data) => {
     const { groupId, message, file, fileName, fileType, messageId, duration } = data;
     if (!groupId) return;
+    if (typeof file === 'string' && file.length > MAX_FILE_BASE64) {
+      socket.emit('messageSendError', { groupId, reason: 'file_too_large', message: 'This file is too large to send (max ~9 MB).' });
+      return;
+    }
     try {
       const sender = await User.findById(socket.userId).select("name photo").exec();
       if (!sender) return;

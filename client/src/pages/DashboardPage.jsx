@@ -278,6 +278,25 @@ export default function DashboardPage() {
   // Whether the messages list is scrolled to the latest message (within 60px).
   const isAtChatBottom = (el) => !!el && el.scrollHeight - el.scrollTop - el.clientHeight < 60;
 
+  // Downscale a camera frame before encoding so captured photos stay small
+  // enough to send reliably (>1MB base64 payloads used to get dropped).
+  const MAX_PHOTO_EDGE = 1600;
+  const captureScaledPhoto = (video, canvas) => {
+    let w = video.videoWidth;
+    let h = video.videoHeight;
+    const max = Math.max(w, h);
+    if (max > MAX_PHOTO_EDGE) {
+      const scale = MAX_PHOTO_EDGE / max;
+      w = Math.max(1, Math.round(w * scale));
+      h = Math.max(1, Math.round(h * scale));
+    }
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0, w, h);
+    return canvas.toDataURL('image/jpeg', 0.85);
+  };
+
   // New-message indicator helpers: a green pill shown just above the composer
   // while the user is scrolled up; clicking it jumps to the latest message.
   const handleChatScroll = () => {
@@ -575,11 +594,7 @@ export default function DashboardPage() {
       alert('Camera not ready yet. Please wait.');
       return;
     }
-    const context = canvas.getContext('2d');
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    context.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const photoDataUrl = canvas.toDataURL('image/jpeg', 0.9);
+    const photoDataUrl = captureScaledPhoto(video, canvas);
     const stream = video.srcObject;
     if (stream) stream.getTracks().forEach(t => t.stop());
     setStatusCameraOpen(false);
@@ -1230,19 +1245,8 @@ const handleCapturePhoto = () => {
     return;
   }
 
-  const context = canvas.getContext('2d');
-  
-  // Set canvas to match video dimensions
-  const width = video.videoWidth;
-  const height = video.videoHeight;
-  canvas.width = width;
-  canvas.height = height;
-
-  // Draw video frame to canvas
-  context.drawImage(video, 0, 0, width, height);
-
-  // Convert to JPEG
-  const photoDataUrl = canvas.toDataURL('image/jpeg', 0.9);
+  // Convert to JPEG (downscaled so the payload stays under send limits)
+  const photoDataUrl = captureScaledPhoto(video, canvas);
 
   // Stop camera stream
   const stream = video.srcObject;
@@ -1371,6 +1375,14 @@ const handleSendPhoto = () => {
 const handleFileChange = (e) => {
   const file = e.target.files[0];
   if (!file || !selectedChat || !socket) return;
+
+  // Guard: base64 inflates size ~33%. Cap binary at 9 MB so the encoded
+  // payload stays under the server's ~12 MB limit and Mongo's 16 MB doc cap.
+  if (file.size > 9 * 1024 * 1024) {
+    alert('This file is too large to send (max 9 MB).');
+    if (fileInputRef.current) fileInputRef.current.value = '';
+    return;
+  }
 
   // ✅ 1. Generate tempId FIRST
   const tempId = `temp-${Date.now()}-${Math.random()}`;
@@ -2477,6 +2489,13 @@ newSocket.on('messageDelivered', ({ chatId, messageId, _id }) => {
     safeSetItem('chatMessages', updated);
     return updated;
   });
+});
+
+// If the server rejects a message (e.g. an oversized attachment), surface it
+// instead of silently dropping the send.
+newSocket.on('messageSendError', (err) => {
+  console.error('❌ Message send failed:', err);
+  if (err && err.message) alert(err.message);
 });
 
 // ✅ 1:1 conversation history (server-authoritative) — lets every device of
@@ -4183,6 +4202,14 @@ newSocket.on("receiveMessage", (data) => {
       const handleGroupFileChange = (e) => {
         const file = e.target.files[0];
         if (!file || !selectedGroup || !socket) return;
+
+        // Guard large uploads (see handleFileChange). Skip with a clear message
+        // instead of letting the socket/DB silently drop them.
+        if (file.size > 9 * 1024 * 1024) {
+          alert('This file is too large to send (max 9 MB).');
+          if (fileInputRef.current) fileInputRef.current.value = '';
+          return;
+        }
 
         const tempId = `group-temp-${Date.now()}-${Math.random()}`;
         const gid = selectedGroup.id;
