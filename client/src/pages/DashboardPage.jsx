@@ -144,6 +144,7 @@ export default function DashboardPage() {
   const [slideClass, setSlideClass] = useState('');
   const [groupsList, setGroupsList] = useState([]);
   const [selectedGroup, setSelectedGroup] = useState(null);
+  const [memberProfile, setMemberProfile] = useState(null);
   const [groupMessages, setGroupMessages] = useState({});
   const selectedGroupRef = useRef(null);
   const prefetchedGroupHistoryRef = useRef(new Set());
@@ -534,7 +535,7 @@ export default function DashboardPage() {
           .catch(err => {
             console.error('❌ Status camera error:', err);
             alert('Unable to access camera');
-            setStatusCameraOpen(false);
+            goBackPage();
           });
       }
     }, 100);
@@ -652,7 +653,7 @@ export default function DashboardPage() {
   const sendStatusImage = () => {
     if (!statusCapture || !statusCapture.dataUrl) return;
     postStatus(statusCapture.type === 'video' ? 'video' : 'image', statusCaptureCaption, 'default', statusCapture.dataUrl);
-    setStatusCapture(null);
+    goBackPage();
     setStatusCaptureCaption('');
     setStatusAddSheet(false);
   };
@@ -662,7 +663,7 @@ export default function DashboardPage() {
     if (!txt) return;
     postStatus('text', txt, 'default', '');
     setStatusText('');
-    setStatusComposerOpen(false);
+    goBackPage();
     setStatusAddSheet(false);
   };
 
@@ -674,8 +675,8 @@ export default function DashboardPage() {
     const cur = currentStatusForViewer;
     const quoteText = (cur && (cur.text || (cur.type === 'video' ? '[Video]' : cur.type === 'image' ? '[Photo]' : '[Text]'))) || 'Status';
     setStatusReplyText('');
-    setStatusViewer(null);
     if (!contact) {
+      goBackPage();
       if (socket && socket.connected) {
         socket.emit('sendMessage', {
           to: targetId,
@@ -695,6 +696,7 @@ export default function DashboardPage() {
       }
       return;
     }
+    setStatusViewer(null);
     setSelectedChat(contact);
     setSelectedGroup(null);
     setMobileChatOpen(true);
@@ -719,7 +721,7 @@ export default function DashboardPage() {
     if (socket && socket.connected) {
       socket.emit('deleteStatus', { statusId: currentStatusForViewer._id });
     }
-    setStatusViewer(null);
+    goBackPage();
   };
 
   // The status currently shown in the full-screen viewer
@@ -755,12 +757,12 @@ export default function DashboardPage() {
     if (!statusViewer || !viewerUser || !viewerUser.statuses.length) return;
     if (currentStatusForViewer?.type === 'video' && !videoStatusEnded) return;
     const timer = setTimeout(() => {
-      setStatusViewer(prev => {
-        if (!prev) return prev;
-        const list = String(prev.userId) === String(user.id) ? myStatuses : feedGroups.find(g => String(g.user.id) === String(prev.userId))?.statuses || [];
-        if (prev.index < list.length - 1) return { userId: prev.userId, index: prev.index + 1 };
-        return null;
-      });
+      const list = String(statusViewer.userId) === String(user.id) ? myStatuses : feedGroups.find(g => String(g.user.id) === String(statusViewer.userId))?.statuses || [];
+      if (statusViewer.index < list.length - 1) {
+        setStatusViewer({ userId: statusViewer.userId, index: statusViewer.index + 1 });
+      } else {
+        goBackPage();
+      }
     }, 5000);
     return () => clearTimeout(timer);
   }, [statusViewer && String(statusViewer.userId), statusViewer && statusViewer.index, currentStatusForViewer && currentStatusForViewer.type, videoStatusEnded]);
@@ -779,7 +781,7 @@ export default function DashboardPage() {
       if (statusViewer.index < viewerUser.statuses.length - 1) {
         setStatusViewer({ userId: statusViewer.userId, index: statusViewer.index + 1 });
       } else {
-        setStatusViewer(null);
+        goBackPage();
       }
     }
   };
@@ -928,7 +930,7 @@ export default function DashboardPage() {
       });
     }
     setClearTarget(null);
-    setShowClearChatConfirm(false);
+    goBackPage();
   };
 
 
@@ -1279,7 +1281,7 @@ const handleOpenCamera = () => {
         .catch(err => {
           console.error("❌ Camera error:", err);
           alert("Unable to access camera");
-          setShowCameraModal(false);
+          goBackPage();
         });
     }
   }, 100);
@@ -3427,7 +3429,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
             drawer.style.transition = 'transform 0.3s ease';
             drawer.style.transform = `translateY(${viewportHeight}px)`;
             setTimeout(() => {
-              setShowAddContact(false);
+              goBackPage();
             }, 300);
           } else {
             // Snap back
@@ -3530,6 +3532,16 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
         const forwardOnRef = useRef(false);
         const groupFlowOnRef = useRef(false);
         const cameraOnRef = useRef(false);
+        const mediaOnRef = useRef(false);
+        const previewOnRef = useRef(false);
+        const statusViewerOnRef = useRef(false);
+        const statusAddOnRef = useRef(false);
+        const statusComposerOnRef = useRef(false);
+        const statusCameraOnRef = useRef(false);
+        const statusCaptureOnRef = useRef(false);
+        const clearConfirmOnRef = useRef(false);
+        const newContactOnRef = useRef(false);
+        const memberProfileOnRef = useRef(false);
 
         const pushPage = (screen, saved) => {
           window.history.pushState({ appNav: true }, '');
@@ -3545,7 +3557,34 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
         // Close whichever page is topmost, based on LIVE state (used as a
         // fallback for desktop or when no pushed history entry exists).
         const closeTopLive = () => {
-          if (showCameraModal) {
+          if (previewImage) {
+            setPreviewImage(null);
+            previewOnRef.current = false;
+          } else if (statusViewer) {
+            setStatusViewer(null);
+            statusViewerOnRef.current = false;
+          } else if (statusCameraOpen) {
+            closeStatusCamera();
+            statusCameraOnRef.current = false;
+          } else if (statusComposerOpen) {
+            setStatusComposerOpen(false);
+            statusComposerOnRef.current = false;
+          } else if (statusCapture) {
+            setStatusCapture(null);
+            statusCaptureOnRef.current = false;
+          } else if (mediaViewer) {
+            setMediaViewer(null);
+            mediaOnRef.current = false;
+          } else if (statusAddSheet) {
+            setStatusAddSheet(false);
+            statusAddOnRef.current = false;
+          } else if (showClearChatConfirm) {
+            setShowClearChatConfirm(false);
+            clearConfirmOnRef.current = false;
+          } else if (memberProfile) {
+            setMemberProfile(null);
+            memberProfileOnRef.current = false;
+          } else if (showCameraModal) {
             stopCameraStream();
             setShowCameraModal(false);
             cameraOnRef.current = false;
@@ -3559,6 +3598,9 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
           } else if (showGroupInfo) {
             setShowGroupInfo(false);
             groupInfoOnRef.current = false;
+          } else if (showNewContactModal) {
+            setShowNewContactModal(false);
+            newContactOnRef.current = false;
           } else if (showAddContact) {
             setShowAddContact(false);
             addContactOnRef.current = false;
@@ -3620,8 +3662,51 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
               break;
             case 'camera':
               stopCameraStream();
+              videoRef.current = null;
               setShowCameraModal(false);
+              setCapturedPhoto(null);
+              setCaption('');
               cameraOnRef.current = false;
+              break;
+            case 'media':
+              setMediaViewer(null);
+              mediaOnRef.current = false;
+              break;
+            case 'preview':
+              setPreviewImage(null);
+              previewOnRef.current = false;
+              break;
+            case 'statusviewer':
+              setStatusViewer(null);
+              statusViewerOnRef.current = false;
+              break;
+            case 'statusadd':
+              setStatusAddSheet(false);
+              statusAddOnRef.current = false;
+              break;
+            case 'statuscomposer':
+              setStatusComposerOpen(false);
+              statusComposerOnRef.current = false;
+              break;
+            case 'statuscamera':
+              closeStatusCamera();
+              statusCameraOnRef.current = false;
+              break;
+            case 'statuscapture':
+              setStatusCapture(null);
+              statusCaptureOnRef.current = false;
+              break;
+            case 'clearconfirm':
+              setShowClearChatConfirm(false);
+              clearConfirmOnRef.current = false;
+              break;
+            case 'newcontact':
+              setShowNewContactModal(false);
+              newContactOnRef.current = false;
+              break;
+            case 'memberprofile':
+              setMemberProfile(null);
+              memberProfileOnRef.current = false;
               break;
             default:
               break;
@@ -3631,12 +3716,21 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
         // Shared handler for ANY on-screen back/close button: goes through the
         // browser history so the pushed entry is consumed (stack stays balanced).
         const goBackPage = () => {
-          if (window.history.state && window.history.state.appNav) {
+          if (navStackRef.current.length && window.history.state && window.history.state.appNav) {
             window.history.back();
           } else {
             closeTopLive();
           }
         };
+
+        // Anchor the root history entry (mobile only) so that once the in-app
+        // stack empties, back stays on the dashboard instead of leaving the app.
+        useEffect(() => {
+          if (!isMobile) return;
+          if (!window.history.state || !window.history.state.appNav) {
+            window.history.replaceState({ appNav: true }, '');
+          }
+        }, [isMobile]);
 
         // Bottom-nav page / tab changes
         useEffect(() => {
@@ -3647,25 +3741,50 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
           }
         }, [view, activeTab, isMobile]);
 
-        // Watch every tracked page opening (false -> true) and push history
+        // Watch every tracked page opening (false -> true) and push history.
+        // If the page on top of the stack is closing in the same render that a
+        // new page opens (e.g. status action sheet -> camera/composer/capture,
+        // status camera -> photo capture, status viewer -> reply chat), REPLACE
+        // that history entry so the stack records the transition instead of a
+        // stale intermediate page.
         useEffect(() => {
           if (!isMobile) return;
           const pages = [
             { on: !!(selectedChat?.id || selectedGroup?.id), ref: chatOnRef, key: 'chat' },
             { on: showContactInfo, ref: contactInfoOnRef, key: 'contactinfo' },
             { on: showGroupInfo, ref: groupInfoOnRef, key: 'groupinfo' },
+            { on: !!memberProfile, ref: memberProfileOnRef, key: 'memberprofile' },
             { on: showAddContact, ref: addContactOnRef, key: 'addcontact' },
+            { on: showNewContactModal, ref: newContactOnRef, key: 'newcontact' },
             { on: showForwardModal, ref: forwardOnRef, key: 'forward' },
             { on: showGroupFlow, ref: groupFlowOnRef, key: 'groupflow' },
             { on: showCameraModal, ref: cameraOnRef, key: 'camera' },
+            { on: !!mediaViewer, ref: mediaOnRef, key: 'media' },
+            { on: !!previewImage, ref: previewOnRef, key: 'preview' },
+            { on: !!statusViewer, ref: statusViewerOnRef, key: 'statusviewer' },
+            { on: statusAddSheet, ref: statusAddOnRef, key: 'statusadd' },
+            { on: statusComposerOpen, ref: statusComposerOnRef, key: 'statuscomposer' },
+            { on: statusCameraOpen, ref: statusCameraOnRef, key: 'statuscamera' },
+            { on: !!statusCapture, ref: statusCaptureOnRef, key: 'statuscapture' },
+            { on: showClearChatConfirm, ref: clearConfirmOnRef, key: 'clearconfirm' },
           ];
+          const closing = [];
+          const opening = [];
           pages.forEach((p) => {
-            if (p.on && !p.ref.current) {
-              pushPage(p.key);
-            }
+            if (p.on && !p.ref.current) opening.push(p.key);
+            if (!p.on && p.ref.current) closing.push(p.key);
             p.ref.current = !!p.on;
           });
-        }, [isMobile, selectedChat?.id, selectedGroup?.id, showContactInfo, showGroupInfo, showAddContact, showForwardModal, showGroupFlow, showCameraModal]);
+          const topEntry = navStackRef.current[navStackRef.current.length - 1];
+          opening.forEach((key) => {
+            if (topEntry && closing.includes(topEntry.screen)) {
+              window.history.replaceState({ appNav: true }, '');
+              navStackRef.current[navStackRef.current.length - 1] = { screen: key };
+            } else {
+              pushPage(key);
+            }
+          });
+        }, [isMobile, selectedChat?.id, selectedGroup?.id, showContactInfo, showGroupInfo, memberProfile, showAddContact, showNewContactModal, showForwardModal, showGroupFlow, showCameraModal, mediaViewer, previewImage, statusViewer, statusAddSheet, statusComposerOpen, statusCameraOpen, statusCapture, showClearChatConfirm]);
 
         // Handle the system/hardware back button
         useEffect(() => {
@@ -6999,7 +7118,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
     const chatMessages = messages[selectedChat?.id] || [];
     const toForward = chatMessages.filter((m) => selectedMessages.has(m.id));
     if (toForward.length === 0) {
-      setShowForwardModal(false);
+      goBackPage();
       setIsSelectionMode(false);
       setSelectedMessages(new Set());
       return;
@@ -7047,7 +7166,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
       }));
     });
 
-    setShowForwardModal(false);
+    goBackPage();
     setIsSelectionMode(false);
     setSelectedMessages(new Set());
   };
@@ -7230,7 +7349,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
 {showNewContactModal && (
   <div
     className="new-contact-modal-overlay"
-    onClick={() => setShowNewContactModal(false)}
+    onClick={goBackPage}
   >
     <div
       className="new-contact-modal"
@@ -7275,7 +7394,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
       <div className="modal-actions">
         <button
           className="modal-btn cancel"
-          onClick={() => setShowNewContactModal(false)}
+          onClick={goBackPage}
         >
           Cancel
         </button>
@@ -7326,7 +7445,7 @@ setContacts(prev => {
 });
 
   alert(`Contact added: ${newContact.name}`);
-  setShowNewContactModal(false);
+  goBackPage();
   setEmail('');
   setFirstName('');
   setLastName('');
@@ -7520,7 +7639,9 @@ setContacts(prev => {
                 alignItems: 'center',
                 gap: '12px',
                 padding: '8px 0',
+                cursor: 'pointer',
               }}
+              onClick={() => setMemberProfile({ id: memberId, name: memberName, photo: memberPhoto })}
             >
               <img
                 src={memberPhoto}
@@ -7597,6 +7718,102 @@ setContacts(prev => {
           </svg>
           <span>Exit group</span>
         </div>
+      </div>
+    </div>
+  </>
+)}
+
+{/* Member Profile Drawer */}
+{memberProfile && (
+  <>
+    <div
+      className="drawer-overlay"
+      onClick={goBackPage}
+      style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        background: 'rgba(0,0,0,0.5)',
+        zIndex: 998,
+        opacity: 1,
+        visibility: 'visible',
+      }}
+    />
+    <div
+      className="contact-drawer"
+      style={{
+        position: 'fixed',
+        top: 0,
+        right: 0,
+        width: isMobile ? '100%' : '400px',
+        height: '100%',
+        background: 'white',
+        boxShadow: '-4px 0 12px rgba(0,0,0,0.15)',
+        zIndex: 999,
+        transform: 'translateX(0)',
+        transition: 'transform 0.3s ease-out',
+        overflowY: 'auto',
+      }}
+    >
+      <div
+        className="drawer-header"
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          padding: '12px 16px',
+          borderBottom: '1px solid #eee',
+          position: 'sticky',
+          top: 0,
+          background: 'white',
+          zIndex: 10,
+        }}
+      >
+        <button
+          onClick={goBackPage}
+          style={{
+            background: 'none',
+            border: 'none',
+            fontSize: '20px',
+            cursor: 'pointer',
+            color: '#000000ff',
+            padding: '4px',
+            marginRight: '20px',
+          }}
+        >
+          ✖
+        </button>
+        <div
+          className="drawer-title"
+          style={{
+            fontSize: '16px',
+            color: '#333',
+            flex: 1,
+            textAlign: 'left',
+          }}
+        >
+          Member Profile
+        </div>
+      </div>
+
+      <div
+        className="profile-section"
+        style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '24px', gap: '12px' }}
+      >
+        <img
+          src={memberProfile.photo || 'https://via.placeholder.com/80'}
+          alt={memberProfile.name || 'Member'}
+          style={{ width: '80px', height: '80px', borderRadius: '50%', objectFit: 'cover', border: '2px solid #ddd' }}
+        />
+        <div style={{ fontSize: '17px', fontWeight: '600', color: '#111' }}>{memberProfile.name || 'Member'}</div>
+      </div>
+
+      <div className="section" style={{ padding: '16px', borderTop: '1px solid #eee' }}>
+        <div className="section-title" style={{ fontSize: '14px', color: '#333', marginBottom: '12px' }}>
+          Member ID
+        </div>
+        <div style={{ fontSize: '14px', color: '#666', wordBreak: 'break-all' }}>{memberProfile.id || '—'}</div>
       </div>
     </div>
   </>
@@ -7683,7 +7900,7 @@ setContacts(prev => {
       position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh',
       background: 'rgba(0, 0, 0, 0.5)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 20000,
     }}
-    onClick={() => setShowClearChatConfirm(false)}
+    onClick={goBackPage}
   >
     <div
       style={{ background: 'white', padding: '24px', borderRadius: '12px', width: '90%', maxWidth: '400px', boxShadow: '0 4px 20px rgba(0,0,0,0.2)' }}
@@ -7695,7 +7912,7 @@ setContacts(prev => {
       </p>
       <div style={{ display: 'flex', gap: '12px', marginTop: '24px', justifyContent: 'flex-end' }}>
         <button
-          onClick={() => setShowClearChatConfirm(false)}
+          onClick={goBackPage}
           style={{ padding: '10px 16px', background: '#f0f0f0', border: '1px solid #ddd', borderRadius: '6px', color: '#333', cursor: 'pointer', fontWeight: 500 }}
         >
           Cancel
@@ -7719,7 +7936,7 @@ setContacts(prev => {
         <>
           <div className="camera-header">
             <button
-              onClick={handleCloseCamera}
+              onClick={goBackPage}
               aria-label="Close camera"
               className="camera-header-x"
             >
@@ -8016,7 +8233,7 @@ setContacts(prev => {
 {showAddContact && (
   <div
     className="add-contact-drawer-overlay"
-    onClick={() => setShowAddContact(false)}
+    onClick={goBackPage}
   >
    <div
   className="add-contact-drawer"
@@ -8028,7 +8245,7 @@ setContacts(prev => {
       <div className="drawer-header">
         <button
           className="drawer-btn"
-          onClick={() => setShowAddContact(false)}
+          onClick={goBackPage}
         >
           Cancel
         </button>
@@ -8078,7 +8295,7 @@ setContacts(prev => {
             });
 
             alert('Contact saved!');
-            setShowAddContact(false);
+            goBackPage();
             setEmail('');
             setFirstName('');
             setLastName('');
@@ -8123,7 +8340,7 @@ setContacts(prev => {
   <div
     className="new-contact-modal-overlay"
     style={{ zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-    onClick={() => setShowForwardModal(false)}
+    onClick={goBackPage}
   >
     <div
       className="new-contact-modal"
@@ -8133,7 +8350,7 @@ setContacts(prev => {
       <div className="modal-header">
         <h3>Forward {selectedMessages.size} message{selectedMessages.size > 1 ? 's' : ''}</h3>
         <button
-          onClick={() => setShowForwardModal(false)}
+          onClick={goBackPage}
           style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer' }}
           aria-label="Close forward"
         >
@@ -8248,7 +8465,7 @@ setContacts(prev => {
           </span>
           <div style={{ display: 'flex', gap: '10px' }}>
             <button
-              onClick={() => setShowForwardModal(false)}
+              onClick={goBackPage}
               style={{
                 padding: '8px 18px',
                 background: 'white',
@@ -8292,7 +8509,7 @@ setContacts(prev => {
 
 {/* ===== STATUS ADD SHEET (Camera / Gallery / Text) ===== */}
 {statusAddSheet && (
-  <div className="status-action-overlay" onClick={() => setStatusAddSheet(false)}>
+  <div className="status-action-overlay" onClick={goBackPage}>
     <div className="status-action-sheet" onClick={(e) => e.stopPropagation()}>
       <div className="status-action-title">Add status</div>
       <button
@@ -8313,7 +8530,7 @@ setContacts(prev => {
       >
         <PencilLine size={22} strokeWidth={1.8} /> Text
       </button>
-      <button className="status-action-cancel" onClick={() => setStatusAddSheet(false)}>Cancel</button>
+      <button className="status-action-cancel" onClick={goBackPage}>Cancel</button>
     </div>
   </div>
 )}
@@ -8329,7 +8546,7 @@ setContacts(prev => {
 {statusCameraOpen && (
   <div className="status-camera-overlay">
     <div className="status-camera-top">
-      <button className="status-camera-close" onClick={closeStatusCamera} aria-label="Close camera">✕</button>
+      <button className="status-camera-close" onClick={goBackPage} aria-label="Close camera">✕</button>
     </div>
     <video ref={statusVideoRef} autoPlay playsInline className="status-camera-video" />
     <div className="status-camera-bottom">
@@ -8349,7 +8566,7 @@ setContacts(prev => {
 {statusComposerOpen && (
   <div className="status-composer">
     <div className="status-composer-header">
-      <button onClick={() => setStatusComposerOpen(false)}>Cancel</button>
+      <button onClick={goBackPage}>Cancel</button>
       <button className="status-composer-send" onClick={sendStatusText} disabled={!statusText.trim()}>Send</button>
     </div>
     <textarea
@@ -8368,7 +8585,7 @@ setContacts(prev => {
 {statusCapture && statusCapture.dataUrl && (
   <div className="status-capture-preview">
     <div className="status-composer-header">
-      <button onClick={() => setStatusCapture(null)}>Cancel</button>
+      <button onClick={goBackPage}>Cancel</button>
       <button className="status-composer-send" onClick={sendStatusImage}>Send</button>
     </div>
     {statusCapture.type === 'video' ? (
@@ -8390,7 +8607,7 @@ setContacts(prev => {
 {statusViewer && viewerUser && viewerUser.statuses.length > 0 && currentStatusForViewer && (
   <div className="status-viewer-overlay">
     <div className="status-viewer-head">
-      <button className="status-viewer-close" onClick={() => setStatusViewer(null)} aria-label="Close">✕</button>
+      <button className="status-viewer-close" onClick={goBackPage} aria-label="Close">✕</button>
       {String(viewerUser.user.id) === String(user.id) && (
         <button className="status-viewer-delete" onClick={deleteCurrentStatus} aria-label="Delete status">🗑</button>
       )}
@@ -8656,7 +8873,7 @@ setContacts(prev => {
   return (
     <div className="media-viewer-overlay">
       <div className="media-viewer-head">
-        <button className="media-viewer-back" onClick={() => setMediaViewer(null)} aria-label="Back">‹</button>
+        <button className="media-viewer-back" onClick={goBackPage} aria-label="Back">‹</button>
         <div className="media-viewer-title">
           <strong>{mediaViewer.chatName}</strong>
           <span>Media, links and docs</span>
@@ -8743,8 +8960,8 @@ setContacts(prev => {
     const src = previewImage.src || previewImage.dataUrl;
     const isVideo = (previewImage.fileType || '').startsWith('video/');
     return (
-      <div className="photo-preview-overlay" onClick={() => setPreviewImage(null)}>
-        <button className="preview-close" onClick={() => setPreviewImage(null)} aria-label="Close">✕</button>
+      <div className="photo-preview-overlay" onClick={goBackPage}>
+        <button className="preview-close" onClick={goBackPage} aria-label="Close">✕</button>
         {isVideo ? (
           <video
             className="photo-preview-media"
