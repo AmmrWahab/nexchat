@@ -107,8 +107,12 @@ const StatusVideoView = ({ src, onEnded }) => {
 };
 
 export default function DashboardPage() {
-  const [activeTab, setActiveTab] = useState('chats');
-  const [view, setView] = useState('chats'); // ← Controls what screen to show: 'chats' or 'status'
+  const [activeTab, setActiveTab] = useState(() => {
+    try { return localStorage.getItem('dashboardActiveTab') || 'chats'; } catch { return 'chats'; }
+  });
+  const [view, setView] = useState(() => {
+    try { return localStorage.getItem('dashboardView') || 'chats'; } catch { return 'chats'; }
+  });
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(false); // ← New state
   const [selectedChat, setSelectedChat] = useState(null);
   const [isMobile, setIsMobile] = useState(() =>
@@ -1079,6 +1083,16 @@ useEffect(() => {
   selectedChatRef.current = selectedChat;
   userRef.current = user;
 }, [selectedChat, user]);
+
+// Persist the current application section so a refresh restores the same
+// screen the user was on (Chats / Status / Calls / …) instead of resetting
+// to Chats while also auto-opening a previously selected chat.
+useEffect(() => {
+  try { localStorage.setItem('dashboardActiveTab', activeTab); } catch { console.warn('Failed to persist activeTab'); }
+}, [activeTab]);
+useEffect(() => {
+  try { localStorage.setItem('dashboardView', view); } catch { console.warn('Failed to persist view'); }
+}, [view]);
 
 useEffect(() => {
   mobileChatOpenRef.current = mobileChatOpen;
@@ -3296,13 +3310,23 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
           }
         }, [selectedChat]);
 
-        // Restore the previous chat ONLY if that person/group still exists in this
-        // account's contact list or groups (prevents ghost chats after a refresh).
+        // Restore the previous chat ONLY if, at page load, the user was on the Chats
+        // section (activeTab 'chats' on desktop / view 'chats' on mobile) AND that
+        // person/group still exists in this account's contact list or groups
+        // (prevents ghost chats after a refresh). If the user was on Status,
+        // Calls, etc., do NOT reopen a previously selected chat. The section was
+        // already restored from localStorage by the useState initializers, so
+        // this reads the saved section directly and only ever runs once.
+        const restoredChatOnceRef = useRef(false);
         useEffect(() => {
-          if (!dataReady) return;
+          if (!dataReady || restoredChatOnceRef.current) return;
+          restoredChatOnceRef.current = true;
           const saved = localStorage.getItem('selectedChat');
           const parsed = saved ? JSON.parse(saved) : null;
           if (!parsed?.id) return;
+          let savedSection;
+          try { savedSection = isMobile ? localStorage.getItem('dashboardView') : localStorage.getItem('dashboardActiveTab'); } catch { savedSection = null; }
+          if ((savedSection || '') !== 'chats') return;
           const stillExists =
             contacts.some(c => String(c.id) === String(parsed.id)) ||
             groupsList.some(g => String(g.id) === String(parsed.id));
@@ -3313,7 +3337,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
             localStorage.removeItem('selectedChat');
             setSelectedChat(prev => (prev && String(prev.id) === String(parsed.id) ? null : prev));
           }
-        }, [dataReady, groupsList]);
+        }, [dataReady, groupsList, isMobile]);
 
         // NOTE: no auto "mark as read" on mount for a restored chat — a direct
         // message must only become a read (green) tick when the receiving user
