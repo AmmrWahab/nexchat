@@ -405,17 +405,22 @@ export default function DashboardPage() {
   useEffect(() => { loadStatusFeedRef.current = loadStatusFeed; });
 
   // Open the exact status a message replies to, by its id.
-  // Falls back to a fresh feed fetch in case it is not loaded yet.
+  // Always re-fetch the fresh feed first: a status may have been deleted or
+  // expired (24h) since the local feed was cached, so we must not trust it.
+  // If the status is gone, alert instead of opening a stale/wrong viewer.
   const openStatusFromReply = useCallback(async (statusId) => {
     if (!statusId) return;
-    let feed = statusFeed || [];
-    const find = () => feed.find(s => String(s._id) === String(statusId));
-    let st = find();
+    const fresh = await loadStatusFeedRef.current();
+    // Trust the fresh feed whenever the server answered (even if empty):
+    // a deleted/expired status leaves the feed, and the stale local cache
+    // could still list it. Only fall back to cache if the fetch failed.
+    const feed = Array.isArray(fresh) ? fresh : (statusFeed || []);
+    const find = (from) => from.find(s => String(s._id) === String(statusId));
+    let st = find(feed);
     if (!st) {
-      const fresh = await loadStatusFeedRef.current();
-      if (fresh && fresh.length) { feed = fresh; st = find(); }
+      alert('This status is no longer available.');
+      return;
     }
-    if (!st || !st.user) return;
     const uid = String(st.user.id);
     const isOwn = String(uid) === String(user.id);
     const list = isOwn
@@ -423,6 +428,7 @@ export default function DashboardPage() {
       : feed.filter(s => s.user && String(s.user.id) === uid);
     const idx = list.findIndex(s => String(s._id) === String(statusId));
     if (idx >= 0) setStatusViewer({ userId: uid, index: idx });
+    else alert('This status is no longer available.');
   }, [statusFeed, user.id]);
 
   // Keep the feed fresh: on first load and every time the Status view opens.
