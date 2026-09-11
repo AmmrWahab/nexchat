@@ -1580,6 +1580,28 @@ const fmtCallTime = (secs) => {
   return `${String(m).padStart(2, '0')}:${String(v % 60).padStart(2, '0')}`;
 };
 
+// Classify the shared media/links/docs for a chat (newest first). Used by the
+// full-screen media viewer AND the contact/group info summaries so the counts
+// always match the actual conversation data.
+const classifyChatMessages = (src) => {
+  const list = [...(src || [])].reverse();
+  const hasFile = (m) => !!(m.file || m.dataUrl);
+  const hasUrl = (m) => (m.text || m.message || '').match(/https?:\/\/|www\./);
+  return {
+    media: list.filter((m) => hasFile(m) && (m.type === 'image' || (m.fileType || '').startsWith('image') || (m.fileType || '').startsWith('video'))),
+    links: list.filter((m) => hasUrl(m)),
+    docs: list.filter((m) => hasFile(m) && (m.fileType || '') && !(m.fileType.startsWith('image')) && !(m.fileType.startsWith('video')) && !(m.fileType.startsWith('audio'))),
+  };
+};
+
+const summarizeChatMedia = (src) => {
+  const { media, links, docs } = classifyChatMessages(src);
+  const total = media.length + links.length + docs.length;
+  return total > 0
+    ? `${media.length} media, ${links.length} links, ${docs.length} docs`
+    : 'No media yet';
+};
+
 const cleanupCall = (soft) => {
   if (callTimerRef.current) { clearInterval(callTimerRef.current); callTimerRef.current = null; }
   if (peekReminderRef.current) { clearTimeout(peekReminderRef.current); peekReminderRef.current = null; }
@@ -6621,7 +6643,7 @@ newSocket.on("receiveMessage", (data) => {
             style={{ cursor: 'pointer' }}
             onClick={() => selectedChat && setMediaViewer({ type: 'dm', chatId: selectedChat.id, chatName: selectedChat.name, tab: 'media' })}
           >
-            No media yet
+            {summarizeChatMedia(messages[selectedChat?.id] || [])}
           </div>
         </div>
 
@@ -7266,7 +7288,7 @@ setContacts(prev => {
           style={{ cursor: 'pointer' }}
           onClick={() => selectedGroup && setMediaViewer({ type: 'group', chatId: selectedGroup.id, chatName: selectedGroup.name, tab: 'media' })}
         >
-          No media yet
+          {summarizeChatMedia(groupMessages[selectedGroup?.id] || [])}
         </div>
       </div>
 
@@ -8422,9 +8444,7 @@ setContacts(prev => {
   const src = mediaViewer.type === 'dm'
     ? (messages[mediaViewer.chatId] || [])
     : (groupMessages[mediaViewer.chatId] || []);
-  const mediaList = [...src].reverse().filter((m) => m.type === 'image' || (m.fileType || '').startsWith('image') || (m.fileType || '').startsWith('video'));
-  const linksList = [...src].reverse().filter((m) => (m.text || '').match(/https?:\/\/|www\./));
-  const docsList = [...src].reverse().filter((m) => m.type === 'file' && (m.fileType || '') && !(m.fileType.startsWith('image')) && !(m.fileType.startsWith('audio')));
+  const { media: mediaList, links: linksList, docs: docsList } = classifyChatMessages(src);
   const tabs = [
     { key: 'media', label: 'Media' },
     { key: 'links', label: 'Links' },
