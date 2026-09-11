@@ -4311,6 +4311,13 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
         </svg>
       );
 
+      const callEmptyIcon = (
+        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M6.6 10.8c1.3 3 3.6 5.3 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.1.4 2.3.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1C10.6 21 3 13.4 3 4c0-.6.4-1 1-1h3.4c.6 0 1 .4 1 1 0 1.3.2 2.5.6 3.6.1.3.1.7-.2 1l-2.2 2.2Z" fill="currentColor" opacity="0.9" />
+          <circle cx="17.5" cy="5.5" r="1.3" fill="#025144" />
+        </svg>
+      );
+
       const renderGroupChat = () => {
         if (!selectedGroup) {
           return emptyState(
@@ -7226,30 +7233,7 @@ setContacts(prev => {
         <h2>Share statuses</h2>
       </div>
     ) : activeTab === 'calls' ? (
-      <div className="calls-desktop-panel">
-        <div className="calls-desktop-list">
-          {calls.length === 0 ? (
-            <p className="calls-desktop-empty">No calls yet</p>
-          ) : (
-            calls.map((call) => (
-              <div key={call.id} className="calls-desktop-item" style={{ cursor: 'pointer' }}>
-                <img src={call.groupId ? 'https://via.placeholder.com/50/4a00e0/fff?text=G' : (call.photo || 'https://via.placeholder.com/50')} alt={call.name} />
-                <div className="calls-desktop-info">
-                  <h4>{call.groupId ? (groupsList.find((g) => String(g.id) === String(call.groupId))?.name || 'Group call') : call.name}</h4>
-                  <p>
-                    <span className={`call-dir ${call.direction === 'missed' ? 'missed' : ''}`}>
-                      {call.direction === 'outgoing' ? '↗' : call.direction === 'missed' ? '↘' : '↙'}
-                    </span>{' '}
-                    {call.direction === 'outgoing' ? 'Outgoing' : call.direction === 'missed' ? 'Missed' : 'Incoming'} {call.video ? 'video' : 'voice'} {call.groupId ? 'group ' : ''}call
-                    {call.durationSec ? ` • ${fmtCallTime(call.durationSec)}` : ''}
-                  </p>
-                  <small>{call.time ? new Date(call.time).toLocaleString() : ''}</small>
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-      </div>
+      emptyState('Calls', 'Your call history appears in the list on the left. Select a call to view its details here.', callEmptyIcon)
     ) : (
       emptyState('Feature Coming Soon', `The ${activeTab} view is not available here.`, chatEmptyIcon)
     )
