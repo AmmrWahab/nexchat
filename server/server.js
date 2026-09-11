@@ -247,7 +247,9 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
       replyTo: replyTo ? {
         sender: replyTo.sender,
         text: replyTo.text,
-        messageId: replyTo.messageId
+        messageId: replyTo.messageId,
+        statusId: replyTo.statusId,
+        senderId: replyTo.senderId
       } : null,
       delivered: !!receiverSocketIds,
       clientMessageId: data.messageId 
@@ -336,6 +338,8 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
           sender: m.replyTo.sender,
           text: m.replyTo.text,
           messageId: m.replyTo.messageId,
+          statusId: m.replyTo.statusId,
+          senderId: m.replyTo.senderId,
         } : null,
         timestamp: new Date(m.createdAt).getTime(),
         read: !!m.read,

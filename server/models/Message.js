@@ -10,6 +10,15 @@ const messageSchema = new mongoose.Schema({
   fileType: { type: String, default: null },
   duration: { type: Number, default: null },    // seconds (voice messages)
 
+  replyTo: {
+    sender: { type: String, default: null },
+    text: { type: String, default: null },
+    messageId: { type: String, default: null },
+    statusId: { type: String, default: null },   // original status being replied to
+    senderId: { type: String, default: null },
+    _id: false,
+  },
+
   delivered: { type: Boolean, default: false },
   read: { type: Boolean, default: false },
   clientMessageId: String,

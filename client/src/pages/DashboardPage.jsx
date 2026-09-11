@@ -385,7 +385,7 @@ export default function DashboardPage() {
 
   const loadStatusFeed = useCallback(async () => {
     const token = localStorage.getItem('token');
-    if (!token) return;
+    if (!token) return null;
     try {
       const res = await fetch(`${API_URL}/api/status/feed`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -393,13 +393,37 @@ export default function DashboardPage() {
       const data = await res.json();
       if (data && Array.isArray(data.statuses)) {
         setStatusFeed(data.statuses);
+        return data.statuses;
       }
+      return null;
     } catch (err) {
       console.error('Failed to load status feed', err);
+      return null;
     }
   }, []);
   const loadStatusFeedRef = useRef(loadStatusFeed);
   useEffect(() => { loadStatusFeedRef.current = loadStatusFeed; });
+
+  // Open the exact status a message replies to, by its id.
+  // Falls back to a fresh feed fetch in case it is not loaded yet.
+  const openStatusFromReply = useCallback(async (statusId) => {
+    if (!statusId) return;
+    let feed = statusFeed || [];
+    const find = () => feed.find(s => String(s._id) === String(statusId));
+    let st = find();
+    if (!st) {
+      const fresh = await loadStatusFeedRef.current();
+      if (fresh && fresh.length) { feed = fresh; st = find(); }
+    }
+    if (!st || !st.user) return;
+    const uid = String(st.user.id);
+    const isOwn = String(uid) === String(user.id);
+    const list = isOwn
+      ? feed.filter(s => s.user && String(s.user.id) === String(user.id))
+      : feed.filter(s => s.user && String(s.user.id) === uid);
+    const idx = list.findIndex(s => String(s._id) === String(statusId));
+    if (idx >= 0) setStatusViewer({ userId: uid, index: idx });
+  }, [statusFeed, user.id]);
 
   // Keep the feed fresh: on first load and every time the Status view opens.
   useEffect(() => {
@@ -652,6 +676,11 @@ export default function DashboardPage() {
           from: user.id,
           fromName: user.name,
           fromPhoto: user.photo || '',
+          replyTo: {
+            sender: viewerUser.user.name,
+            text: `Status: ${quoteText}`,
+            statusId: cur?._id ? String(cur._id) : null,
+          },
         });
       }
       return;
@@ -660,7 +689,14 @@ export default function DashboardPage() {
     setSelectedGroup(null);
     setMobileChatOpen(true);
     setActiveTab('chats');
-    setReplyTo({ sender: viewerUser.user.name, text: `Status: ${quoteText}`, isStatus: true });
+    setReplyTo({
+      sender: viewerUser.user.name,
+      text: `Status: ${quoteText}`,
+      isStatus: true,
+      statusId: cur?._id ? String(cur._id) : null,
+      statusType: cur?.type || null,
+      statusOwnerId: String(viewerUser.user.id),
+    });
     setDesktopDraft(txt || '');
     setTimeout(() => {
       const el = isMobile ? document.querySelector('.mobile-compose textarea') : document.querySelector('.message-input input[type=text]');
@@ -2518,7 +2554,14 @@ newSocket.on('messagesHistory', ({ chatId, messages }) => {
       fileName: m.fileName,
       fileType: m.fileType,
       duration: m.duration,
-      replyTo: m.replyTo ? { sender: m.replyTo.sender, text: m.replyTo.text, messageId: m.replyTo.messageId } : null,
+      replyTo: m.replyTo ? {
+        sender: m.replyTo.sender,
+        text: m.replyTo.text,
+        messageId: m.replyTo.messageId,
+        senderId: m.replyTo.senderId,
+        statusId: m.replyTo.statusId,
+        statusType: m.replyTo.statusType,
+      } : null,
       photo: m.fromPhoto || 'https://placehold.co/50x50',
       delivered: m.delivered,
       read: !!m.read,
@@ -5372,6 +5415,9 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
     id: replyTo.id,
     text: replyTo.text,
     senderId: replyTo.senderId || (replyTo.sender === 'You' ? user.id : selectedChat.id),
+    statusId: replyTo.statusId || null,
+    statusType: replyTo.statusType || null,
+    statusOwnerId: replyTo.statusOwnerId || null,
   } : null;
 
   // ✅ Emit with messageId
@@ -6089,21 +6135,39 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
             {/* Reply Indicator */}
             {msg.replyTo && (
               <div
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (msg.replyTo.statusId) {
+                    openStatusFromReply(msg.replyTo.statusId);
+                  }
+                }}
+                title={msg.replyTo.statusId ? 'Open the original status' : undefined}
                 style={{
                   padding: '6px 12px',
                   backgroundColor: isYou ? '#06544c' : '#b9e8dc',
                   color: 'black',
                   borderRadius: '6px 6px 0 0',
                   fontSize: '0.8rem',
-                  cursor: 'pointer',
+                  cursor: msg.replyTo.statusId ? 'pointer' : 'default',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
                 }}
               >
+                {msg.replyTo.statusId && (
+                  <span style={{ fontSize: '0.85rem', lineHeight: 1 }}>
+                    {msg.replyTo.statusType === 'video' ? '🎥' : msg.replyTo.statusType === 'image' ? '📷' : '💬'}
+                  </span>
+                )}
                 ↪{' '}
                 {String(msg.replyTo.senderId) === String(user.id)
                   ? 'You'
                   : contacts.find((c) => String(c.id) === String(msg.replyTo.senderId))
                     ?.name || 'Unknown'}
                 : {msg.replyTo.text || '[Image]'}
+                {msg.replyTo.statusId && (
+                  <span style={{ fontStyle: 'italic', opacity: 0.7 }}> · tap to open</span>
+                )}
               </div>
             )}
 
