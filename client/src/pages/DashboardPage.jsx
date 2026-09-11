@@ -1542,7 +1542,9 @@ const sendVoiceBlob = (blob, durSec) => {
             fileName,
             fileType,
             duration: durSec,
-            delivered: true,
+            // Group voice: SINGLE tick until the server confirms every other
+            // member received it (WhatsApp-style per-member delivery receipt).
+            delivered: false,
             read: false,
             allRead: false,
           },
