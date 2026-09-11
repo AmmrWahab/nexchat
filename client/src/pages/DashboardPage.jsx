@@ -3310,13 +3310,32 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
           }
         }, [selectedChat]);
 
-        // Restore the previous chat ONLY if, at page load, the user was on the Chats
-        // section (activeTab 'chats' on desktop / view 'chats' on mobile) AND that
+        // Track whether a chat is ACTUALLY open (set) vs the user sitting on the
+        // Chats list. Only a genuinely open chat should be restored on refresh —
+        // closing a chat (or navigating to another section) must NOT make it come
+        // back, even though a stale 'selectedChat' value may linger in storage.
+        // Skip the very first run: on page load selectedChat is still (null, not
+        // yet restored) while dataReady hasn't happened, so writing here would
+        // clobber the flag from before the refresh before restore can read it.
+        const chatOpenFirstRunRef = useRef(true);
+        useEffect(() => {
+          if (chatOpenFirstRunRef.current) {
+            chatOpenFirstRunRef.current = false;
+            return;
+          }
+          const chatOpen = !!(selectedChat?.id || selectedGroup?.id);
+          try { localStorage.setItem('dashboardChatOpen', chatOpen ? 'true' : 'false'); } catch { console.warn('Failed to persist chat-open state'); }
+        }, [selectedChat?.id, selectedGroup?.id]);
+
+        // Restore the previous chat ONLY if, at page load, a chat was genuinely
+        // open (dashboardChatOpen 'true'), the user was on the Chats section
+        // (activeTab 'chats' on desktop / view 'chats' on mobile), AND that
         // person/group still exists in this account's contact list or groups
         // (prevents ghost chats after a refresh). If the user was on Status,
-        // Calls, etc., do NOT reopen a previously selected chat. The section was
-        // already restored from localStorage by the useState initializers, so
-        // this reads the saved section directly and only ever runs once.
+        // Calls, etc., or just browsing the Chats list, do NOT reopen a chat.
+        // The section was already restored from localStorage by the useState
+        // initializers, so this reads the saved section directly and only ever
+        // runs once.
         const restoredChatOnceRef = useRef(false);
         useEffect(() => {
           if (!dataReady || restoredChatOnceRef.current) return;
@@ -3327,6 +3346,9 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
           let savedSection;
           try { savedSection = isMobile ? localStorage.getItem('dashboardView') : localStorage.getItem('dashboardActiveTab'); } catch { savedSection = null; }
           if ((savedSection || '') !== 'chats') return;
+          let chatWasOpen;
+          try { chatWasOpen = localStorage.getItem('dashboardChatOpen') === 'true'; } catch { chatWasOpen = false; }
+          if (!chatWasOpen) return;
           const stillExists =
             contacts.some(c => String(c.id) === String(parsed.id)) ||
             groupsList.some(g => String(g.id) === String(parsed.id));
