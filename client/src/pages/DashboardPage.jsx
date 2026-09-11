@@ -4318,6 +4318,13 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
         </svg>
       );
 
+      const statusEmptyIcon = (
+        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M12 5C7 5 3.2 8 1.5 12 3.2 16 7 19 12 19s8.8-3 10.5-7C20.8 8 17 5 12 5Z" fill="currentColor" opacity="0.9" />
+          <circle cx="12" cy="12" r="3.2" fill="#025144" />
+        </svg>
+      );
+
       const renderGroupChat = () => {
         if (!selectedGroup) {
           return emptyState(
@@ -7229,9 +7236,7 @@ setContacts(prev => {
           : emptyState('No groups yet', 'Create a group from the 📝 menu to start chatting.', groupEmptyIcon)
       )
     ) : activeTab === 'statuses' ? (
-      <div className="status-desktop-panel">
-        <h2>Share statuses</h2>
-      </div>
+      emptyState('Status', 'Share photo, text and video updates with your contacts. Your statuses appear in the list on the left.', statusEmptyIcon)
     ) : activeTab === 'calls' ? (
       emptyState('Calls', 'Your call history appears in the list on the left. Select a call to view its details here.', callEmptyIcon)
     ) : (
