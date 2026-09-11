@@ -163,6 +163,10 @@ io.use(async (socket, next) => {
 
 
 
+// Shared in-memory group call registry: callId -> { type, groupId, callerId, callerName, members:Set<userId> }
+// Lives at module scope so every user's socket sees the same active calls.
+const groupCalls = new Map();
+
 io.on('connection', (socket) => {
   console.log('✅ User connected:', socket.userId);
 
@@ -732,9 +736,6 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
 
   // ==================== CALLS (voice/video) ====================
 
-  // In-memory group call registry: callId -> { type, groupId, callerId, callerName, members:Set<userId> }
-  const groupCalls = new Map();
-
   // Persist a finished call for both participants and notify them to refresh.
   async function logCall(callerId, calleeId, type, status, durationSec, opts) {
     try {
@@ -826,16 +827,22 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
     emitToUser(socket.userId, 'call:endedLocal', { callId }, [socket.id]);
   });
 
-  // Member leaves a group call -> notify everyone else.
+  // Member leaves a group call -> notify everyone else. If nobody but the
+  // caller is left there is no call anymore, so end it for that last member.
   socket.on('call:memberLeft', ({ to, callId, type }) => {
     const ca = groupCalls.get(callId);
     if (!ca) return;
     ca.members.delete(String(socket.userId));
     [...ca.members].forEach((mid) => emitToUser(mid, 'call:memberLeft', { callId, userId: String(socket.userId), type }));
-    if (ca.members.size === 0) groupCalls.delete(callId);
+    if (ca.members.size <= 1) {
+      [...ca.members].forEach((mid) => emitToUser(mid, 'call:ended', { callId }));
+      groupCalls.delete(callId);
+    }
   });
 
   // Member ends their group-call session -> log their own record + notify others.
+  // In a two-person group call (or when the last other member leaves) the call
+  // should end for the remaining member instead of leaving them alone on-screen.
   socket.on('call:groupEnd', ({ groupId, callId, type, durationSec, callerName }) => {
     const secs = Math.max(0, Math.round(durationSec || 0));
     logCall(socket.userId, socket.userId, type, secs > 0 ? 'ended' : 'missed', secs, { groupId, callerName });
@@ -843,7 +850,18 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
     if (ca) {
       ca.members.delete(String(socket.userId));
       [...ca.members].forEach((mid) => emitToUser(mid, 'call:memberLeft', { callId, userId: String(socket.userId), type }));
-      if (ca.members.size === 0) groupCalls.delete(callId);
+      if (ca.members.size <= 1) {
+        [...ca.members].forEach((mid) => emitToUser(mid, 'call:ended', { callId }));
+        // The last remaining member had their call ended by someone else's
+        // hang-up, so persist their own group-call record too. Otherwise that
+        // side's history would be missing the finished call.
+        [...ca.members].forEach((mid) => {
+          if (String(mid) !== String(socket.userId)) {
+            logCall(mid, mid, type, secs > 0 ? 'ended' : 'missed', secs, { groupId, callerName });
+          }
+        });
+        groupCalls.delete(callId);
+      }
     }
     socket.emit('call:endedLocal', { callId });
     // Also close the group-call UI on this member's OTHER devices.
