@@ -13,6 +13,10 @@ const groupMessageSchema = new mongoose.Schema({
   read: { type: Boolean, default: false },
   // Users who have actually seen this message (drives WhatsApp-style read ticks)
   readBy: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
+  // Members whose device has actually received this message (drives the
+  // per-member delivery tick: a group message only turns ✓✓ once every other
+  // member is listed here)
+  deliveredBy: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
   createdAt: { type: Date, default: Date.now }
 });
 

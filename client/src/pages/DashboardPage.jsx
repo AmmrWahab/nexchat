@@ -2854,6 +2854,11 @@ newSocket.on("receiveMessage", (data) => {
         if (isOpenGroup && !isOwnMessage) {
           newSocket.emit('markGroupRead', { groupId: gid, readerId: user.id });
         }
+        // Delivery ack: tell the server this device received the live message so
+        // the sender's per-member double-tick advances.
+        if (!isOwnMessage && data._id) {
+          newSocket.emit('groupMessageReceived', { groupId: gid, messageId: data._id });
+        }
         // update group preview
         const previewName = senderId === user.id
           ? 'You'
@@ -2864,24 +2869,24 @@ newSocket.on("receiveMessage", (data) => {
         setGroupsList(prev => prev.map(g => String(g.id) === gid ? { ...g, lastMsg: previewName + (previewText ? ': ' + previewText : ''), lastTime: data.timestamp || Date.now() } : g));
       });
 
-      // ✅ Group message delivery confirmation (mark single tick  → ✓✓ delivered)
-      //    Also adopts the persisted _id so a re-open never duplicates the message
-      //    (server history uses _id as the dedupe key).
-      newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id }) => {
-        const gid = String(groupId);
-        setGroupMessages(prev => {
-          const list = prev[gid] || [];
-          let changed = false;
-          const next = list.map(m => {
-            if (m.id === messageId || m.id === _id) {
-              changed = true;
-              return { ...m, delivered: true, id: _id || m.id };
-            }
-            return m;
-          });
-          return changed ? { ...prev, [gid]: next } : prev;
-        });
-      });
+// ✅ Group message delivery confirmation: adopt the persisted _id always (so a
+//    re-open never duplicates), but flip the tick to ✓✓ only once the server
+//    reports every OTHER member's device has received the message.
+newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }) => {
+  const gid = String(groupId);
+  setGroupMessages(prev => {
+    const list = prev[gid] || [];
+    let changed = false;
+    const next = list.map(m => {
+      if (m.id === messageId || m.id === _id) {
+        changed = true;
+        return { ...m, delivered: !!allDelivered, id: _id || m.id };
+      }
+      return m;
+    });
+    return changed ? { ...prev, [gid]: next } : prev;
+  });
+});
 
       // ✅ Group read receipt: ALL other members have read a message → green tick
       newSocket.on('groupMessageReadAll', ({ groupId, messageId }) => {
@@ -2933,10 +2938,11 @@ newSocket.on("receiveMessage", (data) => {
             fileType: m.fileType,
             duration: m.duration,
             photo: m.fromPhoto || 'https://placehold.co/50x50',
-            delivered: true,
-            // On load, mark MY OWN messages as "delivered but not read by all"
-            // (WhatsApp shows a single ✓✓ for own group messages until every
-            // member has seen them). Received messages don't show ticks.
+            delivered: !!m.allDelivered,
+            // On load, MY OWN messages show ✓ or ✓✓ per the server's per-member
+            // delivery receipts — a message stays single-tick until every OTHER
+            // member's device has received it (WhatsApp-style). Received messages
+            // don't show ticks anyway.
             read: String(m.from) !== user.id,
             allRead: !!m.allRead,
             readBy: m.readBy || [],
@@ -4166,11 +4172,11 @@ newSocket.on("receiveMessage", (data) => {
               senderId: user.id,
               replyTo: replyToForPayload,
               timestamp: now.getTime(),
-              // A brand-new message is "delivered" pessimistically because the
-              // server always echoes groupMessageDelivered back to the sender's
-              // very own socket. allRead (green tick) only comes from the server
-              // once every OTHER member has read the message — same as WhatsApp.
-              delivered: true,
+              // A brand-new message shows a SINGLE tick (sent but not yet
+              // received) until the server confirms every OTHER member's device
+              // has the message (see groupMessageDelivered). allRead stays grey →
+              // green (✓✓ blue) only once all members have read — same as WhatsApp.
+              delivered: false,
               read: false,
               allRead: false,
             },

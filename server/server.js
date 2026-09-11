@@ -510,15 +510,81 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
         emitToUser(memberId, "receiveGroupMessage", payload, [socket.id]);
       });
 
-      // Confirm delivery to the sender on ALL of their devices (so the ticking
+      // Per-member delivery receipt: a member has "received" the message when
+      // their device was online to take the emit above (or when they later load
+      // history — see fetchGroupMessages). Record every online member now so the
+      // double tick waits for ALL members, not just the server saving the message.
+      const senderIdStr = String(socket.userId);
+      const otherMemberIds = (group.members || []).map(String).filter(id => id !== senderIdStr);
+      const updated = await GroupMessage.findByIdAndUpdate(
+        newMsg._id,
+        {
+          $addToSet: {
+            deliveredBy: {
+              $each: group.members
+                .map(String)
+                .filter(id => id !== senderIdStr && getSocketIds(id))
+            }
+          }
+        },
+        { new: true }
+      ).exec();
+      const deliveredByIds = (updated?.deliveredBy || []).map(String);
+      const allDelivered = otherMemberIds.length > 0
+        ? otherMemberIds.every(id => deliveredByIds.includes(id))
+        : true;
+
+      // Confirm id adoption to the sender on ALL of their devices (so the ticking
       // message also adopts the saved _id everywhere and never duplicates).
       emitToUser(socket.userId, "groupMessageDelivered", {
         groupId,
         messageId: messageId || newMsg._id.toString(),
         _id: newMsg._id.toString(),
+        allDelivered,
       });
     } catch (err) {
       console.error("sendGroupMessage error:", err.message);
+    }
+  });
+
+  // ✅ Group delivery receipt: a member's device confirms it received a live
+  //    `receiveGroupMessage`. Record them in deliveredBy; once every OTHER
+  //    member has received the message, tell its sender so their tick goes ✓✓.
+  socket.on("groupMessageReceived", async ({ groupId, messageId }) => {
+    if (!groupId || !messageId) return;
+    try {
+      const group = await Group.findById(groupId).exec();
+      if (!group || !group.members.map(String).includes(String(socket.userId))) return;
+
+      const msg = await GroupMessage.findOne({ _id: messageId, group: groupId }).exec();
+      if (!msg) return;
+
+      const senderIdStr = String(msg.from);
+      if (senderIdStr === String(socket.userId)) return; // sender can't be "delivered to" by itself
+
+      let changed = false;
+      const readByIds = msg.deliveredBy.map(String);
+      if (!readByIds.includes(String(socket.userId))) {
+        msg.deliveredBy.push(socket.userId);
+        changed = true;
+      }
+      await msg.save();
+
+      const otherMemberIds = (group.members || []).map(String).filter(id => id !== senderIdStr);
+      const deliveredByIds = msg.deliveredBy.map(String);
+      const allDelivered = otherMemberIds.length > 0
+        ? otherMemberIds.every(id => deliveredByIds.includes(id))
+        : true;
+      if (changed && allDelivered) {
+        emitToUser(senderIdStr, "groupMessageDelivered", {
+          groupId,
+          messageId: msg._id.toString(),
+          _id: msg._id.toString(),
+          allDelivered: true,
+        });
+      }
+    } catch (err) {
+      console.error("groupMessageReceived error:", err.message);
     }
   });
 
@@ -537,9 +603,46 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
         .limit(200)
         .exec();
 
+      // Opening the group means this member's device just received every message
+      // in it (even ones from before the emitting socket connected). Record the
+      // fetch in deliveredBy so their being offline never blocks the sender's
+      // double-tick forever, then notify any sender the message newly completed.
+      const selfIdStr = String(socket.userId);
+      const groupMemberIds = (group.members || []).map(String);
+      const memberChanged = new Map();
+
+      for (const m of history) {
+        const senderIdStr = String(m.from._id);
+        if (senderIdStr === selfIdStr) continue;
+        const deliveredIds = (m.deliveredBy || []).map(String);
+        if (!deliveredIds.includes(selfIdStr)) {
+          m.deliveredBy.push(selfIdStr);
+          await m.save();
+          memberChanged.set(m._id.toString(), m);
+        }
+      }
+
+      for (const [msgId, m] of memberChanged) {
+        const senderIdStr = String(m.from._id);
+        const otherMemberIds = groupMemberIds.filter(id => id !== senderIdStr);
+        const deliveredByIds = (m.deliveredBy || []).map(String);
+        const allDelivered = otherMemberIds.length > 0
+          ? otherMemberIds.every(id => deliveredByIds.includes(id))
+          : true;
+        if (allDelivered) {
+          emitToUser(senderIdStr, "groupMessageDelivered", {
+            groupId,
+            messageId: msgId,
+            _id: msgId,
+            allDelivered: true,
+          });
+        }
+      }
+
       const msgs = history.map(m => {
-        const otherMemberIds = (group.members || []).map(String).filter(id => id !== String(m.from._id));
+        const otherMemberIds = groupMemberIds.filter(id => id !== String(m.from._id));
         const readByIds = (m.readBy || []).map(String);
+        const deliveredByIds = (m.deliveredBy || []).map(String);
         return {
           _id: m._id,
           groupId,
@@ -557,6 +660,10 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
           // device of the sender agrees on the same tick state.
           readBy: readByIds,
           allRead: otherMemberIds.length > 0 && otherMemberIds.every(id => readByIds.includes(id)),
+          // WhatsApp-style group delivery tick: ✓✓ only once every OTHER member's
+          // device has received the message. Same server-side aggregation as allRead.
+          deliveredBy: deliveredByIds,
+          allDelivered: otherMemberIds.length > 0 && otherMemberIds.every(id => deliveredByIds.includes(id)),
         };
       });
 
