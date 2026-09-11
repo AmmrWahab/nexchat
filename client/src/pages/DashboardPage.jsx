@@ -225,6 +225,9 @@ export default function DashboardPage() {
   const [showForwardModal, setShowForwardModal] = useState(false);
   const [forwardSearchQuery, setForwardSearchQuery] = useState('');
   const [selectedForwardChats, setSelectedForwardChats] = useState(new Set());
+  const [newMsgCount, setNewMsgCount] = useState(0);
+  const messagesScrollRef = useRef(null);
+  const lastDmChatRef = useRef(null);
   // ✅ Status feature (WhatsApp-style, mobile)
   const [statusFeed, setStatusFeed] = useState([]);
   const [statusAddSheet, setStatusAddSheet] = useState(false);
@@ -271,6 +274,25 @@ export default function DashboardPage() {
   const groupStreamsRef = useRef({});
   const [groupTiles, setGroupTiles] = useState({});
   const [groupCallPage, setGroupCallPage] = useState(0);
+
+  // Whether the messages list is scrolled to the latest message (within 60px).
+  const isAtChatBottom = (el) => !!el && el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+
+  // New-message indicator helpers: a green pill shown just above the composer
+  // while the user is scrolled up; clicking it jumps to the latest message.
+  const handleChatScroll = () => {
+    if (newMsgCount > 0 && isAtChatBottom(messagesScrollRef.current)) {
+      setNewMsgCount(0);
+    }
+  };
+  const jumpToLatest = () => {
+    setNewMsgCount(0);
+    requestAnimationFrame(() => {
+      if (messagesEndRef.current) {
+        messagesEndRef.current.scrollIntoView({ behavior: 'instant', block: 'end' });
+      }
+    });
+  };
 
   // Never stay minimized after a call has ended
   useEffect(() => {
@@ -1572,6 +1594,23 @@ const loadCalls = useCallback(async () => {
 }, []);
 useEffect(() => { loadCalls(); }, [loadCalls]);
 
+// New-message indicator count resets whenever the open chat changes.
+useEffect(() => {
+  setNewMsgCount(0);
+}, [selectedChat?.id, selectedGroup?.id]);
+
+// Keep a group anchored to the latest message while the user is already at the
+// bottom (outside the post-open history window). When scrolled up the
+// new-message indicator is used instead of yanking the scroll position.
+useEffect(() => {
+  if (!selectedGroup) return;
+  if (Date.now() - groupOpenAtRef.current < 5000) return;
+  const end = messagesEndRef.current;
+  if (end && isAtChatBottom(messagesScrollRef.current)) {
+    end.scrollIntoView({ behavior: 'instant' });
+  }
+}, [selectedGroup, groupMessages]);
+
 const callElapsed = () => (Date.now() - callStartAtRef.current) / 1000;
 
 const fmtCallTime = (secs) => {
@@ -2327,11 +2366,19 @@ useEffect(() => {
   console.log('📁 Messages on load:', saved ? Object.keys(JSON.parse(saved)) : 'none');
 }, []);
 
-  // Auto-scroll to bottom when a DM is open and its messages change.
-  // (Only DMs: group chats use their own unread-position scroll logic.)
+  // Auto-scroll to the latest message for the open DM — always when the chat
+  // was just opened; otherwise only when the user is already at the bottom so
+  // an incoming message never yanks them away from older messages (the
+  // new-message indicator covers the scrolled-up case).
 useEffect(() => {
-  if (selectedChat && messagesEndRef.current) {
-    messagesEndRef.current.scrollIntoView({ behavior: 'instant' });
+  const id = selectedChat ? String(selectedChat.id) : null;
+  const switched = lastDmChatRef.current !== id;
+  lastDmChatRef.current = id;
+  if (!id) return;
+  const end = messagesEndRef.current;
+  if (!end) return;
+  if (switched || isAtChatBottom(messagesScrollRef.current)) {
+    end.scrollIntoView({ behavior: 'instant' });
   }
 }, [selectedChat, messages]);
 
@@ -2544,7 +2591,16 @@ newSocket.on("receiveMessage", (data) => {
   const displayName = isOwn ? "You" : data.fromName || "Unknown";
   if (!chatKey) return;
 
-  
+  // If this DM chat is currently open and the user is at the bottom of it,
+  // treat the incoming message as read right away (WhatsApp behavior) —
+  // otherwise it would sit as an unread badge even though they're looking.
+  // When the user is scrolled up instead, count it for the new-message pill.
+  const isOpenChat = !isOwn && selectedChatRef.current &&
+    String(selectedChatRef.current.id) === String(senderId) &&
+    (isMobileRef.current ? mobileChatOpenRef.current : true);
+  const atBottom = isAtChatBottom(messagesScrollRef.current);
+  const autoRead = Boolean(isOpenChat && atBottom);
+  const shouldCountNew = isOpenChat && !autoRead;
 
   setMessages((prev) => {
     const chat = prev[chatKey] || [];
@@ -2596,16 +2652,6 @@ newSocket.on("receiveMessage", (data) => {
     if (data._id && chat.some(m => m.id === String(data._id))) return prev;
 
     // ✅ 2. Otherwise, it's a new message from someone else
-    // If this DM chat is currently open and the user is at the bottom of it,
-    // treat the incoming message as read right away (WhatsApp behavior) —
-    // otherwise it would sit as an unread badge even though they're looking.
-    const isOpenChat = selectedChatRef.current &&
-      String(selectedChatRef.current.id) === String(senderId) &&
-      (isMobileRef.current ? mobileChatOpenRef.current : true);
-    const atBottom = (el => !!el && el.scrollHeight - el.scrollTop - el.clientHeight < 60)(
-      typeof document !== 'undefined' ? document.querySelector('.messages') : null
-    );
-    const autoRead = Boolean(isOpenChat && atBottom);
     const newMessage = {
       id: data._id?.toString() || `fallback-${Date.now()}`,
       localId: data.messageId,
@@ -2633,6 +2679,11 @@ newSocket.on("receiveMessage", (data) => {
     }
     return updated;
   });
+
+  // New-message pill: only when the user is scrolled up in the open chat.
+  if (shouldCountNew) {
+    setNewMsgCount((c) => c + 1);
+  }
 
 
   
@@ -2748,6 +2799,12 @@ newSocket.on("receiveMessage", (data) => {
         const displayName = senderId === user.id ? 'You' : data.fromName || 'Unknown';
         const isOpenGroup = selectedGroupRef.current && String(selectedGroupRef.current.id) === gid;
         const isOwnMessage = senderId === user.id;
+        // If the user is scrolled up in this group, count the incoming message
+        // so the new-message pill can notify them.
+        if (isOpenGroup && !isOwnMessage) {
+          const gEl = messagesScrollRef.current;
+          if (gEl && !isAtChatBottom(gEl)) setNewMsgCount((c) => c + 1);
+        }
         setGroupMessages(prev => {
           const list = prev[gid] || [];
           // dedupe by messageId
@@ -4646,7 +4703,7 @@ newSocket.on("receiveMessage", (data) => {
                 )}
               </div>
 
-              <div className="messages">
+<div className="messages" ref={messagesScrollRef} onScroll={handleChatScroll}>
                 {groupMsgs.length === 0 && (
                   <div
                     style={{
@@ -5871,7 +5928,7 @@ newSocket.on("receiveMessage", (data) => {
     </div>
 
     {/* Messages */}
-    <div className="messages">
+    <div className="messages" ref={messagesScrollRef} onScroll={handleChatScroll}>
       {(() => {
         const dmCalls = (calls || []).filter(c => String(c.userId) === String(selectedChat.id));
         const dmEntries = [
@@ -7162,6 +7219,12 @@ setContacts(prev => {
       emptyState('Feature Coming Soon', `The ${activeTab} view is not available here.`, chatEmptyIcon)
     )
   )}
+{newMsgCount > 0 && (selectedChat || selectedGroup) && !mediaViewer && !showContactInfo && !showGroupInfo && (
+  <button type="button" className="new-msg-fab" onClick={jumpToLatest} aria-label="Scroll to latest messages">
+    <ChevronDown size={16} strokeWidth={2.5} />
+    {newMsgCount} new {newMsgCount === 1 ? 'message' : 'messages'}
+  </button>
+)}
 </section>
 
      {/* Group Info Drawer (only when open) */}
