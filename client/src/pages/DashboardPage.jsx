@@ -7810,9 +7810,53 @@ setContacts(prev => {
         <h3>New Contact</h3>
         <button
           className="drawer-btn done"
-          onClick={() => {
+          onClick={async () => {
+            if (!email.trim()) {
+              alert('Please enter an email address.');
+              return;
+            }
+            const foundUser = await findUserByEmail(email);
+            if (!foundUser) {
+              alert('User not found. Please enter a valid email.');
+              return;
+            }
+
+            const newContact = {
+              id: foundUser._id,
+              name: `${firstName} ${lastName}`.trim() || foundUser.name,
+              firstName: firstName.trim(),
+              lastName: lastName.trim(),
+              email: foundUser.email,
+              photo: foundUser.photo || 'https://via.placeholder.com/50',
+              lastMsg: '',
+              time: '',
+              online: false,
+            };
+
+            setContacts(prev => {
+              const exists = prev.some(c => String(c.id) === String(newContact.id));
+              if (exists) return prev;
+              setMessages(prevMsgs => ({
+                ...prevMsgs,
+                [newContact.id]: [],
+              }));
+              // Persist to this user's server-side address book (per-account)
+              fetch(`${API_URL}/api/contacts`, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  Authorization: `Bearer ${localStorage.getItem('token')}`,
+                },
+                body: JSON.stringify({ userId: foundUser._id }),
+              }).catch(err => console.error('Failed to save contact to server', err));
+              return [newContact, ...prev];
+            });
+
             alert('Contact saved!');
             setShowAddContact(false);
+            setEmail('');
+            setFirstName('');
+            setLastName('');
           }}
         >
           Done
@@ -7825,16 +7869,22 @@ setContacts(prev => {
           type="text"
           placeholder="First name"
           className="drawer-input"
+          value={firstName}
+          onChange={(e) => setFirstName(e.target.value)}
         />
         <input
           type="text"
           placeholder="Last name"
           className="drawer-input"
+          value={lastName}
+          onChange={(e) => setLastName(e.target.value)}
         />
         <input
           type="email"
           placeholder="Email (Gmail)"
           className="drawer-input"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
         />
       </div>
     </div>
