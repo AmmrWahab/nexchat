@@ -3268,17 +3268,17 @@
 
 /* ---- Status reply bar ---- */
 .status-viewer-reply {
-  position: absolute;
-  bottom: 14px;
-  left: 14px;
-  right: 14px;
   display: flex;
   align-items: center;
   gap: 8px;
-  background: rgba(0, 0, 0, 0.55);
-  border-radius: 22px;
-  padding: 6px 6px 6px 16px;
+  background: rgba(0, 0, 0, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 24px;
+  padding: 7px 7px 7px 18px;
+  margin: 0 14px 14px;
   z-index: 5;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+  flex-shrink: 0;
 }
 
 .status-viewer-reply input {
