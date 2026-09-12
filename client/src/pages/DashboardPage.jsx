@@ -281,10 +281,11 @@ export default function DashboardPage() {
   // default), 'speaker' = loudspeaker, otherwise a concrete audiooutput deviceId.
   const [callSpeakerOutput, setCallSpeakerOutput] = useState('');
   // The CURRENT system audio-output device, read live from enumerateDevices()
-  // (devicechange). kind is 'handset' for any earpiece/headset/bluetooth output
-  // and 'speaker' for a loudspeaker, so the in-call icon and chooser always
-  // reflect what the user is physically using right now.
-  const [callDefaultOut, setCallDefaultOut] = useState({ name: '', kind: 'handset' });
+  // (devicechange). kind is 'handset' only when a real earpiece/headset is
+  // detected as the default route; anything else (loudspeaker, unclassified)
+  // is 'speaker', so the in-call icon and chooser always reflect what the user
+  // is physically using right now - the routine state is the loudspeaker.
+  const [callDefaultOut, setCallDefaultOut] = useState({ name: '', kind: 'speaker' });
   const [callMicOn, setCallMicOn] = useState(true);
   const [callCamOn, setCallCamOn] = useState(true);
   const [callMinimized, setCallMinimized] = useState(false);
@@ -305,14 +306,18 @@ export default function DashboardPage() {
   // HTMLMediaElement.setSinkId() is applied to each one.
   const audioElsRef = useRef(new Set());
   const sinkIdRef = useRef('');
-  const audioOutputsCacheRef = useRef({ speakerId: '', external: [], defaultName: '', defaultKind: 'handset' });
+  const audioOutputsCacheRef = useRef({ speakerId: '', external: [], defaultName: '', defaultKind: 'speaker' });
   // Last detected system-default output name, for reacting to handset plug-in
   // / plug-out during a live call.
   const prevDefaultNameRef = useRef('');
   // Real microphone list (audioinput) for pairing the in-call mic with the
   // chosen output device: on a handset both mic+speaker are the handset's, on
-  // Speaker (mobile/laptop loudspeaker) both are the device's own mic+speaker.
-  const audioInputsCacheRef = useRef({ defaultIsHandset: false, handsetMicId: '', builtinMicId: '' });
+  // Speaker (mobile/laptop loudspeaker) both are the device's own mic+speaker,
+  // and a no-mic device (bass speaker) falls back to the device mic.
+  const audioInputsCacheRef = useRef({ defaultIsHandset: false, handsetMicId: '', builtinMicId: '', byGroup: {} });
+  // The identified loudspeaker's (deviceId, groupId) so its sibling mic can be
+  // used when Speaker is picked while a headset is the system default input.
+  const speakerDevRef = useRef({ deviceId: '', groupId: '' });
   const callTimerRef = useRef(null);
   const peekReminderRef = useRef(null);
   // Transient in-call notice (e.g. "… declined the video request" / "Rear
@@ -1966,6 +1971,10 @@ const clearGroupCallState = () => {
 
 const getMediaStream = async (video) => {
   refreshVideoInputs();
+  // Re-read real devices at every call start so the detected output/input
+  // state is never stale from a previous call.
+  refreshAudioOutputs();
+  refreshAudioInputs();
   if (!video) return navigator.mediaDevices.getUserMedia({ audio: true });
   // Use the camera the device actually has: prefer the front (user) camera,
   // fall back to the rear, then to the browser default. Never assume a
@@ -2024,7 +2033,7 @@ const applyAudioOutput = (id, kind) => {
   setCallSpeakerOutput(kind === 'default' ? '' : (id || 'speaker'));
   // Pair the microphone with the chosen output device: on a handset the mic
   // is the handset's own mic, on Speaker it is the phone/laptop mic.
-  applyCallMicForOutput(kind === 'speaker');
+  applyCallMicForOutput(kind, id);
 };
 const bindStreamToEl = (el, stream) => {
   if (!el || !stream) {
@@ -2037,10 +2046,16 @@ const bindStreamToEl = (el, stream) => {
     el.play().catch(() => {});
   }
 };
+// Real output-device classification. Only the REAL device name decides: a
+// recognizable earpiece/headset turns the default route into a 'handset';
+// a loudspeaker label OR anything unrecognized stays a 'speaker'. Nothing is
+// ever assumed to be a headset without evidence.
+const isLoudspeakerOutputLabel = (s) => /speaker|loudspeaker|扬声|扬声器|\bspk\b/i.test(s) && !isHandsetOutputLabel(s);
+const isHandsetOutputLabel = (s) => /handset|headset|headphone|earbud|earphone|earpiece|airpod|air\s*dots|蓝牙耳机|耳机/i.test(s);
 // Detect the REAL microphone the browser can target: the handset's own mic
 // (headset/earpiece/bluetooth input) and the built-in phone/laptop mic. Only
 // genuinely enumerated audioinput devices are used; nothing is invented.
-const isHandsetMicLabel = (s) => /handset|headset|headphone|earbud|earphone|earpiece|bluetooth|耳机|蓝牙/i.test(s);
+const isHandsetMicLabel = (s) => /handset|headset|headphone|earbud|earphone|earpiece|bluetooth|airpod|air\s*dots|耳机|蓝牙|蓝牙耳机/i.test(s);
 const refreshAudioInputs = async () => {
   if (!navigator.mediaDevices || typeof navigator.mediaDevices.enumerateDevices !== 'function') return;
   try {
@@ -2049,41 +2064,54 @@ const refreshAudioInputs = async () => {
     let handsetMic = '';
     let builtinMic = '';
     let defaultIsHandset = false;
+    const byGroup = {};
     inputs.forEach((d) => {
       const label = (d.label || '').replace(/^Default\s*-\s*/i, '').trim();
       if (d.deviceId === 'default' || /^Default\s*-/i.test(d.label || '')) {
         if (isHandsetMicLabel(label)) defaultIsHandset = true;
         return;
       }
+      if (d.groupId && !byGroup[d.groupId]) byGroup[d.groupId] = d.deviceId;
       if (isHandsetMicLabel(label)) {
         if (!handsetMic) handsetMic = d.deviceId;
       } else if (label) {
         if (!builtinMic) builtinMic = d.deviceId;
       }
     });
-    audioInputsCacheRef.current = { defaultIsHandset, handsetMicId: handsetMic, builtinMicId: builtinMic };
+    audioInputsCacheRef.current = { defaultIsHandset, handsetMicId: handsetMic, builtinMicId: builtinMic, byGroup };
   } catch (err) {
-    audioInputsCacheRef.current = { defaultIsHandset: false, handsetMicId: '', builtinMicId: '' };
+    audioInputsCacheRef.current = { defaultIsHandset: false, handsetMicId: '', builtinMicId: '', byGroup: {} };
   }
 };
 // Pick the mic deviceId that matches the chosen output device: handset mode
-// -> the handset's mic (following the system default when it already is the
-// plug-in headset), speaker mode -> the actual phone/laptop microphone.
-const micDeviceIdForOutput = (speakerMode) => {
-  const { defaultIsHandset, handsetMicId, builtinMicId } = audioInputsCacheRef.current;
+// -> the handset's own mic (following the system default input, which is the
+// plug-in headset's mic while plugged and the device mic otherwise), speaker
+// mode -> the identified loudspeaker's sibling mic, else the phone/laptop
+// microphone. A no-mic device (bass speaker, plain headphones) naturally
+// falls back to the phone/laptop mic because it has no matching audioinput.
+const micDeviceIdForOutput = (speakerMode, activeOut) => {
+  const { defaultIsHandset, builtinMicId, byGroup } = audioInputsCacheRef.current;
+  if (activeOut && activeOut.groupId && byGroup[activeOut.groupId]) return byGroup[activeOut.groupId];
   if (speakerMode) return defaultIsHandset ? builtinMicId : '';
-  if (defaultIsHandset) return '';
-  return handsetMicId; // '' when no distinguishable handset mic -> follow default
+  return ''; // follow the system default input
 };
 // Swap the live call's microphone to match the output device without
 // touching the camera: acquire the target mic, replace it on every active
 // peer (1:1 + group mesh) via sender.replaceTrack(), then refresh the shared
 // local stream. Falls back to the default mic on any failure.
-const applyCallMicForOutput = async (speakerMode) => {
+const applyCallMicForOutput = async (kind, id) => {
   if (!activeCallRef.current) return;
   if (!pcRef.current && Object.keys(groupPeersRef.current).length === 0) return;
   await refreshAudioInputs();
-  const target = micDeviceIdForOutput(speakerMode);
+  const speakerMode = kind === 'speaker';
+  let activeOut = null;
+  if (speakerMode) {
+    if (speakerDevRef.current && speakerDevRef.current.deviceId) activeOut = speakerDevRef.current;
+  } else if (kind === 'external' && id) {
+    const ext = audioOutputsCacheRef.current.external.find((d) => d.deviceId === id);
+    if (ext) activeOut = { deviceId: ext.deviceId, groupId: ext.groupId };
+  }
+  const target = micDeviceIdForOutput(speakerMode, activeOut);
   const constraints = target ? { audio: { deviceId: { exact: target } } } : { audio: true };
   let newTrack;
   try {
@@ -2131,26 +2159,20 @@ const refreshAudioOutputs = async () => {
         if (label) defaultName = label;
       }
       if (!d.deviceId || d.deviceId === 'default' || !label) return;
-      if (/speaker|扬声|扬声器|loudspeaker|\bspk\b/i.test(label)) {
-        if (!speakerId) speakerId = d.deviceId;
+      if (isLoudspeakerOutputLabel(label)) {
+        if (!speakerId) {
+          speakerId = d.deviceId;
+          speakerDevRef.current = { deviceId: d.deviceId, groupId: d.groupId || '' };
+        }
       } else {
-        external.push({ deviceId: d.deviceId, label });
+        external.push({ deviceId: d.deviceId, label, groupId: d.groupId || '' });
       }
     });
-    // Classify the live default route from its REAL name: any earpiece,
-    // headset, earbud, earphone or bluetooth device counts as a "handset",
-    // and anything the user has set as their loudspeaker counts as speaker.
-    let defaultKind = 'handset';
-    if (defaultName) {
-      if (/speaker|loudspeaker|扬声|扬声器/i.test(defaultName)) {
-        defaultKind = 'speaker';
-      } else if (/handset|headset|headphone|earbud|earphone|earpiece|bluetooth|earphones|耳机|蓝牙/i.test(defaultName)) {
-        defaultKind = 'handset';
-      } else {
-        // Unclassified default (e.g. "Digital Output") — a handset is the
-        // safer earpiece-friendly assumption; the user can still pick Speaker.
-      }
-    }
+    // Classify the live default route from its REAL name only: a handset when
+    // a recognizable earpiece/headset is the default, a speaker otherwise
+    // (loudspeaker label OR anything unclassified). Never assume a headset.
+    let defaultKind = 'speaker';
+    if (defaultName && isHandsetOutputLabel(defaultName)) defaultKind = 'handset';
     audioOutputsCacheRef.current = { speakerId, external, defaultName, defaultKind };
     setCallDefaultOut((prev) => {
       if (!defaultName) return prev;
@@ -2158,21 +2180,26 @@ const refreshAudioOutputs = async () => {
       return { name: defaultName, kind: defaultKind };
     });
   } catch (err) {
-    audioOutputsCacheRef.current = { speakerId: '', external: [], defaultName: '', defaultKind: 'handset' };
+    audioOutputsCacheRef.current = { speakerId: '', external: [], defaultName: '', defaultKind: 'speaker' };
   }
 };
-// When the user plugs in (or switches to) a handset / headset / bluetooth
-// device during a live call, follow it: route back to the system default
-// ('' so future plug/unplug automatically re-follows) and let the icon flip
-// to the handset. Switching to a different loudspeaker while the user already
-// chose Speaker keeps their explicit choice.
+// When the user plugs in (or switches to) a handset during a live call,
+// follow it: route back to the system default ('' so future plug/unplug
+// automatically re-follows) and let the icon flip to the handset. Unplugging
+// (or switching the system output to a loudspeaker) follows the same route
+// back to the loudspeaker with the phone/laptop mic.
 useEffect(() => {
   const name = callDefaultOut?.name;
   if (!name) return;
   const prevName = prevDefaultNameRef.current;
   prevDefaultNameRef.current = name;
   if (!prevName) return; // first real detection — nothing to switch away from
-  if (callDefaultOut.kind === 'handset') applyAudioOutput('', 'default');
+  if (callDefaultOut.kind === 'handset') {
+    applyAudioOutput('', 'default');
+  } else {
+    const speakerId = audioOutputsCacheRef.current.speakerId;
+    applyAudioOutput(speakerId, 'speaker');
+  }
 }, [callDefaultOut?.name]);
 
 // Real camera list for the switch-camera control. Built purely from
@@ -9468,6 +9495,9 @@ setContacts(prev => {
     {callSpeakerMenuOpen && (() => {
       const { speakerId, external } = audioOutputsCacheRef.current;
       const onHandset = callSpeakerOutput === '' || external.some((d) => d.deviceId === callSpeakerOutput);
+      // The route is Speaker when it points at a loudspeaker, but also when it
+      // is the untouched system default and that default is a loudspeaker.
+      const activeIsSpeaker = !onHandset || (callSpeakerOutput === '' && callDefaultOut.kind === 'speaker');
       const currentHandsetLabel =
         callDefaultOut.kind === 'handset' && callDefaultOut.name
           ? `Handset (${callDefaultOut.name})`
@@ -9475,8 +9505,8 @@ setContacts(prev => {
             ? `Handset (${external[0].label})`
             : 'Handset';
       const entries = [
-        { id: 'handset', kind: 'handset', label: currentHandsetLabel, active: onHandset },
-        { id: 'speaker', kind: 'speaker', label: 'Speaker', active: !onHandset },
+        { id: 'handset', kind: 'handset', label: currentHandsetLabel, active: !activeIsSpeaker },
+        { id: 'speaker', kind: 'speaker', label: 'Speaker', active: activeIsSpeaker },
       ];
       const pick = (o) => {
         if (o.kind === 'handset') {
