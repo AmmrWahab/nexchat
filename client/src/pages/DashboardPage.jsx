@@ -4977,7 +4977,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
                     <img src={call.groupId ? 'https://via.placeholder.com/50/4a00e0/fff?text=G' : (call.photo || 'https://via.placeholder.com/50')} alt={nameOf(call.userId, call.name)} />
                     <div className="chat-info">
                       <h4>{call.groupId ? (groupsList.find(g => String(g.id) === String(call.groupId))?.name || 'Group call') : nameOf(call.userId, call.name)}</h4>
-                      <p><span className={`call-dir ${call.direction === 'missed' ? 'missed' : ''}`}>{call.direction === 'outgoing' ? '↗' : call.direction === 'missed' ? '↘' : '↙'}</span> {call.direction === 'outgoing' ? 'Outgoing' : call.direction === 'missed' ? 'Missed' : 'Incoming'} {call.video ? 'video' : 'voice'} {call.groupId ? 'group ' : ''}call{call.durationSec ? ` • ${fmtCallTime(call.durationSec)}` : ''}</p>
+                      <p><span className={`call-dir ${call.direction === 'missed' ? 'missed' : ''}`}>{call.direction === 'outgoing' ? '↗' : (call.direction === 'rejected' ? '↔' : '↘')}</span> {call.direction === 'outgoing' ? 'Outgoing' : call.direction === 'rejected' ? 'Declined' : call.direction === 'missed' ? 'Missed' : 'Incoming'} {call.video ? 'video' : 'voice'} {call.groupId ? 'group ' : ''}call{call.durationSec ? ` • ${fmtCallTime(call.durationSec)}` : ''}</p>
                       {call.time && <small style={{ color: '#888', fontSize: '0.75rem' }}>{new Date(call.time).toLocaleString()}</small>}
                     </div>
                   </div>

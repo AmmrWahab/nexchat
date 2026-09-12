@@ -365,9 +365,11 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
     // Opening the chat also clears the unread missed-call badge for it: mark
     // every missed call from chatId that was tagged unread as read so the green
     // badge (which counts unread messages + unread missed calls) matches the
-    // existing "seen" semantics on every device.
+    // existing "seen" semantics on every device. $ne:true also matches legacy
+    // rows written before the calleeRead field existed (field absent), so old
+    // missed calls stop badge-ing once the conversation is opened.
     await Call.updateMany(
-      { caller: chatId, callee: readerId, status: "missed", calleeRead: false },
+      { caller: chatId, callee: readerId, status: "missed", calleeRead: { $ne: true } },
       { $set: { calleeRead: true } }
     );
 

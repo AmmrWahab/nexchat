@@ -48,8 +48,11 @@ router.get("/calls", async (req, res) => {
         durationSec: c.durationSec || 0,
         rejected: c.rejected || false,
         iCalled,
-        // classify: outgoing / incoming / missed
-        direction: c.status === "missed" ? "missed" : (iCalled ? "outgoing" : "incoming"),
+        // classify: outgoing / incoming / missed / rejected (declined calls
+        // must not read as a "Missed" call for either side)
+        direction: c.rejected
+          ? "rejected"
+          : (c.status === "missed" ? "missed" : (iCalled ? "outgoing" : "incoming")),
         // A missed call is an unread (green-badge) incoming missed call only for the
         // CALLEE, and only when it was truly never answered: declined calls (and
         // accepted calls) must not badge anyone. Drives the contact-list green
