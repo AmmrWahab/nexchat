@@ -2063,7 +2063,7 @@ const bindStreamToEl = (el, stream) => {
 // 'speaker'. Nothing is ever assumed to be a headset without evidence.
 const isLoudspeakerOutputLabel = (s) => /speaker|loudspeaker|built-?in|internal|扬声|扬声器|\bspk\b/i.test(s);
 const isHandsetOutputLabel = (s) => !isLoudspeakerOutputLabel(s) &&
-  /handset|headset|headphone|earbud|earphone|earpiece|neckband|airpod|air\s*dots|hands-?free|wired|usb|type-?c|otg|dongle|adapter|蓝牙耳机|耳机/i.test(s);
+  /handset|headset|headphone|earbud|earphone|earpiece|neckband|airpod|air\s*dots|hands-?free|wired|usb|type-?c|otg|dongle|adapter|receiver|蓝牙耳机|耳机/i.test(s);
 // Detect the REAL microphone the browser can target: the handset's own mic
 // (headset/earpiece/bluetooth/USB-C/OTG input) and the built-in phone/laptop
 // mic. Only genuinely enumerated audioinput devices are used; nothing is
@@ -2185,14 +2185,19 @@ const refreshAudioOutputs = async () => {
     // mic, a speaker otherwise. Never assume a headset without evidence.
     let defaultKind = 'speaker';
     if ((defaultName && isHandsetOutputLabel(defaultName)) || defaultIsHandset) defaultKind = 'handset';
-    audioOutputsCacheRef.current = { speakerId, external, defaultName, defaultKind };
+    // On Android the browser only ever shows the ONE system sink and the OS
+    // silently re-routes it to whatever is physically connected (earbud,
+    // USB-C/OTG headset, loudspeaker). There is no switchable alternate, so no
+    // web page can force the loudspeaker while a headset is plugged in.
+    const systemRouted = typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent || '') && !speakerId && external.length === 0;
+    audioOutputsCacheRef.current = { speakerId, external, defaultName, defaultKind, systemRouted };
     setCallDefaultOut((prev) => {
       if (!defaultName) return prev;
       if (prev.name === defaultName) return prev;
       return { name: defaultName, kind: defaultKind };
     });
   } catch (err) {
-    audioOutputsCacheRef.current = { speakerId: '', external: [], defaultName: '', defaultKind: 'speaker' };
+    audioOutputsCacheRef.current = { speakerId: '', external: [], defaultName: '', defaultKind: 'speaker', systemRouted: false };
     audioInputsCacheRef.current = { defaultIsHandset: false, handsetMicId: '', builtinMicId: '', byGroup: {} };
   }
 };
@@ -9506,7 +9511,7 @@ setContacts(prev => {
         selecting it routes to the system default so plugging in / taking out a
         headset mid-call re-follows it automatically. */}
     {callSpeakerMenuOpen && (() => {
-      const { speakerId, external } = audioOutputsCacheRef.current;
+      const { speakerId, external, systemRouted } = audioOutputsCacheRef.current;
       const onHandset = callSpeakerOutput === '' || external.some((d) => d.deviceId === callSpeakerOutput);
       // The route is Speaker when it points at a loudspeaker, but also when it
       // is the untouched system default and that default is a loudspeaker.
@@ -9541,6 +9546,11 @@ setContacts(prev => {
                 {o.active && <span className="cs-active">●</span>}
               </button>
             ))}
+            {systemRouted && (
+              <div className="call-speaker-note" style={{ padding: '10px 14px', borderTop: '1px solid rgba(255,255,255,0.08)', fontSize: 12, lineHeight: 1.5, color: 'rgba(255,255,255,0.75)' }}>
+                Android sends call audio to whatever is plugged in. Pick Handset for the earbud — to hear on the phone speaker, disconnect the earbud. Browsers can't force the loudspeaker while a headset is connected.
+              </div>
+            )}
           </div>
         </>
       );
