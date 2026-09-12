@@ -1188,16 +1188,13 @@ useEffect(() => {
 useEffect(() => {
   refreshAudioOutputs();
   refreshVideoInputs();
-  refreshAudioInputs();
   const md = navigator.mediaDevices;
   if (!md || typeof md.addEventListener !== 'function') return undefined;
   md.addEventListener('devicechange', refreshAudioOutputs);
   md.addEventListener('devicechange', refreshVideoInputs);
-  md.addEventListener('devicechange', refreshAudioInputs);
   return () => {
     md.removeEventListener('devicechange', refreshAudioOutputs);
     md.removeEventListener('devicechange', refreshVideoInputs);
-    md.removeEventListener('devicechange', refreshAudioInputs);
   };
 }, []);
 
@@ -1975,7 +1972,19 @@ const getMediaStream = async (video) => {
   // state is never stale from a previous call.
   refreshAudioOutputs();
   refreshAudioInputs();
-  if (!video) return navigator.mediaDevices.getUserMedia({ audio: true });
+  // Device labels are only available AFTER microphone permission is granted,
+  // so refresh once more right after getUserMedia succeeds (and shortly after,
+  // for slow OS descriptor enumeration such as a USB-C/OTG hands-free). This
+  // is how a freshly plugged Type-C earpiece gets detected.
+  const refreshAfterPermission = () => {
+    refreshAudioOutputs();
+    setTimeout(() => refreshAudioOutputs(), 350);
+  };
+  if (!video) {
+    const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+    refreshAfterPermission();
+    return s;
+  }
   // Use the camera the device actually has: prefer the front (user) camera,
   // fall back to the rear, then to the browser default. Never assume a
   // particular camera exists.
@@ -1989,6 +1998,7 @@ const getMediaStream = async (video) => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       refreshVideoInputs();
+      refreshAfterPermission();
       return stream;
     } catch (err) { lastErr = err; }
   }
@@ -2047,42 +2057,20 @@ const bindStreamToEl = (el, stream) => {
   }
 };
 // Real output-device classification. Only the REAL device name decides: a
-// recognizable earpiece/headset turns the default route into a 'handset';
-// a loudspeaker label OR anything unrecognized stays a 'speaker'. Nothing is
-// ever assumed to be a headset without evidence.
-const isLoudspeakerOutputLabel = (s) => /speaker|loudspeaker|扬声|扬声器|\bspk\b/i.test(s) && !isHandsetOutputLabel(s);
-const isHandsetOutputLabel = (s) => /handset|headset|headphone|earbud|earphone|earpiece|airpod|air\s*dots|蓝牙耳机|耳机/i.test(s);
+// recognizable earpiece/headset - or any physically-wired/USB/Type-C/OTG
+// dongle device - turns the default route into a 'handset'; a loudspeaker
+// (built-in or external speaker label) or anything unrecognized stays a
+// 'speaker'. Nothing is ever assumed to be a headset without evidence.
+const isLoudspeakerOutputLabel = (s) => /speaker|loudspeaker|built-?in|internal|扬声|扬声器|\bspk\b/i.test(s);
+const isHandsetOutputLabel = (s) => !isLoudspeakerOutputLabel(s) &&
+  /handset|headset|headphone|earbud|earphone|earpiece|neckband|airpod|air\s*dots|hands-?free|wired|usb|type-?c|otg|dongle|adapter|蓝牙耳机|耳机/i.test(s);
 // Detect the REAL microphone the browser can target: the handset's own mic
-// (headset/earpiece/bluetooth input) and the built-in phone/laptop mic. Only
-// genuinely enumerated audioinput devices are used; nothing is invented.
-const isHandsetMicLabel = (s) => /handset|headset|headphone|earbud|earphone|earpiece|bluetooth|airpod|air\s*dots|耳机|蓝牙|蓝牙耳机/i.test(s);
-const refreshAudioInputs = async () => {
-  if (!navigator.mediaDevices || typeof navigator.mediaDevices.enumerateDevices !== 'function') return;
-  try {
-    const devs = await navigator.mediaDevices.enumerateDevices();
-    const inputs = devs.filter((d) => d.kind === 'audioinput' && d.deviceId);
-    let handsetMic = '';
-    let builtinMic = '';
-    let defaultIsHandset = false;
-    const byGroup = {};
-    inputs.forEach((d) => {
-      const label = (d.label || '').replace(/^Default\s*-\s*/i, '').trim();
-      if (d.deviceId === 'default' || /^Default\s*-/i.test(d.label || '')) {
-        if (isHandsetMicLabel(label)) defaultIsHandset = true;
-        return;
-      }
-      if (d.groupId && !byGroup[d.groupId]) byGroup[d.groupId] = d.deviceId;
-      if (isHandsetMicLabel(label)) {
-        if (!handsetMic) handsetMic = d.deviceId;
-      } else if (label) {
-        if (!builtinMic) builtinMic = d.deviceId;
-      }
-    });
-    audioInputsCacheRef.current = { defaultIsHandset, handsetMicId: handsetMic, builtinMicId: builtinMic, byGroup };
-  } catch (err) {
-    audioInputsCacheRef.current = { defaultIsHandset: false, handsetMicId: '', builtinMicId: '', byGroup: {} };
-  }
-};
+// (headset/earpiece/bluetooth/USB-C/OTG input) and the built-in phone/laptop
+// mic. Only genuinely enumerated audioinput devices are used; nothing is
+// invented. A USB or Type-C hands-free is caught by the generic 'usb' /
+// 'type-c' tokens alone, even when the OS labels it just "USB Audio".
+const isHandsetMicLabel = (s) => /handset|headset|headphone|earbud|earphone|earpiece|neckband|airpod|air\s*dots|hands-?free|wired|bluetooth|usb|type-?c|otg|dongle|adapter|耳机|蓝牙|蓝牙耳机/i.test(s);
+const refreshAudioInputs = async () => refreshAudioOutputs();
 // Pick the mic deviceId that matches the chosen output device: handset mode
 // -> the handset's own mic (following the system default input, which is the
 // plug-in headset's mic while plugged and the device mic otherwise), speaker
@@ -2168,11 +2156,35 @@ const refreshAudioOutputs = async () => {
         external.push({ deviceId: d.deviceId, label, groupId: d.groupId || '' });
       }
     });
-    // Classify the live default route from its REAL name only: a handset when
-    // a recognizable earpiece/headset is the default, a speaker otherwise
-    // (loudspeaker label OR anything unclassified). Never assume a headset.
+    // Microphone ground truth: the default input IS the handset's own mic when
+    // it belongs to a heads-free peripheral (wired/USB/Type-C/OTG/BT dongle),
+    // not the device's built-in microphone - so a generic "USB Audio" hands-free
+    // is still recognized even though its output label looks unclassified.
+    const ins = devs.filter((d) => d.kind === 'audioinput');
+    let defaultInputLabel = '';
+    let handsetMic = '';
+    let builtinMic = '';
+    const byGroup = {};
+    ins.forEach((d) => {
+      const label = clean(d.label);
+      if (d.deviceId === 'default' || /^Default\s*-/i.test(d.label || '')) {
+        if (label) defaultInputLabel = label;
+        return;
+      }
+      if (d.groupId && !byGroup[d.groupId]) byGroup[d.groupId] = d.deviceId;
+      if (isHandsetMicLabel(label)) {
+        if (!handsetMic) handsetMic = d.deviceId;
+      } else if (label) {
+        if (!builtinMic) builtinMic = d.deviceId;
+      }
+    });
+    const defaultIsHandset = !!defaultInputLabel && isHandsetMicLabel(defaultInputLabel);
+    audioInputsCacheRef.current = { defaultIsHandset, handsetMicId: handsetMic, builtinMicId: builtinMic, byGroup };
+    // Classify the live default route: a handset when the default output is a
+    // recognizable earpiece/peripheral OR the default input is the hands-free
+    // mic, a speaker otherwise. Never assume a headset without evidence.
     let defaultKind = 'speaker';
-    if (defaultName && isHandsetOutputLabel(defaultName)) defaultKind = 'handset';
+    if ((defaultName && isHandsetOutputLabel(defaultName)) || defaultIsHandset) defaultKind = 'handset';
     audioOutputsCacheRef.current = { speakerId, external, defaultName, defaultKind };
     setCallDefaultOut((prev) => {
       if (!defaultName) return prev;
@@ -2181,6 +2193,7 @@ const refreshAudioOutputs = async () => {
     });
   } catch (err) {
     audioOutputsCacheRef.current = { speakerId: '', external: [], defaultName: '', defaultKind: 'speaker' };
+    audioInputsCacheRef.current = { defaultIsHandset: false, handsetMicId: '', builtinMicId: '', byGroup: {} };
   }
 };
 // When the user plugs in (or switches to) a handset during a live call,
