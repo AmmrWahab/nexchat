@@ -277,7 +277,9 @@ export default function DashboardPage() {
   const [activeCall, setActiveCall] = useState(null); // { mode, type, callId, peerId, peerName, peerPhoto }
   const activeCallRef = useRef(null);
   const [callSpeakerMenuOpen, setCallSpeakerMenuOpen] = useState(false);
-  const [callSpeakerOutput, setCallSpeakerOutput] = useState('speaker');
+  // '' = system default output (earpiece/handset on phones, or the platform
+  // default), 'speaker' = loudspeaker, otherwise a concrete audiooutput deviceId.
+  const [callSpeakerOutput, setCallSpeakerOutput] = useState('');
   const [callMicOn, setCallMicOn] = useState(true);
   const [callCamOn, setCallCamOn] = useState(true);
   const [callMinimized, setCallMinimized] = useState(false);
@@ -291,6 +293,14 @@ export default function DashboardPage() {
   const callIdRef = useRef(null);
   const ownVideoRef = useRef(null);
   const peerVideoRef = useRef(null);
+  const peerAudioRef = useRef(null);   // hidden <audio> that plays remote voice-call audio
+  const groupAudioRef = useRef(null);  // hidden <audio> that plays remote group voice-call audio
+  const groupVoiceStreamRef = useRef(null);
+  // Every live media element that can receive remote audio. Output routing via
+  // HTMLMediaElement.setSinkId() is applied to each one.
+  const audioElsRef = useRef(new Set());
+  const sinkIdRef = useRef('');
+  const audioOutputsCacheRef = useRef({ speakerId: '', external: [] });
   const callTimerRef = useRef(null);
   const peekReminderRef = useRef(null);
   // ---------- Group-call mesh ----------
@@ -1145,6 +1155,18 @@ useEffect(() => {
   isMobileRef.current = isMobile;
 }, [isMobile]);
 
+// Keep the call audio-output list honest: re-enumerate whenever the browser
+// reports that the physical audio devices changed (headset plugged/unplugged,
+// speaker added, BT paired, ...). Nothing is shown unless the browser really
+// enumerates it.
+useEffect(() => {
+  refreshAudioOutputs();
+  const md = navigator.mediaDevices;
+  if (!md || typeof md.addEventListener !== 'function') return undefined;
+  md.addEventListener('devicechange', refreshAudioOutputs);
+  return () => md.removeEventListener('devicechange', refreshAudioOutputs);
+}, []);
+
 useEffect(() => {
   if (socket) socketRef.current = socket;
 }, [socket]);
@@ -1762,6 +1784,11 @@ const cleanupCall = (soft) => {
     remoteStreamRef.current.getTracks().forEach((t) => t.stop());
     remoteStreamRef.current = null;
   }
+  try { groupVoiceStreamRef.current?.getTracks().forEach((t) => t.stop()); } catch (err) {}
+  groupVoiceStreamRef.current = null;
+  sinkIdRef.current = '';
+  setCallSpeakerOutput('');
+  audioElsRef.current.clear();
   signalingRoleRef.current = '';
   callIdRef.current = null;
   callPeerIdRef.current = null;
@@ -1789,11 +1816,10 @@ const createPeer = () => {
     const stream = e.streams[0] || new MediaStream([e.track]);
     remoteStreamRef.current = stream;
     setTimeout(() => {
-      const v = peerVideoRef.current;
-      if (v && remoteStreamRef.current) {
-        v.srcObject = remoteStreamRef.current;
-        v.play().catch(() => {});
-      }
+      // Voice calls have no peer <video> element: the remote audio is bound
+      // to the dedicated hidden <audio> (peerAudioRef) instead. Video calls
+      // keep playing through the peer <video> element.
+      bindRemoteMedia(peerVideoRef.current || peerAudioRef.current);
     }, 100);
   };
   pc.onconnectionstatechange = () => {
@@ -1831,6 +1857,19 @@ const createGroupPeer = (peerId) => {
     const stream = e.streams[0] || new MediaStream([e.track]);
     groupStreamsRef.current[peerId] = stream;
     setGroupTiles({ ...groupStreamsRef.current });
+    // Voice mesh: every peer's audio must reach the shared hidden <audio> so
+    // group voice calls are actually audible (there are no <video> tiles in a
+    // voice group call).
+    if (activeCallRef.current?.group && activeCallRef.current?.type === 'voice') {
+      if (!groupVoiceStreamRef.current) groupVoiceStreamRef.current = new MediaStream();
+      stream.getAudioTracks().forEach((t) => {
+        if (!groupVoiceStreamRef.current.getTracks().includes(t)) {
+          groupVoiceStreamRef.current.addTrack(t);
+        }
+      });
+      const gi = groupAudioRef.current;
+      if (gi) bindStreamToEl(gi, groupVoiceStreamRef.current);
+    }
   };
   pc.onconnectionstatechange = () => {
     if (['failed', 'disconnected'].includes(pc.connectionState)) {
@@ -1889,6 +1928,81 @@ const initLocalVideo = () => {
 
 const addLocalTracks = (pc, stream) => {
   stream.getTracks().forEach((t) => pc.addTrack(t, stream));
+};
+
+// -------- Audio-output detection + routing (voice & video) --------
+// Track every live media element that plays remote audio so a single helper
+// can reroute them all.
+const registerAudioEl = (el) => {
+  if (!el || audioElsRef.current.has(el)) return;
+  audioElsRef.current.add(el);
+  routeTo(el);
+};
+// Route a single element to the sink chosen by the user. '' = system default,
+// so we leave the element untouched (the browser keeps its default output).
+const routeTo = (el) => {
+  if (!el || typeof el.setSinkId !== 'function') return;
+  const id = sinkIdRef.current;
+  if (!id) return;
+  try {
+    el.setSinkId(id).catch(() => {});
+  } catch (err) { /* setSinkId unsupported -> keep default output */ }
+};
+const applyAudioOutput = (id, kind) => {
+  if (kind === 'default') sinkIdRef.current = '';
+  else if (id) sinkIdRef.current = id;
+  else sinkIdRef.current = '';
+  audioElsRef.current.forEach((el) => routeTo(el));
+  setCallSpeakerOutput(kind === 'default' ? '' : (id || 'speaker'));
+};
+const bindStreamToEl = (el, stream) => {
+  if (!el || !stream) {
+    if (el) registerAudioEl(el);
+    return;
+  }
+  registerAudioEl(el);
+  if (el.srcObject !== stream) {
+    el.srcObject = stream;
+    el.play().catch(() => {});
+  }
+};
+const bindRemoteMedia = (el) => bindStreamToEl(el, remoteStreamRef.current);
+// Detect the REAL available audio-output devices. The labels come from
+// navigator.mediaDevices.enumerateDevices(). No device is ever invented:
+// 'Speaker' is surfaced only as a routing target we can actually setSinkId()
+// to, and external devices (headsets, earphones, BT) appear only when the
+// browser actually enumerates an audiooutput that is not the default.
+const refreshAudioOutputs = async () => {
+  if (!navigator.mediaDevices || typeof navigator.mediaDevices.enumerateDevices !== 'function') return;
+  try {
+    const devs = await navigator.mediaDevices.enumerateDevices();
+    const clean = (l) => (l || '').replace(/^Default\s*-\s*/i, '').trim();
+    const outs = devs.filter((d) => d.kind === 'audiooutput');
+    let speakerId = '';
+    const external = [];
+    outs.forEach((d) => {
+      if (!d.deviceId || d.deviceId === 'default') return; // the platform default route
+      const label = clean(d.label);
+      if (!label) return; // unlabeled + non-default -> cannot identify, ignore
+      if (/speaker|扬声|speaker|spk\b/i.test(label)) {
+        if (!speakerId) speakerId = d.deviceId;
+      } else {
+        external.push({ deviceId: d.deviceId, label });
+      }
+    });
+    // The 'default' device is always a valid speaker-capable target on
+    // platforms where setSinkId() exists, but an empty speaker list must not
+    // manufacture a fake one.
+    audioOutputsCacheRef.current = { speakerId, external };
+  } catch (err) {
+    audioOutputsCacheRef.current = { speakerId: '', external: [] };
+  }
+};
+const externalLabelFor = (d) => {
+  const prefix = /handset|headset|headphone|earbud|earphone|earpiece|bluetooth|蓝牙耳机|耳机/i.test(d.label)
+    ? 'Handset'
+    : 'Audio device';
+  return `${prefix} · ${d.label}`;
 };
 
 const handleRemoteOffer = async (sdp) => {
@@ -8923,7 +9037,10 @@ setContacts(prev => {
                 <div key={pid} className="gcall-tile">
                   <video
                     key={pid}
-                    ref={(el) => { if (el && el.srcObject !== groupTiles[pid]) el.srcObject = groupTiles[pid]; }}
+                    ref={(el) => {
+                      if (el && el.srcObject !== groupTiles[pid]) el.srcObject = groupTiles[pid];
+                      registerAudioEl(el);
+                    }}
                     className="gcall-tile-video"
                     autoPlay
                     playsInline
@@ -8952,7 +9069,7 @@ setContacts(prev => {
       activeCall.mode === 'active' && activeCall.type === 'video' && (
         <>
           <video
-            ref={peerVideoRef}
+            ref={(el) => { peerVideoRef.current = el; bindRemoteMedia(el); }}
             className="call-peer-video"
             autoPlay
             playsInline
@@ -8969,6 +9086,26 @@ setContacts(prev => {
           )}
         </>
       )
+    )}
+
+    {/* Remote audio element for voice calls: the peer <video> only exists for
+        video calls, so without this, a voice call has no element to play the
+        remote stream on and the far end is silent. */}
+    {activeCall.mode === 'active' && activeCall.type === 'voice' && !activeCall.group && (
+      <audio
+        ref={(el) => { peerAudioRef.current = el; bindStreamToEl(el, remoteStreamRef.current); }}
+        className="call-remote-audio"
+        autoPlay
+        playsInline
+      />
+    )}
+    {activeCall.mode === 'active' && activeCall.type === 'voice' && activeCall.group && (
+      <audio
+        ref={(el) => { groupAudioRef.current = el; bindStreamToEl(el, groupVoiceStreamRef.current); }}
+        className="call-remote-audio"
+        autoPlay
+        playsInline
+      />
     )}
 
     {/* Own camera preview / PiP */}
@@ -9015,20 +9152,59 @@ setContacts(prev => {
       </div>
     )}
 
-    {/* Speaker/Handset chooser */}
-    {callSpeakerMenuOpen && (
-      <>
-        <div className="call-speaker-backdrop" onClick={() => setCallSpeakerMenuOpen(false)} />
-        <div className="call-speaker-menu">
-          <button onClick={() => { setCallSpeakerOutput('speaker'); setCallSpeakerMenuOpen(false); }}>
-            <span className="cs-icon">🔊</span> Speaker
-          </button>
-          <button onClick={() => { setCallSpeakerOutput('handset'); setCallSpeakerMenuOpen(false); }}>
-            <span className="cs-icon">📱</span> Handset
-          </button>
-        </div>
-      </>
-    )}
+    {/* Audio-output chooser: built from the REAL enumerated audiooutput
+        devices. 'Speaker' is always offered (the only other route to a
+        loudspeaker, or a graceful no-op browser fallback), external devices
+        (headsets/earphones) only when the browser really reports them, and a
+        'Default audio' entry only when there is something to switch away from. */}
+    {callSpeakerMenuOpen && (() => {
+      const { speakerId, external } = audioOutputsCacheRef.current;
+      const entries = [];
+      entries.push({
+        id: 'speaker',
+        kind: 'speaker',
+        label: 'Speaker',
+        active: callSpeakerOutput === 'speaker' || (callSpeakerOutput !== '' && callSpeakerOutput !== 'default' && !external.some((d) => d.deviceId === callSpeakerOutput)),
+      });
+      external.forEach((d) => {
+        entries.push({
+          id: d.deviceId,
+          kind: 'external',
+          label: externalLabelFor(d),
+          active: callSpeakerOutput === d.deviceId,
+        });
+      });
+      if (external.length > 0) {
+        entries.push({ id: 'default', kind: 'default', label: 'Default audio (earpiece)', active: callSpeakerOutput === '' });
+      }
+      const pick = (o) => {
+        if (o.kind === 'speaker') {
+          // Re-selecting Speaker without a real loudspeaker device to enable
+          // is a no-op loop, so treat the second tap as return-to-default.
+          if (callSpeakerOutput === 'speaker' && !speakerId) applyAudioOutput('', 'default');
+          else applyAudioOutput(speakerId, 'speaker');
+        } else if (o.kind === 'external') {
+          applyAudioOutput(o.id, 'external');
+        } else {
+          applyAudioOutput('', 'default');
+        }
+        setCallSpeakerMenuOpen(false);
+      };
+      return (
+        <>
+          <div className="call-speaker-backdrop" onClick={() => setCallSpeakerMenuOpen(false)} />
+          <div className="call-speaker-menu">
+            {entries.map((o) => (
+              <button key={o.kind + o.id} onClick={() => pick(o)} className={o.active ? 'speaker-active' : ''}>
+                <span className="cs-icon">{o.kind === 'speaker' ? '🔊' : o.kind === 'default' ? '📱' : '🎧'}</span>
+                <span className="cs-label">{o.label}</span>
+                {o.active && <span className="cs-active">●</span>}
+              </button>
+            ))}
+          </div>
+        </>
+      );
+    })()}
 
     {/* Bottom controls */}
     <div className="call-controls">
@@ -9054,7 +9230,7 @@ setContacts(prev => {
           <button className="call-ctrl" onClick={() => { const on = toggleMuteCall(); setCallMicOn(on); }} aria-label="Mute" style={{ background: !callMicOn ? '#e02f5b' : undefined }}>
             <MicOff size={24} strokeWidth={2} />
           </button>
-          <button className="call-ctrl" onClick={() => setCallSpeakerMenuOpen(true)} aria-label="Speaker or handset"><Volume2 size={24} strokeWidth={2} /></button>
+          <button className={`call-ctrl ${callSpeakerOutput === 'speaker' || (callSpeakerOutput && callSpeakerOutput !== '' && callSpeakerOutput !== 'default') ? 'speaker-on' : ''}`} onClick={() => setCallSpeakerMenuOpen(true)} aria-label="Audio output"><Volume2 size={24} strokeWidth={2} /></button>
           {activeCall.type === 'voice' && (
             <button className="call-ctrl" onClick={upgradeToVideo} aria-label="Switch to video call"><Video size={24} strokeWidth={2} /></button>
           )}

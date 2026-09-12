@@ -3513,7 +3513,7 @@
   height: 100% !important;
 }
 .call-own-video.pip {
-  bottom: 110px;
+  bottom: calc(112px + env(safe-area-inset-bottom, 0px));
   right: 16px;
   width: 150px !important;
   height: 220px !important;
@@ -3626,7 +3626,7 @@
 }
 .gcall-pager {
   position: absolute;
-  bottom: 96px;
+  bottom: calc(96px + env(safe-area-inset-bottom, 0px));
   left: 50%;
   transform: translateX(-50%);
   display: flex;
@@ -3650,13 +3650,27 @@
 }
 .gcall-pager button:disabled { opacity: 0.3; cursor: default; }
 .call-controls {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 14px;
-  padding: 20px 16px 30px;
+  /* Safe-area aware: keep controls clear of home bars / notches on mobile. */
+  padding: 20px 16px calc(22px + env(safe-area-inset-bottom, 0px));
   z-index: 5;
   flex-wrap: wrap;
+}
+.call-remote-audio {
+  position: absolute;
+  left: -2px;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  opacity: 0.01;
+  pointer-events: none;
 }
 .call-ctrl {
   width: 54px;
@@ -3712,7 +3726,15 @@
   text-align: left;
 }
 .call-speaker-menu button:hover { background: rgba(255,255,255,0.12); }
-.cs-icon { font-size: 1.1rem; }
+.call-speaker-menu button.speaker-active { background: rgba(37, 211, 102, 0.28); color: #b9fad2; }
+.cs-icon { font-size: 1.1rem; flex-shrink: 0; }
+.cs-label { flex: 1; text-align: left; }
+.cs-active {
+  font-size: 0.6rem;
+  color: #25D366;
+  margin-left: 4px;
+  flex-shrink: 0;
+}
 
 /* Call back (minimize) button + minimized ringing/active banner */
 .call-back-btn {
