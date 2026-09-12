@@ -1119,6 +1119,20 @@ useEffect(() => {
   mobileChatOpenRef.current = mobileChatOpen;
 }, [mobileChatOpen]);
 
+// Scoping the mobile chat overlay to its own viewport: the overlay (a
+// full-screen reuse of the desktop right panel) is driven by
+// mobileChatOpen, which is set when a chat/group is explicitly opened from
+// the mobile UI. A chat/group left open on the DESKTOP must not follow the
+// window into a narrow viewport — clearing the flag at the moment the app
+// enters the mobile layout surfaces the mobile home instead of letting the
+// desktop panel take over the phone screen. Mobile opens later in the same
+// session re-set the flag normally.
+useEffect(() => {
+  if (isMobile) {
+    setMobileChatOpen(false);
+  }
+}, [isMobile]);
+
 // Never leave the mobile chat overlay open without a selected chat,
 // otherwise the panel leaks into the "Select a chat" empty state.
 useEffect(() => {
@@ -3530,6 +3544,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
           if (stillExists) {
             setSelectedChat(parsed);
             selectedChatRef.current = parsed;
+            if (isMobile) setMobileChatOpen(true);
           } else {
             localStorage.removeItem('selectedChat');
             setSelectedChat(prev => (prev && String(prev.id) === String(parsed.id) ? null : prev));
@@ -7349,7 +7364,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
 
 
   return (
-    <div className={`dashboard-layout ${isMobile && (mobileChatOpen || !!selectedChat?.id || !!selectedGroup?.id) ? 'chat-open' : ''}`}>
+    <div className={`dashboard-layout ${isMobile && mobileChatOpen ? 'chat-open' : ''}`}>
       <style
         dangerouslySetInnerHTML={{
           __html: `
