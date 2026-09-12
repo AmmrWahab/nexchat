@@ -102,11 +102,32 @@ router.get('/users', auth, async (req, res) => {
   }
 });
 
+// Custom saved name for a user in the current user's address book, if any.
+// The account owner's real `name` is NEVER overwritten — the custom name is
+// stored per-viewer in `me.contactNames` and used only for display.
+function customNameFor(me, userId) {
+  const hit = (me?.contactNames || []).find((n) => n && String(n.user) === String(userId));
+  return hit && hit.name && String(hit.name).trim() ? String(hit.name).trim() : null;
+}
+
 // GET /api/contacts — return the current user's private address book
+// Each contact's `name` is the effective display name: the viewer's custom
+// saved name when present, otherwise the target user's real account name.
 router.get('/contacts', auth, async (req, res) => {
   try {
     const me = await User.findById(req.userId).populate('contacts', 'name email photo lastSeen');
-    res.json({ contacts: me?.contacts || [] });
+    const contacts = (me?.contacts || []).map((c) => {
+      const customName = customNameFor(me, c._id);
+      return {
+        _id: String(c._id),
+        name: customName || c.name || 'Unknown',
+        customName,
+        email: c.email,
+        photo: c.photo || 'https://via.placeholder.com/50',
+        lastSeen: c.lastSeen,
+      };
+    });
+    res.json({ contacts });
   } catch (err) {
     console.error('Get contacts error:', err.message);
     res.status(500).json({ message: 'Server error' });
@@ -114,8 +135,10 @@ router.get('/contacts', auth, async (req, res) => {
 });
 
 // POST /api/contacts — add a user to the current user's address book
+// An optional `name` (trimmed) is persisted as the viewer's custom display
+// name for that contact. When omitted/blank, the real account name is used.
 router.post('/contacts', auth, async (req, res) => {
-  const { userId } = req.body || {};
+  const { userId, name } = req.body || {};
   if (!userId) return res.status(400).json({ message: 'userId required' });
   if (String(userId) === String(req.userId)) return res.status(400).json({ message: 'Cannot add yourself' });
   try {
@@ -123,12 +146,25 @@ router.post('/contacts', auth, async (req, res) => {
     if (!target) return res.status(404).json({ message: 'User not found' });
     const me = await User.findById(req.userId);
     if (!me) return res.status(404).json({ message: 'User not found' });
+    const customName = String(name || '').trim() || null;
     if (!me.contacts.some((id) => String(id) === String(userId))) {
       me.contacts.push(userId);
-      await me.save();
     }
+    if (customName) {
+      const idx = me.contactNames.findIndex((n) => n && String(n.user) === String(userId));
+      if (idx > -1) me.contactNames[idx].name = customName;
+      else me.contactNames.push({ user: userId, name: customName });
+    }
+    await me.save();
     res.status(201).json({
-      contact: { id: target._id, name: target.name, email: target.email, photo: target.photo, lastSeen: target.lastSeen },
+      contact: {
+        id: target._id,
+        name: customName || target.name,
+        customName,
+        email: target.email,
+        photo: target.photo,
+        lastSeen: target.lastSeen,
+      },
     });
   } catch (err) {
     console.error('Add contact error:', err.message);
@@ -144,6 +180,7 @@ router.delete('/contacts/:contactId', auth, async (req, res) => {
     const me = await User.findById(req.userId);
     if (!me) return res.status(404).json({ message: 'User not found' });
     me.contacts = me.contacts.filter((id) => String(id) !== String(contactId));
+    me.contactNames = (me.contactNames || []).filter((n) => n && String(n.user) !== String(contactId));
     await me.save();
     res.json({ ok: true });
   } catch (err) {

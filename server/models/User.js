@@ -34,6 +34,16 @@ const userSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
   }],
+  contactNames: [{
+    user: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
+    name: {
+      type: String,
+      trim: true
+    }
+  }],
     lastSeen: { type: Date, default: Date.now }, // ← Add this
 }, {
   timestamps: true

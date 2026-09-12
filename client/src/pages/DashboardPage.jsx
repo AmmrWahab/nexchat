@@ -150,6 +150,19 @@ export default function DashboardPage() {
   const prefetchedGroupHistoryRef = useRef(new Set());
   const prefetchedHistoryRef = useRef(new Set());
   const contactsRef = useRef([]);
+  // Central name resolver: returns the contact's effective name (the viewer's
+  // saved custom name, or the account's real name) when an id matches the
+  // address book, otherwise the given fallback. Reads contactsRef so every
+  // surface (chat list, chat header, status, calls, groups, profiles, replies)
+  // resolves names consistently, including data arriving from socket/backend.
+  const nameOf = (who, fallback) => {
+    const id = who !== null && typeof who === 'object'
+      ? String(who.id ?? who._id ?? who.userId ?? who.senderId ?? who.from ?? '')
+      : String(who ?? '');
+    if (!id) return fallback || 'Unknown';
+    const hit = (contactsRef.current || []).find((c) => c && String(c.id) === id);
+    return hit && hit.name && String(hit.name).trim() ? hit.name : (fallback || 'Unknown');
+  };
   const groupOpenAtRef = useRef(0);
   const groupsListRef = useRef([]);
   const groupMessageElsRef = useRef({});
@@ -694,7 +707,7 @@ export default function DashboardPage() {
           fromName: user.name,
           fromPhoto: user.photo || '',
           replyTo: {
-            sender: viewerUser.user.name,
+            sender: nameOf(viewerUser.user.id, viewerUser.user.name),
             text: `Status: ${quoteText}`,
             statusId: cur?._id ? String(cur._id) : null,
           },
@@ -708,7 +721,7 @@ export default function DashboardPage() {
     setMobileChatOpen(true);
     setActiveTab('chats');
     setReplyTo({
-      sender: viewerUser.user.name,
+      sender: nameOf(viewerUser.user.id, viewerUser.user.name),
       text: `Status: ${quoteText}`,
       isStatus: true,
       statusId: cur?._id ? String(cur._id) : null,
@@ -2899,6 +2912,7 @@ newSocket.on("receiveMessage", (data) => {
       localId: data.messageId,
       text: data.message,
       sender: displayName,
+      senderId,
       timestamp: data.timestamp || Date.now(),
       file: data.file,
       fileName: data.fileName,
@@ -2936,11 +2950,13 @@ newSocket.on("receiveMessage", (data) => {
     if (!isOwn) setContacts(prev => {
       const exists = prev.some(c => String(c.id) === senderId);
       if (exists) {
-        return prev.map(c =>
+        const next = prev.map(c =>
           String(c.id) === senderId
             ? { ...c, lastMsg: data.message, time: data.time, online: true }
             : c
         );
+        contactsRef.current = next;
+        return next;
       }
       const newContact = {
         id: senderId,
@@ -2952,6 +2968,7 @@ newSocket.on("receiveMessage", (data) => {
         online: true
       };
       const updated = [newContact, ...prev];
+      contactsRef.current = updated;
       // Persist to this user's server-side address book so the chat
       // stays visible on any device/account.
       fetch(`${API_URL}/api/contacts`, {
@@ -3085,7 +3102,7 @@ newSocket.on("receiveMessage", (data) => {
         // update group preview
         const previewName = senderId === user.id
           ? 'You'
-          : (contacts.find(c => String(c.id) === senderId)?.name || displayName);
+          : nameOf(senderId, displayName);
         const previewText = data.file
           ? (data.fileType?.startsWith('image/') ? '[Photo]' : '[File]')
           : (data.message || '');
@@ -3274,7 +3291,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
                     lastMsg: g.lastMessage
                       ? (String(g.lastMessage.from) === String(user.id)
                           ? 'You: '
-                          : ((contacts.find(c => String(c.id) === String(g.lastMessage.from))?.name || g.lastMessage.fromName) + ': ')) +
+                          : (nameOf(g.lastMessage.from, g.lastMessage.fromName) + ': ')) +
                           (g.lastMessage.file
                             ? (g.lastMessage.fileType?.startsWith('image/') ? '[Photo]' : g.lastMessage.fileType?.startsWith('audio/') ? '🎤 Voice message' : '[File]')
                             : (g.lastMessage.text || ''))
@@ -4305,9 +4322,9 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
         }}
         style={{ cursor: 'pointer' }}
       >
-          <img src={chat.photo || 'https://via.placeholder.com/50'} alt={chat.name} />
+          <img src={chat.photo || 'https://via.placeholder.com/50'} alt={nameOf(chat.id, chat.name)} />
           <div className="chat-info">
-            <h4>{chat.name}</h4>
+            <h4>{nameOf(chat.id, chat.name)}</h4>
             <p className={hasUnread ? 'unread-preview' : ''}>{preview}</p>
           </div>
           <div className="chat-item-right">
@@ -4332,7 +4349,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
                   if (previewMsg) {
                     const senderName = String(previewMsg.senderId) === String(user.id)
                       ? 'You'
-                      : contacts.find(c => String(c.id) === String(previewMsg.senderId))?.name || previewMsg.sender || 'Member';
+                      : nameOf(previewMsg.senderId, previewMsg.sender || 'Member');
                     if (previewMsg.file) {
                       preview = previewMsg.fileType?.startsWith('image/') ? '[Photo]' : previewMsg.fileType?.startsWith('audio/') ? '🎤 Voice message' : '[File]';
                     } else if (previewMsg.text) {
@@ -4443,9 +4460,9 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
                   }
                   return all.map(c => (
                     <div key={c.key} className="chat-item" onClick={c.open} style={{ cursor: 'pointer' }}>
-                      <img src={c.photo} alt={c.name} />
+                      <img src={c.photo} alt={nameOf(c.key, c.name)} />
                       <div className="chat-info">
-                        <h4>{c.name}</h4>
+                        <h4>{nameOf(c.key, c.name)}</h4>
                         <p className="unread-preview">{c.count} unread{!c.text ? '' : ' • ' + c.text}</p>
                       </div>
                       <div className="chat-item-right"><span className="unread-badge">{c.count}</span></div>
@@ -4454,9 +4471,9 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
                 })()}
 {activeTab === 'calls' && calls.map(call => (
                   <div key={call.id} className="chat-item" style={{ cursor: 'pointer' }}>
-                    <img src={call.groupId ? 'https://via.placeholder.com/50/4a00e0/fff?text=G' : (call.photo || 'https://via.placeholder.com/50')} alt={call.name} />
+                    <img src={call.groupId ? 'https://via.placeholder.com/50/4a00e0/fff?text=G' : (call.photo || 'https://via.placeholder.com/50')} alt={nameOf(call.userId, call.name)} />
                     <div className="chat-info">
-                      <h4>{call.groupId ? (groupsList.find(g => String(g.id) === String(call.groupId))?.name || 'Group call') : call.name}</h4>
+                      <h4>{call.groupId ? (groupsList.find(g => String(g.id) === String(call.groupId))?.name || 'Group call') : nameOf(call.userId, call.name)}</h4>
                       <p><span className={`call-dir ${call.direction === 'missed' ? 'missed' : ''}`}>{call.direction === 'outgoing' ? '↗' : call.direction === 'missed' ? '↘' : '↙'}</span> {call.direction === 'outgoing' ? 'Outgoing' : call.direction === 'missed' ? 'Missed' : 'Incoming'} {call.video ? 'video' : 'voice'} {call.groupId ? 'group ' : ''}call{call.durationSec ? ` • ${fmtCallTime(call.durationSec)}` : ''}</p>
                       {call.time && <small style={{ color: '#888', fontSize: '0.75rem' }}>{new Date(call.time).toLocaleString()}</small>}
                     </div>
@@ -4493,7 +4510,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
                             seen={!hasUnseen}
                           />
                           <div className="chat-info">
-                            <h4>{status.user.name}</h4>
+                            <h4>{nameOf(status.user.id, status.user.name)}</h4>
                             <p>• {status.statuses.length > 1 ? `${status.statuses.length} updates • ` : ''}{timeAgo(status.statuses[0]?.createdAt)}</p>
                           </div>
                           {hasUnseen && <span className="status-dot" />}
@@ -4759,7 +4776,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
                               setGroupReplyTo({
                                 id: firstMsg.id,
                                 text: firstMsg.text || '[Image]',
-                                sender: contacts.find(c => String(c.id) === String(firstMsg.senderId))?.name || firstMsg.sender || firstMsg.fromName || firstMsg.from || 'Member',
+                                sender: nameOf(firstMsg.senderId || firstMsg.from, firstMsg.sender || firstMsg.fromName || firstMsg.from || 'Member'),
                                 from: firstMsg.senderId || firstMsg.from,
                               });
                             }
@@ -4815,7 +4832,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
                                 const texts = groupMsgs
                                   .filter((m) => selectedMessages.has(m.id) && m.text)
                                   .map((m) => {
-                                    const sender = contacts.find(c => String(c.id) === String(m.senderId))?.name || m.sender || m.fromName || m.from || 'You';
+                                    const sender = nameOf(m.senderId || m.from, m.sender || m.fromName || m.from || 'You');
                                     return `(${sender}) ${m.text}`;
                                   })
                                   .join('\n');
@@ -5228,7 +5245,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
                             marginBottom: '2px',
                           }}
                         >
-                          {contacts.find(c => String(c.id) === String(msg.senderId))?.name || msg.sender || msg.fromName || msg.from || 'Member'}
+                          {nameOf(msg.senderId, msg.sender || msg.fromName || msg.from || 'Member')}
                         </div>
                       )}
 
@@ -5246,7 +5263,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
                           ↪{' '}
                           {String(msg.replyTo.senderId) === String(user.id)
                             ? 'You'
-                            : contacts.find(c => String(c.id) === String(msg.replyTo.senderId))?.name || msg.replyTo.sender || 'Member'}
+                            : nameOf(msg.replyTo.senderId, msg.replyTo.sender || 'Member')}
                           : {msg.replyTo.text || '[Image]'}
                         </div>
                       )}
@@ -5311,7 +5328,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
                                 setGroupReplyTo({
                                   id: msg.id,
                                   text: msg.text || '[Image]',
-                                  sender: contacts.find(c => String(c.id) === String(msg.senderId))?.name || msg.sender || msg.fromName,
+                                  sender: nameOf(msg.senderId || msg.from, msg.sender || msg.fromName),
                                   from: msg.senderId || msg.from,
                                 });
                                 setOpenActionMenu(null);
@@ -5507,7 +5524,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
                           marginBottom: '4px',
                         }}
                       >
-                        ↪ Replying to {groupReplyTo.sender}: "{groupReplyTo.text || '[Image]'}"
+                        ↪ Replying to {nameOf(groupReplyTo.from || groupReplyTo.senderId, groupReplyTo.sender)}: "{groupReplyTo.text || '[Image]'}"
                         <button
                           type="button"
                           onClick={() => setGroupReplyTo(null)}
@@ -5648,7 +5665,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
 
                   {groupReplyTo && (
                     <div className="mobile-reply-banner">
-                      ↪ Replying to {groupReplyTo.sender}: "{groupReplyTo.text || '[Image]'}"
+                      ↪ Replying to {nameOf(groupReplyTo.from || groupReplyTo.senderId, groupReplyTo.sender)}: "{groupReplyTo.text || '[Image]'}"
                       <button type="button" onClick={() => setGroupReplyTo(null)}>×</button>
                     </div>
                   )}
@@ -5830,7 +5847,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
                   className="mobile-selection-action"
                   onClick={() => {
                     const firstMsg = chatMessages.find((m) => selectedMessages.has(m.id));
-                    if (firstMsg) setReplyTo({ id: firstMsg.id, sender: firstMsg.sender, text: firstMsg.text });
+                    if (firstMsg) setReplyTo({ id: firstMsg.id, sender: firstMsg.sender === 'You' ? 'You' : nameOf(selectedChat?.id || firstMsg.senderId, firstMsg.sender), text: firstMsg.text });
                     setIsSelectionMode(false);
                     setSelectedMessages(new Set());
                   }}
@@ -5884,7 +5901,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
                       onClick={() => {
                         const texts = chatMessages
                           .filter((m) => selectedMessages.has(m.id) && m.text)
-                          .map((m) => `(${m.sender === 'You' ? 'You' : m.sender}) ${m.text}`)
+                          .map((m) => `(${m.sender === 'You' ? 'You' : nameOf(selectedChat?.id || m.senderId, m.sender)}) ${m.text}`)
                           .join('\n');
                         if (texts) {
                           navigator.clipboard?.writeText(texts).catch(() => {});
@@ -5991,14 +6008,14 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
           )}
           <img
             src={selectedChat?.photo || 'https://via.placeholder.com/40'}
-            alt={selectedChat?.name}
+            alt={nameOf(selectedChat?.id, selectedChat?.name)}
           />
           <div
             className="user-info"
             style={isMobile ? { cursor: 'pointer' } : undefined}
             onClick={() => isMobile && setShowContactInfo(true)}
           >
-            <h4>{selectedChat?.name}</h4>
+            <h4>{nameOf(selectedChat?.id, selectedChat?.name)}</h4>
             <p>
               {selectedChat?.online
                 ? 'Online'
@@ -6193,7 +6210,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
                   className="dropdown-item"
                   onClick={() => {
                     setShowDropdown(false);
-                    if (selectedChat) setMediaViewer({ type: 'dm', chatId: selectedChat.id, chatName: selectedChat.name, tab: 'media' });
+                    if (selectedChat) setMediaViewer({ type: 'dm', chatId: selectedChat.id, chatName: nameOf(selectedChat.id, selectedChat.name), tab: 'media' });
                   }}
                 >
                   <FileText size={18} strokeWidth={2.2} style={{ color: '#00a884' }} />
@@ -6202,6 +6219,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
                 <button
                   className="dropdown-item"
                   onClick={() => {
+                    setClearTarget({ chatType: 'dm', chatId: selectedChat.id, name: nameOf(selectedChat.id, selectedChat.name) });
                     setShowClearChatConfirm(true);
                     setShowDropdown(false);
                   }}
@@ -6226,7 +6244,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
               className="dropdown-item"
               onClick={() => {
                 setShowDropdown(false);
-                if (selectedChat) setMediaViewer({ type: 'dm', chatId: selectedChat.id, chatName: selectedChat.name, tab: 'media' });
+                if (selectedChat) setMediaViewer({ type: 'dm', chatId: selectedChat.id, chatName: nameOf(selectedChat.id, selectedChat.name), tab: 'media' });
               }}
             >
               <FileText size={18} strokeWidth={1.8} />
@@ -6490,8 +6508,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
                 ↪{' '}
                 {String(msg.replyTo.senderId) === String(user.id)
                   ? 'You'
-                  : contacts.find((c) => String(c.id) === String(msg.replyTo.senderId))
-                    ?.name || 'Unknown'}
+                  : nameOf(msg.replyTo.senderId, 'Unknown')}
                 : {msg.replyTo.text || '[Image]'}
                 {msg.replyTo.statusId && (
                   <span style={{ fontStyle: 'italic', opacity: 0.7 }}> · tap to open</span>
@@ -6561,7 +6578,9 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
                       setReplyTo({
                         id: msg.id,
                         text: msg.text || '[Image]',
-                        sender: msg.sender,
+                        sender: String(msg.senderId) === String(user.id)
+                          ? 'You'
+                          : nameOf(msg.senderId || selectedChat?.id, msg.sender === 'You' ? 'You' : msg.sender),
                       });
                       setOpenActionMenu(null);
                       messageInputRef.current?.focus();
@@ -6796,7 +6815,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
 
           {replyTo && (
             <div className="mobile-reply-banner">
-              ↪ Replying to {replyTo.sender}: "{replyTo.text || '[Image]'}"
+              ↪ Replying to {nameOf(replyTo.statusOwnerId || replyTo.senderId, replyTo.sender === 'You' ? 'You' : replyTo.sender)}: "{replyTo.text || '[Image]'}"
               <button type="button" onClick={() => setReplyTo(null)}>×</button>
             </div>
           )}
@@ -6874,7 +6893,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
                   marginBottom: '4px',
                 }}
               >
-                ↪ Replying to {replyTo.sender}: "{replyTo.text || '[Image]'}"
+                ↪ Replying to {nameOf(replyTo.statusOwnerId || replyTo.senderId, replyTo.sender === 'You' ? 'You' : replyTo.sender)}: "{replyTo.text || '[Image]'}"
                 <button
                   type="button"
                   onClick={() => setReplyTo(null)}
@@ -7086,7 +7105,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
               color: '#111',
             }}
           >
-            {selectedChat?.name}
+            {nameOf(selectedChat?.id, selectedChat?.name)}
           </div>
           <div
             className="email"
@@ -7139,7 +7158,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
           <div
             className="action-item"
             style={{ cursor: 'pointer' }}
-            onClick={() => selectedChat && setMediaViewer({ type: 'dm', chatId: selectedChat.id, chatName: selectedChat.name, tab: 'media' })}
+            onClick={() => selectedChat && setMediaViewer({ type: 'dm', chatId: selectedChat.id, chatName: nameOf(selectedChat.id, selectedChat.name), tab: 'media' })}
           >
             {summarizeChatMedia(messages[selectedChat?.id] || [])}
           </div>
@@ -7188,7 +7207,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
       <circle cx="12" cy="12" r="10" stroke="red" strokeWidth="2" />
       <line x1="7" y1="7" x2="17" y2="17" stroke="red" strokeWidth="2" />
     </svg>
-    <span>Block {selectedChat?.name}</span>
+    <span>Block {nameOf(selectedChat?.id, selectedChat?.name)}</span>
   </div>
 
   {/* Report */}
@@ -7202,7 +7221,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
       color: 'red',
       cursor: 'pointer',
     }}
-    onClick={() => alert(`Report ${selectedChat?.name}`)}
+    onClick={() => alert(`Report ${nameOf(selectedChat?.id, selectedChat?.name)}`)}
   >
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
       <path d="M10 8H14M10 12H14M10 16H14M8 21H16C17.1046 21 18 20.1046 18 19V5C18 3.89543 17.1046 3 16 3H8C6.89543 3 6 3.89543 6 5V19C6 20.1046 6.89543 21 8 21Z" stroke="red" strokeWidth="2" strokeLinecap="round" />
@@ -7210,7 +7229,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
       <path d="M8 13L4 13" stroke="red" strokeWidth="2" strokeLinecap="round" />
       <path d="M8 17L4 17" stroke="red" strokeWidth="2" strokeLinecap="round" />
     </svg>
-    <span>Report {selectedChat?.name}</span>
+    <span>Report {nameOf(selectedChat?.id, selectedChat?.name)}</span>
   </div>
 
   {/* Clear Chat */}
@@ -7225,7 +7244,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
       cursor: 'pointer',
     }}
     onClick={() => {
-      if (window.confirm(`Clear chat with ${selectedChat?.name}?`)) {
+      if (window.confirm(`Clear chat with ${nameOf(selectedChat?.id, selectedChat?.name)}?`)) {
         setMessages((prev) => ({ ...prev, [selectedChat.id]: [] }));
       }
     }}
@@ -7494,8 +7513,8 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
               setShowNewChatDropdown(false);
             }}
           >
-            <img src="https://via.placeholder.com/40" alt={chat.name} />
-            <span>{chat.name}</span>
+            <img src="https://via.placeholder.com/40" alt={nameOf(chat.id, chat.name)} />
+            <span>{nameOf(chat.id, chat.name)}</span>
           </div>
         ))}
       </div>
@@ -7784,8 +7803,7 @@ setContacts(prev => {
         {(Array.isArray(selectedGroup.members) ? selectedGroup.members : []).map((m, idx) => {
           const memberId = String(m?._id || m?.id || m || '');
           const memberName =
-            m?.name ||
-            (contacts.find((c) => String(c.id) === memberId)?.name) ||
+            nameOf(memberId, m?.name) ||
             'Member';
           const memberPhoto = m?.photo || 'https://via.placeholder.com/40';
           return (
@@ -7960,10 +7978,10 @@ setContacts(prev => {
       >
         <img
           src={memberProfile.photo || 'https://via.placeholder.com/80'}
-          alt={memberProfile.name || 'Member'}
+          alt={nameOf(memberProfile.id, memberProfile.name || 'Member')}
           style={{ width: '80px', height: '80px', borderRadius: '50%', objectFit: 'cover', border: '2px solid #ddd' }}
         />
-        <div style={{ fontSize: '17px', fontWeight: '600', color: '#111' }}>{memberProfile.name || 'Member'}</div>
+        <div style={{ fontSize: '17px', fontWeight: '600', color: '#111' }}>{nameOf(memberProfile.id, memberProfile.name || 'Member')}</div>
       </div>
 
       <div className="section" style={{ padding: '16px', borderTop: '1px solid #eee' }}>
@@ -8065,7 +8083,7 @@ setContacts(prev => {
     >
       <h3 style={{ marginBottom: '12px', color: '#333' }}>Clear Chat</h3>
       <p style={{ color: '#555', lineHeight: '1.5' }}>
-        Are you sure you want to clear all messages with <strong>{clearTarget?.name}</strong>? This action cannot be undone.
+        Are you sure you want to clear all messages with <strong>{nameOf(clearTarget?.chatId, clearTarget?.name)}</strong>? This action cannot be undone.
       </p>
       <div style={{ display: 'flex', gap: '12px', marginTop: '24px', justifyContent: 'flex-end' }}>
         <button
@@ -8204,7 +8222,7 @@ setContacts(prev => {
                     seen={!hasUnseen}
                   />
                   <div className="status-info">
-                    <h4>{g.user.name}</h4>
+                    <h4>{nameOf(g.user.id, g.user.name)}</h4>
                     <p>
                       {g.statuses.length > 1 ? `${g.statuses.length} updates • ` : ''}
                       {timeAgo(first.createdAt)}
@@ -8247,9 +8265,9 @@ setContacts(prev => {
     {calls.length === 0 && <p style={{ padding: '12px 16px', color: '#8a8f99', fontSize: '0.9rem' }}>No calls yet</p>}
     {calls.map(call => (
       <div key={call.id} className="call-item" style={{ cursor: 'pointer' }}>
-        <img src={call.groupId ? 'https://via.placeholder.com/50/4a00e0/fff?text=G' : (call.photo || 'https://via.placeholder.com/50')} alt={call.name} />
+        <img src={call.groupId ? 'https://via.placeholder.com/50/4a00e0/fff?text=G' : (call.photo || 'https://via.placeholder.com/50')} alt={nameOf(call.userId, call.name)} />
        <div className="call-info">
-  <h4>{call.groupId ? (groupsList.find(g => String(g.id) === String(call.groupId))?.name || 'Group call') : call.name}</h4>
+  <h4>{call.groupId ? (groupsList.find(g => String(g.id) === String(call.groupId))?.name || 'Group call') : nameOf(call.userId, call.name)}</h4>
   <p>
     {call.direction === 'incoming' && 'Incoming'}
     {call.direction === 'outgoing' && 'Outgoing'}
@@ -8432,24 +8450,40 @@ setContacts(prev => {
               online: false,
             };
 
-            setContacts(prev => {
-              const exists = prev.some(c => String(c.id) === String(newContact.id));
-              if (exists) return prev;
+            const customName = `${firstName} ${lastName}`.trim();
+
+            // Compute the next address book from contactsRef (kept in sync),
+            // update both state and ref so the saved custom name is applied to
+            // every surface immediately.
+            const cur = contactsRef.current || [];
+            const exists = cur.some(c => String(c.id) === String(newContact.id));
+            const next = exists
+              ? cur.map(c =>
+                  String(c.id) === String(newContact.id)
+                    ? { ...c, name: customName || c.name, firstName: firstName.trim(), lastName: lastName.trim() }
+                    : c
+                )
+              : [newContact, ...cur];
+            contactsRef.current = next;
+            setContacts(next);
+
+            if (!exists) {
               setMessages(prevMsgs => ({
                 ...prevMsgs,
                 [newContact.id]: [],
               }));
-              // Persist to this user's server-side address book (per-account)
-              fetch(`${API_URL}/api/contacts`, {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  Authorization: `Bearer ${localStorage.getItem('token')}`,
-                },
-                body: JSON.stringify({ userId: foundUser._id }),
-              }).catch(err => console.error('Failed to save contact to server', err));
-              return [newContact, ...prev];
-            });
+            }
+
+            // Persist the bound user + optional custom name to the server-side
+            // address book so it survives a refresh and shows on every device.
+            fetch(`${API_URL}/api/contacts`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${localStorage.getItem('token')}`,
+              },
+              body: JSON.stringify({ userId: foundUser._id, name: customName || '' }),
+            }).catch(err => console.error('Failed to save contact to server', err));
 
             alert('Contact saved!');
             goBackPage();
@@ -8792,12 +8826,12 @@ setContacts(prev => {
       <img
         src={
           viewerUser.user.photo ||
-          `https://via.placeholder.com/40/25D366/fff?text=${encodeURIComponent((viewerUser.user.name || '?')[0])}`
+          `https://via.placeholder.com/40/25D366/fff?text=${encodeURIComponent((nameOf(viewerUser.user.id, viewerUser.user.name) || '?')[0])}`
         }
-        alt={viewerUser.user.name}
+        alt={nameOf(viewerUser.user.id, viewerUser.user.name)}
       />
       <div className="status-viewer-meta">
-        <strong>{viewerUser.user.name}</strong>
+        <strong>{nameOf(viewerUser.user.id, viewerUser.user.name)}</strong>
         <span>{timeAgo(currentStatusForViewer.createdAt)}</span>
       </div>
     </div>
@@ -8810,7 +8844,7 @@ setContacts(prev => {
           value={statusReplyText}
           onChange={(e) => setStatusReplyText(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter' && statusReplyText.trim()) sendStatusReply(); }}
-          placeholder={`Reply to ${viewerUser.user.name}`}
+          placeholder={`Reply to ${nameOf(viewerUser.user.id, viewerUser.user.name)}`}
           aria-label="Reply to status"
         />
         <button
@@ -8830,7 +8864,7 @@ setContacts(prev => {
 {activeCall && callMinimized && (
   <div className="call-minimized-bar" onClick={() => setCallMinimized(false)}>
     <div className="call-min-info">
-      <span className="call-min-name">{activeCall.peerName}</span>
+      <span className="call-min-name">{nameOf(activeCall.peerId, activeCall.peerName)}</span>
       <span className="call-min-status">
         {activeCall.mode === 'incoming'
           ? 'Incoming call…'
@@ -8869,7 +8903,7 @@ setContacts(prev => {
         return (
           <div className={`gcall-grid ${gridClass}`}>
             {pageTiles.length > 0 && pageTiles.map((pid) => {
-              const peerName = contacts.find((c) => String(c.id) === String(pid))?.name || 'Member';
+              const peerName = nameOf(pid, 'Member');
               return (
                 <div key={pid} className="gcall-tile">
                   <video
@@ -8886,7 +8920,7 @@ setContacts(prev => {
             })}
             {pageTiles.length === 0 && (
               <div className="call-peer-fallback">
-                <img src={activeCall.peerPhoto} alt={activeCall.peerName} />
+                <img src={activeCall.peerPhoto} alt={nameOf(activeCall.peerId, activeCall.peerName)} />
               </div>
             )}
             {pages > 1 && (
@@ -8914,7 +8948,7 @@ setContacts(prev => {
               {activeCall.peerCameraOn === false ? (
                 <div className="call-cam-off">Video is off</div>
               ) : (
-                <img src={activeCall.peerPhoto} alt={activeCall.peerName} />
+                <img src={activeCall.peerPhoto} alt={nameOf(activeCall.peerId, activeCall.peerName)} />
               )}
             </div>
           )}
@@ -8937,13 +8971,13 @@ setContacts(prev => {
     {(activeCall.type === 'voice' || activeCall.mode !== 'active') && (
       <div className={`call-avatar-zone ${activeCall.mode !== 'active' && activeCall.type === 'video' && localStreamRef.current ? 'with-preview' : ''}`}>
         <div className="call-avatar-ring">
-          <img src={activeCall.peerPhoto} alt={activeCall.peerName} />
+          <img src={activeCall.peerPhoto} alt={nameOf(activeCall.peerId, activeCall.peerName)} />
         </div>
-        <h2>{activeCall.peerName}</h2>
+        <h2>{nameOf(activeCall.peerId, activeCall.peerName)}</h2>
         <p>
           {activeCall.mode === 'outgoing' && 'Ringing…'}
           {activeCall.mode === 'incoming' && 'Incoming video call…'}
-          {activeCall.mode !== 'active' && (activeCall.peerName || '') }
+          {activeCall.mode !== 'active' && (nameOf(activeCall.peerId, activeCall.peerName) || '') }
           {activeCall.mode === 'active' && activeCall.type === 'voice' && (
             <>
               <span className="call-elapsed">{fmtCallTime(activeCall.elapsed)}</span>
@@ -8961,7 +8995,7 @@ setContacts(prev => {
     {/* Top-center name for video + elapsed */}
     {activeCall.mode === 'active' && activeCall.type === 'video' && (
       <div className="call-top-center">
-        <h2>{activeCall.peerName}</h2>
+        <h2>{nameOf(activeCall.peerId, activeCall.peerName)}</h2>
         <span className="call-elapsed">{fmtCallTime(activeCall.elapsed)}</span>
       </div>
     )}
