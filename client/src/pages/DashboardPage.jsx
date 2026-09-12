@@ -303,6 +303,15 @@ export default function DashboardPage() {
   const audioOutputsCacheRef = useRef({ speakerId: '', external: [] });
   const callTimerRef = useRef(null);
   const peekReminderRef = useRef(null);
+  // Transient in-call notice (e.g. "… declined the video request" / "Rear
+  // camera…"). Auto-cleared after a few seconds.
+  const [callNotice, setCallNotice] = useState('');
+  const callNoticeRef = useRef(null);
+  // Voice -> video upgrade consent. The pending flag lives in a ref so the
+  // once-registered socket handlers see the fresh value.
+  const videoSwitchPendingRef = useRef(false);
+  // Real camera list (from enumerateDevices). Used only for switching.
+  const videoInputsRef = useRef([]);
   // ---------- Group-call mesh ----------
   const groupPeersRef = useRef({});
   const groupStreamsRef = useRef({});
@@ -1161,10 +1170,15 @@ useEffect(() => {
 // enumerates it.
 useEffect(() => {
   refreshAudioOutputs();
+  refreshVideoInputs();
   const md = navigator.mediaDevices;
   if (!md || typeof md.addEventListener !== 'function') return undefined;
   md.addEventListener('devicechange', refreshAudioOutputs);
-  return () => md.removeEventListener('devicechange', refreshAudioOutputs);
+  md.addEventListener('devicechange', refreshVideoInputs);
+  return () => {
+    md.removeEventListener('devicechange', refreshAudioOutputs);
+    md.removeEventListener('devicechange', refreshVideoInputs);
+  };
 }, []);
 
 useEffect(() => {
@@ -1741,7 +1755,23 @@ useEffect(() => {
   }
 }, [selectedGroup, groupMessages]);
 
-const callElapsed = () => (Date.now() - callStartAtRef.current) / 1000;
+const callElapsed = () => Math.max(0, (Date.now() - callStartAtRef.current) / 1000);
+
+// The elapsed timer must start at the moment the call is actually
+// accepted/connected, never at ring time. callStartAtRef is that "connected"
+// timestamp: set exactly once per call (guarded), reset on cleanup.
+const markCallConnected = () => {
+  if (callStartAtRef.current === 0) {
+    callStartAtRef.current = Date.now();
+    setActiveCall((prev) => (prev ? { ...prev, connectedAt: callStartAtRef.current } : prev));
+  }
+};
+
+const showCallNotice = (msg) => {
+  setCallNotice(msg);
+  if (callNoticeRef.current) clearTimeout(callNoticeRef.current);
+  callNoticeRef.current = setTimeout(() => setCallNotice(''), 4000);
+};
 
 const fmtCallTime = (secs) => {
   const v = Math.max(0, Math.floor(Number(secs) || 0));
@@ -1792,6 +1822,10 @@ const cleanupCall = (soft) => {
   signalingRoleRef.current = '';
   callIdRef.current = null;
   callPeerIdRef.current = null;
+  callStartAtRef.current = 0;
+  videoSwitchPendingRef.current = false;
+  if (callNoticeRef.current) { clearTimeout(callNoticeRef.current); callNoticeRef.current = null; }
+  setCallNotice('');
   clearGroupCallState();
   if (!soft) setActiveCall(null);
 };
@@ -1823,7 +1857,10 @@ const createPeer = () => {
     }, 100);
   };
   pc.onconnectionstatechange = () => {
-    if (['failed', 'disconnected'].includes(pc.connectionState)) {
+    if (pc.connectionState === 'connected') {
+      // The 1:1 timer starts counting from this moment, on both sides, once.
+      markCallConnected();
+    } else if (['failed', 'disconnected'].includes(pc.connectionState)) {
       // Fire a clean hangup so a drop never leaves the UI stuck.
       socket.emit('call:end', {
         to: callPeerIdRef.current,
@@ -1872,7 +1909,9 @@ const createGroupPeer = (peerId) => {
     }
   };
   pc.onconnectionstatechange = () => {
-    if (['failed', 'disconnected'].includes(pc.connectionState)) {
+    if (pc.connectionState === 'connected') {
+      markCallConnected();
+    } else if (['failed', 'disconnected'].includes(pc.connectionState)) {
       delete groupStreamsRef.current[peerId];
       setGroupTiles({ ...groupStreamsRef.current });
     }
@@ -1911,19 +1950,33 @@ const clearGroupCallState = () => {
 };
 
 const getMediaStream = async (video) => {
-  const constraints = video ? { video: { facingMode: 'user' }, audio: true } : { audio: true };
-  const stream = await navigator.mediaDevices.getUserMedia(constraints);
-  return stream;
+  refreshVideoInputs();
+  if (!video) return navigator.mediaDevices.getUserMedia({ audio: true });
+  // Use the camera the device actually has: prefer the front (user) camera,
+  // fall back to the rear, then to the browser default. Never assume a
+  // particular camera exists.
+  const attempts = [
+    { video: { facingMode: 'user' }, audio: true },
+    { video: { facingMode: 'environment' }, audio: true },
+    { video: true, audio: true },
+  ];
+  let lastErr = null;
+  for (const constraints of attempts) {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      refreshVideoInputs();
+      return stream;
+    } catch (err) { lastErr = err; }
+  }
+  throw lastErr;
 };
 
 const initLocalVideo = () => {
-  setTimeout(() => {
-    const v = ownVideoRef.current;
-    if (v && localStreamRef.current) {
-      v.srcObject = localStreamRef.current;
-      v.play().catch(() => {});
-    }
-  }, 50);
+  const v = ownVideoRef.current;
+  if (v && localStreamRef.current && v.srcObject !== localStreamRef.current) {
+    v.srcObject = localStreamRef.current;
+    v.play().catch(() => {});
+  }
 };
 
 const addLocalTracks = (pc, stream) => {
@@ -2005,6 +2058,18 @@ const externalLabelFor = (d) => {
   return `${prefix} · ${d.label}`;
 };
 
+// Real camera list for the switch-camera control. Built purely from
+// navigator.mediaDevices.enumerateDevices(); nothing is invented.
+const refreshVideoInputs = async () => {
+  if (!navigator.mediaDevices || typeof navigator.mediaDevices.enumerateDevices !== 'function') return;
+  try {
+    const devs = await navigator.mediaDevices.enumerateDevices();
+    videoInputsRef.current = devs
+      .filter((d) => d.kind === 'videoinput')
+      .map((d) => ({ deviceId: d.deviceId, label: (d.label || '').replace(/^Default\s*-\s*/i, '').trim() }));
+  } catch (err) { /* keep the last known list */ }
+};
+
 const handleRemoteOffer = async (sdp) => {
   try {
     const pc = pcRef.current;
@@ -2061,7 +2126,6 @@ const startCall = async (type, chat) => {
   const peer = chat.photo && !chat.photo.includes('placeholder') ? chat.photo : 'https://via.placeholder.com/50';
   callPeerIdRef.current = String(chat.id);
   callIdRef.current = callId;
-  callStartAtRef.current = Date.now();
   // Start media + peer connection immediately (like WhatsApp).
   try {
     const stream = await getMediaStream(type === 'video');
@@ -2108,7 +2172,6 @@ const startGroupCall = async (type, group) => {
     .filter((x) => x && String(x) !== String(user.id));
   callIdRef.current = callId;
   callPeerIdRef.current = null;
-  callStartAtRef.current = Date.now();
   try {
     const stream = await getMediaStream(type === 'video');
     localStreamRef.current = stream;
@@ -2261,43 +2324,112 @@ const toggleCameraCall = () => {
 
 const switchCameraCall = async () => {
   const stream = localStreamRef.current;
-  if (!stream) return;
-  const track = stream.getVideoTracks()[0];
+  const track = stream?.getVideoTracks()[0];
   if (!track) return;
+  const cams = videoInputsRef.current;
+  if (cams.length < 2) {
+    // One camera only: never stop/replace the working camera.
+    showCallNotice('Only one camera is available on this device.');
+    return;
+  }
+  let settings = {};
+  try { settings = track.getSettings(); } catch (err) {}
+  const currentId = settings.deviceId;
+  const other = cams.find((c) => c.deviceId && c.deviceId !== currentId);
+  if (other) {
+    try {
+      // Steer to the other REAL camera device and swap the track the sender
+      // publishes, so the remote side sees the change without renegotiation.
+      const next = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: other.deviceId } }, audio: false });
+      const nextTrack = next.getVideoTracks()[0];
+      if (nextTrack) {
+        const sender = pcRef.current?.getSenders().find((s) => s.track?.kind === 'video');
+        if (sender) { await sender.replaceTrack(nextTrack).catch(() => {}); }
+        stream.removeTrack(track);
+        track.stop();
+        stream.addTrack(nextTrack);
+        const own = ownVideoRef.current;
+        if (own) own.srcObject = stream;
+        return;
+      }
+      next.getTracks().forEach((t) => t.stop());
+    } catch (err) { /* fall through to constraint-based switch */ }
+  }
   try {
-    const next = track.getSettings?.().facingMode === 'user' ? 'environment' : 'user';
-    await track.applyConstraints({ facingMode: next });
+    // Devices without a usable deviceId: flip facingMode on the live track.
+    const want = settings.facingMode === 'environment' ? 'user' : 'environment';
+    await track.applyConstraints({ facingMode: want });
+    const own = ownVideoRef.current;
+    if (own) own.srcObject = stream;
   } catch (err) {
-    console.error('switch camera error', err);
+    showCallNotice('Camera switch is not supported on this device.');
   }
 };
 
-const upgradeToVideo = async () => {
+// ---------- Voice -> video upgrade (mutual consent) ----------
+
+const videoSwitchInFlight = () => videoSwitchPendingRef.current || !!activeCallRef.current?.videoSwitchPhase;
+
+// User A in an active voice call asks the other side to turn it into video.
+// Nothing turns on until the remote user approves.
+const requestVideoUpgrade = () => {
+  if (!activeCall || activeCall.mode !== 'active' || activeCall.type !== 'voice' || activeCall.group) return;
+  if (videoSwitchInFlight() || !callPeerIdRef.current || !callIdRef.current) return;
+  socket.emit('call:videoRequest', { to: callPeerIdRef.current, callId: callIdRef.current });
+  videoSwitchPendingRef.current = true;
+  setActiveCall((prev) => (prev ? { ...prev, videoSwitchPhase: 'waiting' } : prev));
+};
+
+// Called on BOTH sides once the other user agreed (or the two requests
+// mutually matched). Acquires the camera, publishes the video track through
+// the existing peer connection and starts the own preview. Audio continues.
+const promoteToVideo = async () => {
+  if (!pcRef.current) return;
+  const stream = localStreamRef.current;
+  if (!stream) return;
+  if (stream.getVideoTracks().length > 0) return; // already video -> idempotent
   try {
-    const vStream = await getMediaStream(true);
-    const pc = pcRef.current;
-    if (!pc) return;
-    const old = localStreamRef.current;
-    old?.getTracks().forEach((t) => { if (t.kind === 'video') t.stop(); });
-    const vTrack = vStream.getVideoTracks()[0];
-    const aTrack = vStream.getAudioTracks()[0];
-    if (aTrack) aTrack.stop();
-    pc.addTrack(vTrack, old || vStream);
-    localStreamRef.current = old || vStream;
-    setActiveCall((prev) => (prev ? { ...prev, type: 'video' } : prev));
+    const cam = await getMediaStream(true);
+    const vTrack = cam.getVideoTracks()[0];
+    if (!vTrack) {
+      cam.getTracks().forEach((t) => t.stop());
+      showCallNotice('Camera unavailable to start video.');
+      return;
+    }
+    // Keep the existing outgoing audio path; only adopt the camera track.
+    cam.getAudioTracks().forEach((t) => t.stop());
+    pcRef.current?.addTrack(vTrack, stream);
+    stream.addTrack(vTrack);
+    localStreamRef.current = stream;
     initLocalVideo();
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    if (callPeerIdRef.current && callIdRef.current) {
-      socket.emit('rtc:offer', {
-        to: callPeerIdRef.current,
-        callId: callIdRef.current,
-        sdp: pc.localDescription,
-      });
+    videoSwitchPendingRef.current = false;
+    setCallNotice('');
+    setActiveCall((prev) => (prev ? { ...prev, type: 'video', videoSwitchPhase: undefined } : prev));
+    setCallCamOn(true);
+    // The side that originally offered must renegotiate so both new video
+    // tracks land in ONE offer/answer round-trip. The remote side attaches
+    // its track during promote (above) right before this offer arrives.
+    if (signalingRoleRef.current === 'offerer') {
+      setTimeout(sendOffer, 400);
     }
   } catch (err) {
-    alert('Camera unavailable to switch to video.');
+    showCallNotice('Camera unavailable to start video.');
   }
+};
+
+// Receiver of the request approves -> tell the requester, then start video locally.
+const acceptVideoSwitch = () => {
+  if (!activeCall || activeCall.mode !== 'active' || activeCall.videoSwitchPhase !== 'requested') return;
+  socket.emit('call:videoAccept', { to: String(activeCall.peerId), callId: activeCall.callId });
+  videoSwitchPendingRef.current = false;
+  promoteToVideo();
+};
+
+// Receiver declines -> stay in the voice call, requester gets feedback.
+const declineVideoSwitch = () => {
+  if (!activeCall || activeCall.mode !== 'active' || activeCall.videoSwitchPhase !== 'requested') return;
+  socket.emit('call:videoDecline', { to: String(activeCall.peerId), callId: activeCall.callId });
+  setActiveCall((prev) => (prev ? { ...prev, videoSwitchPhase: undefined } : prev));
 };
 
 useEffect(() => {
@@ -2312,7 +2444,6 @@ useEffect(() => {
     }
     callPeerIdRef.current = String(data.from);
     callIdRef.current = data.callId;
-    callStartAtRef.current = Date.now();
     // Pre-block microphone so the accepted call starts cleanly.
     getMediaStream(data.type === 'video').then((stream) => {
       localStreamRef.current = stream;
@@ -2334,6 +2465,7 @@ useEffect(() => {
     // Group call: the caller just needs to flip to active; peer wiring happens
     // via call:memberJoined / call:groupJoined as members come in.
     if (activeCallRef.current.group) {
+      markCallConnected();
       setActiveCall((prev) => (prev ? { ...prev, mode: 'active' } : prev));
       if (activeCallRef.current?.type === 'video') initLocalVideo();
       return;
@@ -2348,6 +2480,7 @@ useEffect(() => {
       }
     }
     signalingRoleRef.current = 'offerer';
+    markCallConnected();
     setActiveCall((prev) => (prev ? { ...prev, mode: 'active' } : prev));
     if (activeCallRef.current?.type === 'video') initLocalVideo();
     setTimeout(sendOffer, 250);
@@ -2418,7 +2551,6 @@ useEffect(() => {
       return;
     }
     callIdRef.current = data.callId;
-    callStartAtRef.current = Date.now();
     getMediaStream(data.type === 'video').then((stream) => {
       if (String(callIdRef.current) === String(data.callId)) {
         localStreamRef.current = stream;
@@ -2481,6 +2613,36 @@ useEffect(() => {
     setActiveCall((prev) => (prev ? { ...prev, peerCameraOn: data.cameraOn, peerMicOn: data.micOn } : prev));
   };
 
+  // ---- Voice -> video upgrade (consent relayed by the server) ----
+  const onVideoRequest = (data) => {
+    if (String(data.callId) !== String(callIdRef.current)) return;
+    if (!activeCallRef.current || activeCallRef.current.mode !== 'active' || activeCallRef.current.type !== 'voice' || activeCallRef.current.group) return;
+    // Both users pressed Switch at the same time -> treat it as mutual consent.
+    if (videoSwitchPendingRef.current || activeCallRef.current.videoSwitchPhase === 'waiting') {
+      s.emit('call:videoAccept', { to: data.from, callId: data.callId });
+      promoteToVideo();
+      return;
+    }
+    if (activeCallRef.current.videoSwitchPhase === 'requested') return; // duplicate dialog
+    setActiveCall((prev) => (prev ? { ...prev, videoSwitchPhase: 'requested' } : prev));
+  };
+
+  const onVideoAccept = (data) => {
+    if (String(data.callId) !== String(callIdRef.current)) return;
+    videoSwitchPendingRef.current = false;
+    setCallNotice('');
+    promoteToVideo();
+  };
+
+  const onVideoDecline = (data) => {
+    if (String(data.callId) !== String(callIdRef.current)) return;
+    videoSwitchPendingRef.current = false;
+    const peer = activeCallRef.current;
+    const who = peer && peer.peerId ? nameOf(peer.peerId, peer.peerName) : 'The other person';
+    showCallNotice(`${who} declined the video call request.`);
+    setActiveCall((prev) => (prev ? { ...prev, videoSwitchPhase: undefined } : prev));
+  };
+
   s.on('call:incoming', onIncoming);
   s.on('call:accepted', onAccepted);
   s.on('rtc:offer', onOffer);
@@ -2491,20 +2653,14 @@ useEffect(() => {
   s.on('call:endedLocal', (data) => { if (String(data.callId) === String(callIdRef.current)) { cleanupCall(false); loadCalls(); } });
   s.on('call:timedOut', onTimedOut);
   s.on('call:state', onState);
+  s.on('call:videoRequest', onVideoRequest);
+  s.on('call:videoAccept', onVideoAccept);
+  s.on('call:videoDecline', onVideoDecline);
   s.on('call:historyUpdated', loadCalls);
   s.on('call:groupIncoming', onGroupIncoming);
   s.on('call:groupJoined', onGroupJoined);
   s.on('call:memberJoined', onMemberJoined);
   s.on('call:memberLeft', onMemberLeft);
-
-  // Elapsed-time counter for ongoing calls.
-  callTimerRef.current = setInterval(() => {
-    if (activeCallRef.current?.mode === 'active' && callStartAtRef.current) {
-      setActiveCall((prev) => (prev ? { ...prev, elapsed: callElapsed() } : prev));
-    } else if (activeCallRef.current?.mode === 'incoming') {
-      setActiveCall((prev) => (prev ? { ...prev, elapsed: callElapsed() } : prev));
-    }
-  }, 1000);
 
   return () => {
     s.off('call:incoming', onIncoming);
@@ -2517,16 +2673,33 @@ useEffect(() => {
     s.off('call:endedLocal');
     s.off('call:timedOut', onTimedOut);
     s.off('call:state', onState);
+    s.off('call:videoRequest', onVideoRequest);
+    s.off('call:videoAccept', onVideoAccept);
+    s.off('call:videoDecline', onVideoDecline);
     s.off('call:historyUpdated', loadCalls);
     s.off('call:groupIncoming', onGroupIncoming);
     s.off('call:groupJoined', onGroupJoined);
     s.off('call:memberJoined', onMemberJoined);
     s.off('call:memberLeft', onMemberLeft);
-    if (callTimerRef.current) { clearInterval(callTimerRef.current); callTimerRef.current = null; }
   };
 }, [socket]);
 
 useEffect(() => { activeCallRef.current = activeCall; }, [activeCall]);
+
+// One elapsed-time interval per connected call. Created exactly when a call
+// goes active (keyed by callId + mode + type), cleared when it ends. The tick
+// only writes 'elapsed' (derived from the connected timestamp), so muting,
+// camera toggles, camera switching and speaker changes never stall or reset
+// it, and re-renders leave it alone. cleanupCall's clearInterval is a safety
+// net for paths that end a call without changing the effect deps.
+useEffect(() => {
+  if (!activeCall || activeCall.mode !== 'active' || !callStartAtRef.current) return;
+  if (callTimerRef.current) { clearInterval(callTimerRef.current); callTimerRef.current = null; }
+  callTimerRef.current = setInterval(() => {
+    setActiveCall((prev) => (prev && prev.mode === 'active' ? { ...prev, elapsed: (Date.now() - callStartAtRef.current) / 1000 } : prev));
+  }, 1000);
+  return () => { if (callTimerRef.current) { clearInterval(callTimerRef.current); callTimerRef.current = null; } };
+}, [activeCall?.callId, activeCall?.mode, activeCall?.type]);
 
 
 
@@ -9020,6 +9193,7 @@ setContacts(prev => {
 {activeCall && !callMinimized && (
   <div className={`call-overlay ${activeCall.type === 'video' ? 'video-call' : 'voice-call'}`}>
     <button className="call-back-btn" onClick={() => setCallMinimized(true)} aria-label="Back to app">‹</button>
+    {callNotice && <div className="call-notice" role="status">{callNotice}</div>}
     {/* Peer video (fullscreen once connected) / group mesh grid */}
     {activeCall.group ? (
       activeCall.mode === 'active' && activeCall.type === 'video' && (() => {
@@ -9111,7 +9285,7 @@ setContacts(prev => {
     {/* Own camera preview / PiP */}
     {activeCall.type === 'video' && (
       <video
-        ref={ownVideoRef}
+        ref={(el) => { ownVideoRef.current = el; initLocalVideo(); }}
         className={`call-own-video ${activeCall.mode === 'active' ? 'pip' : 'preview'}`}
         autoPlay
         playsInline
@@ -9150,6 +9324,22 @@ setContacts(prev => {
         <h2>{nameOf(activeCall.peerId, activeCall.peerName)}</h2>
         <span className="call-elapsed">{fmtCallTime(activeCall.elapsed)}</span>
       </div>
+    )}
+
+    {/* Voice -> video consent dialog (shown to the user being asked) */}
+    {activeCall.mode === 'active' && !activeCall.group && activeCall.videoSwitchPhase === 'requested' && (
+      <div className="call-switch-dialog">
+        <p>{nameOf(activeCall.peerId, activeCall.peerName)} wants to switch this voice call to a video call.</p>
+        <div className="call-switch-actions">
+          <button onClick={acceptVideoSwitch} aria-label="Accept video request" className="switch-accept">Accept</button>
+          <button onClick={declineVideoSwitch} aria-label="Decline video request" className="switch-decline">Decline</button>
+        </div>
+      </div>
+    )}
+
+    {/* Requester: waiting for the other person's decision */}
+    {activeCall.mode === 'active' && !activeCall.group && activeCall.videoSwitchPhase === 'waiting' && (
+      <div className="call-switch-waiting">Waiting for {nameOf(activeCall.peerId, activeCall.peerName)} to accept video…</div>
     )}
 
     {/* Audio-output chooser: built from the REAL enumerated audiooutput
@@ -9231,8 +9421,11 @@ setContacts(prev => {
             <MicOff size={24} strokeWidth={2} />
           </button>
           <button className={`call-ctrl ${callSpeakerOutput === 'speaker' || (callSpeakerOutput && callSpeakerOutput !== '' && callSpeakerOutput !== 'default') ? 'speaker-on' : ''}`} onClick={() => setCallSpeakerMenuOpen(true)} aria-label="Audio output"><Volume2 size={24} strokeWidth={2} /></button>
-          {activeCall.type === 'voice' && (
-            <button className="call-ctrl" onClick={upgradeToVideo} aria-label="Switch to video call"><Video size={24} strokeWidth={2} /></button>
+          {activeCall.type === 'voice' && activeCall.mode === 'active' && !activeCall.group && !activeCall.videoSwitchPhase && (
+            <button className="call-ctrl" onClick={requestVideoUpgrade} aria-label="Switch to video call"><Video size={24} strokeWidth={2} /></button>
+          )}
+          {activeCall.type === 'voice' && activeCall.mode === 'active' && activeCall.videoSwitchPhase === 'waiting' && (
+            <button className="call-ctrl switch-waiting" disabled aria-label="Switch to video call"><Video size={24} strokeWidth={2} /></button>
           )}
           <button className="call-ctrl decline" onClick={hangupCall} aria-label="End call"><Phone size={26} strokeWidth={2} style={{ transform: 'rotate(135deg)' }} /></button>
         </>

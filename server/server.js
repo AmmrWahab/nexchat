@@ -1055,6 +1055,21 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
     emitToUser(to, 'call:state', { from: String(socket.userId), callId, cameraOn, micOn });
   });
 
+  // Voice -> video upgrade consent (request / accept / decline relay). The
+  // media negotiation itself continues over the existing rtc:offer/answer.
+  socket.on('call:videoRequest', ({ to, callId }) => {
+    if (!to || !callId) return;
+    emitToUser(to, 'call:videoRequest', { from: String(socket.userId), callId });
+  });
+  socket.on('call:videoAccept', ({ to, callId }) => {
+    if (!to || !callId) return;
+    emitToUser(to, 'call:videoAccept', { from: String(socket.userId), callId });
+  });
+  socket.on('call:videoDecline', ({ to, callId }) => {
+    if (!to || !callId) return;
+    emitToUser(to, 'call:videoDecline', { from: String(socket.userId), callId });
+  });
+
   // ✅ Async connection bookkeeping — runs AFTER every socket.on handler is
   //    registered, so no client emit can race an in-flight await and get
   //    silently dropped before a handler exists to receive it.
