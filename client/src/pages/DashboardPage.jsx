@@ -309,6 +309,10 @@ export default function DashboardPage() {
   // Last detected system-default output name, for reacting to handset plug-in
   // / plug-out during a live call.
   const prevDefaultNameRef = useRef('');
+  // Real microphone list (audioinput) for pairing the in-call mic with the
+  // chosen output device: on a handset both mic+speaker are the handset's, on
+  // Speaker (mobile/laptop loudspeaker) both are the device's own mic+speaker.
+  const audioInputsCacheRef = useRef({ defaultIsHandset: false, handsetMicId: '', builtinMicId: '' });
   const callTimerRef = useRef(null);
   const peekReminderRef = useRef(null);
   // Transient in-call notice (e.g. "… declined the video request" / "Rear
@@ -1179,13 +1183,16 @@ useEffect(() => {
 useEffect(() => {
   refreshAudioOutputs();
   refreshVideoInputs();
+  refreshAudioInputs();
   const md = navigator.mediaDevices;
   if (!md || typeof md.addEventListener !== 'function') return undefined;
   md.addEventListener('devicechange', refreshAudioOutputs);
   md.addEventListener('devicechange', refreshVideoInputs);
+  md.addEventListener('devicechange', refreshAudioInputs);
   return () => {
     md.removeEventListener('devicechange', refreshAudioOutputs);
     md.removeEventListener('devicechange', refreshVideoInputs);
+    md.removeEventListener('devicechange', refreshAudioInputs);
   };
 }, []);
 
@@ -2015,6 +2022,9 @@ const applyAudioOutput = (id, kind) => {
   else sinkIdRef.current = '';
   audioElsRef.current.forEach((el) => routeTo(el));
   setCallSpeakerOutput(kind === 'default' ? '' : (id || 'speaker'));
+  // Pair the microphone with the chosen output device: on a handset the mic
+  // is the handset's own mic, on Speaker it is the phone/laptop mic.
+  applyCallMicForOutput(kind === 'speaker');
 };
 const bindStreamToEl = (el, stream) => {
   if (!el || !stream) {
@@ -2025,6 +2035,79 @@ const bindStreamToEl = (el, stream) => {
   if (el.srcObject !== stream) {
     el.srcObject = stream;
     el.play().catch(() => {});
+  }
+};
+// Detect the REAL microphone the browser can target: the handset's own mic
+// (headset/earpiece/bluetooth input) and the built-in phone/laptop mic. Only
+// genuinely enumerated audioinput devices are used; nothing is invented.
+const isHandsetMicLabel = (s) => /handset|headset|headphone|earbud|earphone|earpiece|bluetooth|耳机|蓝牙/i.test(s);
+const refreshAudioInputs = async () => {
+  if (!navigator.mediaDevices || typeof navigator.mediaDevices.enumerateDevices !== 'function') return;
+  try {
+    const devs = await navigator.mediaDevices.enumerateDevices();
+    const inputs = devs.filter((d) => d.kind === 'audioinput' && d.deviceId);
+    let handsetMic = '';
+    let builtinMic = '';
+    let defaultIsHandset = false;
+    inputs.forEach((d) => {
+      const label = (d.label || '').replace(/^Default\s*-\s*/i, '').trim();
+      if (d.deviceId === 'default' || /^Default\s*-/i.test(d.label || '')) {
+        if (isHandsetMicLabel(label)) defaultIsHandset = true;
+        return;
+      }
+      if (isHandsetMicLabel(label)) {
+        if (!handsetMic) handsetMic = d.deviceId;
+      } else if (label) {
+        if (!builtinMic) builtinMic = d.deviceId;
+      }
+    });
+    audioInputsCacheRef.current = { defaultIsHandset, handsetMicId: handsetMic, builtinMicId: builtinMic };
+  } catch (err) {
+    audioInputsCacheRef.current = { defaultIsHandset: false, handsetMicId: '', builtinMicId: '' };
+  }
+};
+// Pick the mic deviceId that matches the chosen output device: handset mode
+// -> the handset's mic (following the system default when it already is the
+// plug-in headset), speaker mode -> the actual phone/laptop microphone.
+const micDeviceIdForOutput = (speakerMode) => {
+  const { defaultIsHandset, handsetMicId, builtinMicId } = audioInputsCacheRef.current;
+  if (speakerMode) return defaultIsHandset ? builtinMicId : '';
+  if (defaultIsHandset) return '';
+  return handsetMicId; // '' when no distinguishable handset mic -> follow default
+};
+// Swap the live call's microphone to match the output device without
+// touching the camera: acquire the target mic, replace it on every active
+// peer (1:1 + group mesh) via sender.replaceTrack(), then refresh the shared
+// local stream. Falls back to the default mic on any failure.
+const applyCallMicForOutput = async (speakerMode) => {
+  if (!activeCallRef.current) return;
+  if (!pcRef.current && Object.keys(groupPeersRef.current).length === 0) return;
+  await refreshAudioInputs();
+  const target = micDeviceIdForOutput(speakerMode);
+  const constraints = target ? { audio: { deviceId: { exact: target } } } : { audio: true };
+  let newTrack;
+  try {
+    const s = await navigator.mediaDevices.getUserMedia(constraints);
+    newTrack = s.getAudioTracks()[0] || null;
+  } catch (err) {
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+      newTrack = s.getAudioTracks()[0] || null;
+    } catch (err2) { return; }
+  }
+  if (!newTrack) return;
+  const pcs = [];
+  if (pcRef.current) pcs.push(pcRef.current);
+  Object.keys(groupPeersRef.current).forEach((k) => pcs.push(groupPeersRef.current[k]));
+  const senders = pcs.map((pc) => pc.getSenders()).flat().filter((s) => s.track && s.track.kind === 'audio');
+  const results = await Promise.all(senders.map((s) => s.replaceTrack(newTrack).catch(() => null)));
+  if (senders.length > 0 && results.some((r) => r === null)) { newTrack.stop(); return; }
+  const ls = localStreamRef.current;
+  if (ls) {
+    ls.getAudioTracks().forEach((t) => { ls.removeTrack(t); t.stop(); });
+    ls.addTrack(newTrack);
+  } else {
+    newTrack.stop();
   }
 };
 const bindRemoteMedia = (el) => bindStreamToEl(el, remoteStreamRef.current);
