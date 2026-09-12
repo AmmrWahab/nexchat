@@ -237,6 +237,8 @@ export default function DashboardPage() {
   const dmStayBottomRef = useRef(false);
   const dmRafRef = useRef(null);
   const dmHistoryMergeAtRef = useRef(0);
+  const dmScrollOnSendRef = useRef(false);
+  const dmAbortRef = useRef(null);
   // ✅ Status feature (WhatsApp-style, mobile)
   const [statusFeed, setStatusFeed] = useState([]);
   const [statusAddSheet, setStatusAddSheet] = useState(false);
@@ -1398,6 +1400,7 @@ const handleSendPhoto = () => {
       messageId: tempId  // ✅ Now valid
     });
 
+    dmScrollOnSendRef.current = true;
     setMessages(prev => {
       const updated = {
         ...prev,
@@ -1467,6 +1470,7 @@ const handleFileChange = (e) => {
     });
 
     // ✅ 3. Save to local messages with same tempId
+    dmScrollOnSendRef.current = true;
     setMessages(prev => {
       const updated = {
         ...prev,
@@ -1627,6 +1631,7 @@ const sendVoiceBlob = (blob, durSec) => {
       fromPhoto: selectedChat?.photo,
       messageId: tempId,
     });
+    dmScrollOnSendRef.current = true;
     setMessages(prev => {
       const updated = {
         ...prev,
@@ -2450,25 +2455,85 @@ useEffect(() => {
   const id = selectedChat ? String(selectedChat.id) : null;
   const switched = lastDmChatRef.current !== id;
   lastDmChatRef.current = id;
-  if (!id) {
+  // Anchoring helpers: while the chat is freshly open (or was just opened),
+  // keep aiming at the latest message while async server history and media
+  // (images/videos/documents) arrive/decode after the first paint and grow the
+  // scroll height, which would otherwise strand the view mid-chat (e.g. right
+  // where a photo just expanded). Stop re-anchoring once the layout has stayed
+  // unchanged well past the last media load, the settle window elapses, or the
+  // user deliberately scrolls away — a scroll gesture (wheel/touch), which
+  // programmatic rides and re-renders never fire. Gesture-based detection
+  // avoids the false abandonment triggered by scroll-position analysis, since
+  // remounts and history merges can reset scrollTop to 0 on their own.
+  const bindDmAbort = () => {
+    const sc = messagesScrollRef.current;
+    if (!sc) return;
+    const existing = dmAbortRef.current;
+    if (existing) {
+      // The container may have been remounted since the listeners were bound;
+      // rebind on the live node so a user gesture is still recognised.
+      if (existing.container === sc) return;
+      unbindDmAbort();
+    }
+    const handler = () => {
+      dmStayBottomRef.current = false;
+      cancelAnimationFrame(dmRafRef.current);
+      const b = dmAbortRef.current;
+      if (b) {
+        b.container.removeEventListener('wheel', b.handler);
+        b.container.removeEventListener('touchmove', b.handler);
+        dmAbortRef.current = null;
+      }
+    };
+    sc.addEventListener('wheel', handler, { passive: true });
+    sc.addEventListener('touchmove', handler, { passive: true });
+    dmAbortRef.current = { container: sc, handler };
+  };
+  const unbindDmAbort = () => {
+    const b = dmAbortRef.current;
+    if (b) {
+      b.container.removeEventListener('wheel', b.handler);
+      b.container.removeEventListener('touchmove', b.handler);
+      dmAbortRef.current = null;
+    }
+  };
+  const armDmBottom = () => {
+    dmStayBottomRef.current = true;
+    bindDmAbort();
+  };
+  const disarmDmBottom = () => {
     dmStayBottomRef.current = false;
+    unbindDmAbort();
+  };
+  if (!id) {
+    disarmDmBottom();
     return;
   }
   const end = messagesEndRef.current;
   const scroller = messagesScrollRef.current;
   if (!end || !scroller) return;
-  if (switched) {
+  // Consume a scroll request that was explicitly set by one of my own send
+  // handlers (text, photo, file, voice). Only the actual send action sets this
+  // flag — incoming messages and state restores never do — so this is the only
+  // DM case where sending while scrolled up rides the view to the latest
+  // message.
+  const sent = dmScrollOnSendRef.current;
+  dmScrollOnSendRef.current = false;
+  if (sent) {
     dmOpenAtRef.current = Date.now();
-    dmStayBottomRef.current = true;
+    armDmBottom();
+  } else if (switched) {
+    dmOpenAtRef.current = Date.now();
+    armDmBottom();
   } else if (Date.now() - dmHistoryMergeAtRef.current < 4000 &&
              Date.now() - dmOpenAtRef.current < 10000) {
     // Fresh server history for the open conversation just landed: re-anchor so
     // the view settles on the (possibly extended) latest message instead of
     // the old end. Plain incoming messages never re-activate this.
     dmHistoryMergeAtRef.current = 0;
-    dmStayBottomRef.current = true;
+    armDmBottom();
   }
-  if (switched || isAtChatBottom(scroller)) {
+  if (sent || switched || isAtChatBottom(scroller)) {
     end.scrollIntoView({ behavior: 'instant' });
   }
   // When the chat was just opened, keep aiming at the latest message while the
@@ -2476,7 +2541,9 @@ useEffect(() => {
   // (images/videos/documents) arrive/decode after the first paint and grow the
   // scroll height, which would otherwise strand the view mid-chat (e.g. right
   // where a photo just expanded). Stop re-anchoring once the layout has stayed
-  // unchanged well past the last media load, or the settle window elapses.
+  // unchanged well past the last media load, or the settle window elapses, or
+  // the user deliberately scrolls away (a scroll gesture — wheel/touch — which
+  // programmatic rides and re-renders never fire).
   if (!dmStayBottomRef.current) return;
   cancelAnimationFrame(dmRafRef.current);
   let lastHeight = -1;
@@ -2485,10 +2552,10 @@ useEffect(() => {
   const tick = (ts) => {
     const e = messagesEndRef.current;
     const sc = messagesScrollRef.current;
-    if (!e || !sc) { dmStayBottomRef.current = false; return; }
+    if (!e || !sc) { disarmDmBottom(); return; }
     if (!dmStayBottomRef.current) return;
     if (Date.now() - dmOpenAtRef.current > 10000) {
-      dmStayBottomRef.current = false;
+      disarmDmBottom();
       return;
     }
     const h = sc.scrollHeight;
@@ -2505,7 +2572,7 @@ useEffect(() => {
       // The conversation has stayed at the same height well after its last
       // media finished loading — it is fully settled. Stop anchoring and
       // leave the user wherever they are now.
-      dmStayBottomRef.current = false;
+      disarmDmBottom();
       return;
     }
     e.scrollIntoView({ behavior: 'instant' });
@@ -2515,10 +2582,20 @@ useEffect(() => {
 }, [selectedChat, messages]);
 
   // A media element is still shifting the layout if an image has not finished
-  // decoding or a video has not loaded its metadata yet.
+  // decoding or a video has not loaded its metadata yet. For images,
+  // `complete`/`naturalWidth` alone are not enough: before the decoded pixels
+  // arrive the browser lays them out at the default 300x150 box, then reflows
+  // them to their real aspect ratio (≤300px tall). That reflow is exactly what
+  // grows the conversation height late, so we treat an image as pending until
+  // its on-screen ratio matches its natural ratio (up to rounding noise).
   const dmHasPendingMedia = (cont) => {
     const imgs = cont.querySelectorAll('img');
-    for (const im of imgs) if (!im.complete || !im.naturalWidth) return true;
+    for (const im of imgs) {
+      if (!im.complete || !im.naturalWidth || !im.naturalHeight) return true;
+      if (!im.clientWidth || !im.clientHeight) return true;
+      const drift = Math.abs(im.clientWidth * im.naturalHeight - im.clientHeight * im.naturalWidth);
+      if (drift > (im.naturalWidth + im.naturalHeight) * 0.02) return true;
+    }
     const vids = cont.querySelectorAll('video');
     for (const vd of vids) if (vd.readyState < 1) return true;
     return false;
@@ -5683,6 +5760,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
   });
 
   // ✅ Save with same tempId
+  dmScrollOnSendRef.current = true;
   setMessages(prev => ({
     ...prev,
     [selectedChat.id]: [
