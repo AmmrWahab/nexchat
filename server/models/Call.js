@@ -11,6 +11,12 @@ const callSchema = new mongoose.Schema({
   //                (we store one record per participant via direction)
   status: { type: String, enum: ["missed", "ended"], default: "ended" },
   durationSec: { type: Number, default: 0 },
+  // A missed incoming call is "unread" (drives the contact-list green badge)
+  // until the recipient sees it. True only for missed calls where the callee
+  // was away when the call ended; a callee who was present (online) is never
+  // given an unread badge for a call they saw coming in. Group rows and ended
+  // calls never use/need it.
+  calleeRead: { type: Boolean, default: false },
   // Group calls: caller = the member who logged the call; groupId points at
   // the group chat so history rows can be interleaved in the thread.
   groupId: { type: mongoose.Schema.Types.ObjectId, ref: "Group", default: null },

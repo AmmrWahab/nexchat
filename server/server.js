@@ -362,6 +362,15 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
       { $set: { read: true } }
     );
 
+    // Opening the chat also clears the unread missed-call badge for it: mark
+    // every missed call from chatId that was tagged unread as read so the green
+    // badge (which counts unread messages + unread missed calls) matches the
+    // existing "seen" semantics on every device.
+    await Call.updateMany(
+      { caller: chatId, callee: readerId, status: "missed", calleeRead: false },
+      { $set: { calleeRead: true } }
+    );
+
     const receiver = await User.findById(readerId).select("name").exec();
     if (!receiver) return;
 
@@ -380,6 +389,9 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
     // ✅ Cross-device read-state sync: tell the READER's own other devices that
     //    this conversation is now read so their unread badge clears everywhere.
     emitToUser(readerId, "conversationRead", { chatId: String(chatId) });
+    // Cross-device sync for the missed-call badge too: refresh every device's
+    // call history so the unread-missed count clears everywhere consistently.
+    emitToUser(readerId, "call:historyUpdated", { with: String(chatId) });
   });
 
   // ✅ Group read receipt: a member has seen the group's messages. For every
@@ -850,17 +862,37 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
   // Persist a finished call for both participants and notify them to refresh.
   async function logCall(callerId, calleeId, type, status, durationSec, opts) {
     try {
+      const isMissed = status === 'missed';
+      const realCallee = String(calleeId) !== String(callerId);
+      // A missed call is only an *unread incoming missed call* for the callee
+      // when the callee was NOT present (had no live sockets) the moment it was
+      // logged. Someone online when the call came in is not given a badge for a
+      // call they saw, just like an incoming message you are looking at is read.
+      const calleeAway = realCallee && isMissed && !getSocketIds(calleeId);
       const call = await Call.create({
         caller: callerId,
         callee: calleeId,
         type: type === 'video' ? 'video' : 'voice',
-        status: status === 'missed' ? 'missed' : 'ended',
+        status: isMissed ? 'missed' : 'ended',
         durationSec: Math.max(0, Math.round(durationSec || 0)),
+        calleeRead: !calleeAway,
         groupId: opts?.groupId || null,
         callerName: opts?.callerName || '',
       });
+      // A missed call creates a contact entry for the recipient (mirrors how a
+      // received message auto-creates a chat), so when the callee returns and
+      // reopens the app the missed call is visible in the contact list with an
+      // unread badge - the same recovery path messages use.
+      if (calleeAway) {
+        const calleeDoc = await User.findById(calleeId).exec();
+        if (calleeDoc && (!calleeDoc.contacts || !calleeDoc.contacts.some((id) => String(id) === String(callerId)))) {
+          calleeDoc.contacts = calleeDoc.contacts || [];
+          calleeDoc.contacts.push(callerId);
+          await calleeDoc.save();
+        }
+      }
       emitToUser(callerId, 'call:historyUpdated', { callId: String(call._id) });
-      if (String(calleeId) !== String(callerId)) {
+      if (realCallee) {
         emitToUser(calleeId, 'call:historyUpdated', { callId: String(call._id) });
       }
     } catch (err) {

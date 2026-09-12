@@ -274,6 +274,7 @@ export default function DashboardPage() {
 
   // -------- Calls (voice/video) state --------
   const [calls, setCalls] = useState([]);
+  const callsRef = useRef([]);
   const [activeCall, setActiveCall] = useState(null); // { mode, type, callId, peerId, peerName, peerPhoto }
   const activeCallRef = useRef(null);
   const [callSpeakerMenuOpen, setCallSpeakerMenuOpen] = useState(false);
@@ -1047,19 +1048,24 @@ function formatTime(value) {
  const chatVisible = isMobileRef.current ? mobileChatOpenRef.current : true;
  if (!chatVisible) { console.warn("❌ markAsRead skipped (chat not visible)"); return; }
 
+  // Unread missed calls from this contact count toward the same green badge;
+  // opening the chat must clear those too (server marks call.calleeRead).
+  const missedUnread = (callsRef.current || []).some(c => !c.groupId && String(c.userId) === String(chat.id) && c.missedCallUnread);
 
   setMessages(prev => {
     const chatMessages = prev[chat.id] || [];
     const receivedMessages = chatMessages.filter(msg => msg.sender !== 'You');
     const hasUnread = receivedMessages.some(msg => !msg.read);
 
-    if (!hasUnread) return prev; // ✅ Already read
+    if (!hasUnread && !missedUnread) return prev; // ✅ Already read
 
     // ✅ Emit only once
     currentSocket.emit('markAsRead', {
       chatId: chat.id,
       readerId: currentUser.id
     });
+
+    if (!hasUnread) return prev;
 
     const updatedChat = chatMessages.map(msg =>
       msg.sender !== 'You' ? { ...msg, read: true } : msg
@@ -1748,12 +1754,16 @@ const loadCalls = useCallback(async () => {
       headers: { Authorization: `Bearer ${token}` },
     });
     const data = await res.json();
-    if (data && Array.isArray(data.calls)) setCalls(data.calls);
+    if (data && Array.isArray(data.calls)) {
+      setCalls(data.calls);
+      callsRef.current = data.calls;
+    }
   } catch (err) {
     console.error('Failed to load calls', err);
   }
 }, []);
 useEffect(() => { loadCalls(); }, [loadCalls]);
+useEffect(() => { callsRef.current = calls; }, [calls]);
 
 // New-message indicator count resets whenever the open chat changes.
 useEffect(() => {
@@ -2823,6 +2833,10 @@ useEffect(() => {
   s.on('call:groupJoined', onGroupJoined);
   s.on('call:memberJoined', onMemberJoined);
   s.on('call:memberLeft', onMemberLeft);
+  // Reconnect: a missed call that arrived while disconnected is persisted on
+  // the server; reload it so the contact list preview + badge recover without
+  // requiring a page refresh.
+  s.on('connect', loadCalls);
 
   return () => {
     s.off('call:incoming', onIncoming);
@@ -2843,6 +2857,7 @@ useEffect(() => {
     s.off('call:groupJoined', onGroupJoined);
     s.off('call:memberJoined', onMemberJoined);
     s.off('call:memberLeft', onMemberLeft);
+    s.off('connect', loadCalls);
   };
 }, [socket]);
 
@@ -4745,15 +4760,33 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
             const chatMsgs = messages[chat.id] || [];
             const last = chatMsgs[chatMsgs.length - 1];
             const unreadMsgs = chatMsgs.filter(m => m.sender !== 'You' && !m.read);
-            const unreadCount = unreadMsgs.length;
+            // Calls participate in the same latest-activity/unread machinery:
+            // unread missed calls from this contact add to the SAME green badge,
+            // and the newest call can win the preview slot against the newest
+            // message (whichever happened later).
+            const chatCalls = calls.filter(c => !c.groupId && String(c.userId) === String(chat.id));
+            const unreadMissed = chatCalls.filter(c => c.missedCallUnread).length;
+            const unreadCount = unreadMsgs.length + unreadMissed;
             const hasUnread = unreadCount > 0;
             const previewMsg = hasUnread ? unreadMsgs[0] : last; // oldest unread, else latest
+            const latestCall = chatCalls.length
+              ? chatCalls.reduce((a, b) => ((b.time || 0) > (a.time || 0) ? b : a))
+              : null;
             const truncate = (t) => {
               if (!t) return '';
               return t.length > 35 ? `${t.slice(0, 35)}…` : t;
             };
+            // Latest activity = newest message OR newest call, decided ONLY by
+            // real timestamp (never by localStorage order or arrival order).
+            const msgTime = previewMsg ? previewMsg.timestamp : (chat.time || null);
+            const useCall = !!latestCall && (msgTime == null || (latestCall.time || 0) > msgTime);
             let preview = '';
-            if (previewMsg) {
+            let timeToShow = chat.timestamp;
+            if (useCall) {
+              const missedShow = latestCall.direction === 'missed' && !latestCall.iCalled;
+              preview = `${latestCall.video ? '📹' : '📞'} ${missedShow ? 'Missed ' : ''}${latestCall.video ? (missedShow ? 'video' : 'Video') : (missedShow ? 'voice' : 'Voice')} call`;
+              timeToShow = formatTime(latestCall.time) || chat.timestamp;
+            } else if (previewMsg) {
               if (previewMsg.file) {
                 preview = previewMsg.fileType?.startsWith('image/') ? '[Photo]' : previewMsg.fileType?.startsWith('audio/') ? '🎤 Voice message' : '[File]';
               } else if (previewMsg.text) {
@@ -4762,12 +4795,12 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
               if (previewMsg.sender === 'You' && preview) {
                 preview = `You: ${preview}`;
               }
+              timeToShow = previewMsg
+                ? (formatTime(previewMsg.timestamp) || chat.timestamp)
+                : chat.timestamp;
             } else {
               preview = truncate(chat.lastMsg || '');
             }
-            const timeToShow = previewMsg
-              ? (formatTime(previewMsg.timestamp) || chat.timestamp)
-              : chat.timestamp;
             return (
       <div
         key={chat.id}
@@ -4780,7 +4813,8 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
           setMobileChatOpen(true);
           // Mark read only on an explicit user open (WhatsApp behavior):
           // never auto-send read receipts for chats restored on page load.
-          if ((messages[chat.id] || []).some(m => m.sender !== 'You' && !m.read)) {
+          // A missed call alone (no unread messages) also clears on open.
+          if ((messages[chat.id] || []).some(m => m.sender !== 'You' && !m.read) || unreadMissed > 0) {
             setTimeout(() => markAsReadRef.current(), 60);
           }
         }}
@@ -4875,10 +4909,11 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
                 })}
                                 {activeTab === 'unread' && (() => {
                   const unreadDms = [...contacts, ...chats]
-                    .filter(chat => (messages[chat.id] || []).some(m => m.sender !== 'You' && !m.read))
                     .map(chat => {
                       const chatMsgs = messages[chat.id] || [];
                       const un = chatMsgs.filter(m => m.sender !== 'You' && !m.read);
+                      const missedUnread = calls.filter(c => !c.groupId && String(c.userId) === String(chat.id) && c.missedCallUnread).length;
+                      if (un.length === 0 && missedUnread === 0) return null;
                       const last = chatMsgs[chatMsgs.length - 1];
                       const p = un[0] || last;
                       let text = '';
@@ -4887,7 +4922,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
                         key: chat.id,
                         name: chat.name,
                         photo: chat.photo || 'https://via.placeholder.com/50',
-                        count: un.length,
+                        count: un.length + missedUnread,
                         text,
                         open: () => {
                           setSelectedChat(chat);
@@ -4895,9 +4930,13 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
                           selectedGroupRef.current = null;
                           setMobileChatOpen(true);
                           setActiveTab('chats');
+                          if (un.length > 0 || missedUnread > 0) {
+                            setTimeout(() => markAsReadRef.current(), 60);
+                          }
                         },
                       };
-                    });
+                    })
+                    .filter(Boolean);
                   const unreadGrps = groupsList
                     .filter(g => (groupMessages[g._id || g.id] || []).some(m => m.sender !== 'You' && !m.read))
                     .map(g => {
