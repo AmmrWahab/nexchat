@@ -5,7 +5,7 @@ import { createPortal } from 'react-dom';
 import { useNavigate, useLocation } from 'react-router-dom';
 import './dashboard.css';
 import { io } from 'socket.io-client';
-import { Search, X, CornerUpRight, CornerUpLeft, Phone, Video, Paperclip, Camera, Mic, User, FileText, Trash2, Copy, Forward, Reply, ArrowLeft, ChevronUp, ChevronDown, Info, MessageCircle, Users, Settings, Menu, SquarePen, Images, Image, PencilLine, Check, MicOff, VideoOff, Volume2 } from "lucide-react";
+import { Search, X, CornerUpRight, CornerUpLeft, Phone, Video, Paperclip, Camera, Mic, User, FileText, Trash2, Copy, Forward, Reply, ArrowLeft, ChevronUp, ChevronDown, Info, MessageCircle, Users, Settings, Menu, SquarePen, Images, Image, PencilLine, Check, MicOff, VideoOff, Volume2, Headset } from "lucide-react";
 import { API_URL } from '../config.js';
 
 const BLUE_TICK = '#53bdeb';
@@ -280,6 +280,11 @@ export default function DashboardPage() {
   // '' = system default output (earpiece/handset on phones, or the platform
   // default), 'speaker' = loudspeaker, otherwise a concrete audiooutput deviceId.
   const [callSpeakerOutput, setCallSpeakerOutput] = useState('');
+  // The CURRENT system audio-output device, read live from enumerateDevices()
+  // (devicechange). kind is 'handset' for any earpiece/headset/bluetooth output
+  // and 'speaker' for a loudspeaker, so the in-call icon and chooser always
+  // reflect what the user is physically using right now.
+  const [callDefaultOut, setCallDefaultOut] = useState({ name: '', kind: 'handset' });
   const [callMicOn, setCallMicOn] = useState(true);
   const [callCamOn, setCallCamOn] = useState(true);
   const [callMinimized, setCallMinimized] = useState(false);
@@ -300,7 +305,10 @@ export default function DashboardPage() {
   // HTMLMediaElement.setSinkId() is applied to each one.
   const audioElsRef = useRef(new Set());
   const sinkIdRef = useRef('');
-  const audioOutputsCacheRef = useRef({ speakerId: '', external: [] });
+  const audioOutputsCacheRef = useRef({ speakerId: '', external: [], defaultName: '', defaultKind: 'handset' });
+  // Last detected system-default output name, for reacting to handset plug-in
+  // / plug-out during a live call.
+  const prevDefaultNameRef = useRef('');
   const callTimerRef = useRef(null);
   const peekReminderRef = useRef(null);
   // Transient in-call notice (e.g. "… declined the video request" / "Rear
@@ -2033,30 +2041,56 @@ const refreshAudioOutputs = async () => {
     const outs = devs.filter((d) => d.kind === 'audiooutput');
     let speakerId = '';
     const external = [];
+    let defaultName = '';
     outs.forEach((d) => {
-      if (!d.deviceId || d.deviceId === 'default') return; // the platform default route
       const label = clean(d.label);
-      if (!label) return; // unlabeled + non-default -> cannot identify, ignore
-      if (/speaker|扬声|speaker|spk\b/i.test(label)) {
+      if (d.deviceId === 'default' || /^Default\s*-/i.test(d.label || '')) {
+        if (label) defaultName = label;
+      }
+      if (!d.deviceId || d.deviceId === 'default' || !label) return;
+      if (/speaker|扬声|扬声器|loudspeaker|\bspk\b/i.test(label)) {
         if (!speakerId) speakerId = d.deviceId;
       } else {
         external.push({ deviceId: d.deviceId, label });
       }
     });
-    // The 'default' device is always a valid speaker-capable target on
-    // platforms where setSinkId() exists, but an empty speaker list must not
-    // manufacture a fake one.
-    audioOutputsCacheRef.current = { speakerId, external };
+    // Classify the live default route from its REAL name: any earpiece,
+    // headset, earbud, earphone or bluetooth device counts as a "handset",
+    // and anything the user has set as their loudspeaker counts as speaker.
+    let defaultKind = 'handset';
+    if (defaultName) {
+      if (/speaker|loudspeaker|扬声|扬声器/i.test(defaultName)) {
+        defaultKind = 'speaker';
+      } else if (/handset|headset|headphone|earbud|earphone|earpiece|bluetooth|earphones|耳机|蓝牙/i.test(defaultName)) {
+        defaultKind = 'handset';
+      } else {
+        // Unclassified default (e.g. "Digital Output") — a handset is the
+        // safer earpiece-friendly assumption; the user can still pick Speaker.
+      }
+    }
+    audioOutputsCacheRef.current = { speakerId, external, defaultName, defaultKind };
+    setCallDefaultOut((prev) => {
+      if (!defaultName) return prev;
+      if (prev.name === defaultName) return prev;
+      return { name: defaultName, kind: defaultKind };
+    });
   } catch (err) {
-    audioOutputsCacheRef.current = { speakerId: '', external: [] };
+    audioOutputsCacheRef.current = { speakerId: '', external: [], defaultName: '', defaultKind: 'handset' };
   }
 };
-const externalLabelFor = (d) => {
-  const prefix = /handset|headset|headphone|earbud|earphone|earpiece|bluetooth|蓝牙耳机|耳机/i.test(d.label)
-    ? 'Handset'
-    : 'Audio device';
-  return `${prefix} · ${d.label}`;
-};
+// When the user plugs in (or switches to) a handset / headset / bluetooth
+// device during a live call, follow it: route back to the system default
+// ('' so future plug/unplug automatically re-follows) and let the icon flip
+// to the handset. Switching to a different loudspeaker while the user already
+// chose Speaker keeps their explicit choice.
+useEffect(() => {
+  const name = callDefaultOut?.name;
+  if (!name) return;
+  const prevName = prevDefaultNameRef.current;
+  prevDefaultNameRef.current = name;
+  if (!prevName) return; // first real detection — nothing to switch away from
+  if (callDefaultOut.kind === 'handset') applyAudioOutput('', 'default');
+}, [callDefaultOut?.name]);
 
 // Real camera list for the switch-camera control. Built purely from
 // navigator.mediaDevices.enumerateDevices(); nothing is invented.
@@ -9342,41 +9376,31 @@ setContacts(prev => {
       <div className="call-switch-waiting">Waiting for {nameOf(activeCall.peerId, activeCall.peerName)} to accept video…</div>
     )}
 
-    {/* Audio-output chooser: built from the REAL enumerated audiooutput
-        devices. 'Speaker' is always offered (the only other route to a
-        loudspeaker, or a graceful no-op browser fallback), external devices
-        (headsets/earphones) only when the browser really reports them, and a
-        'Default audio' entry only when there is something to switch away from. */}
+    {/* Audio-output chooser. Two real choices built from enumerateDevices():
+        the current "handset" (earpiece / headset / bluetooth — whatever the
+        system is routing to right now) and the loudspeaker. The handset entry
+        always shows the name of the device the user is actually on, and
+        selecting it routes to the system default so plugging in / taking out a
+        headset mid-call re-follows it automatically. */}
     {callSpeakerMenuOpen && (() => {
       const { speakerId, external } = audioOutputsCacheRef.current;
-      const entries = [];
-      entries.push({
-        id: 'speaker',
-        kind: 'speaker',
-        label: 'Speaker',
-        active: callSpeakerOutput === 'speaker' || (callSpeakerOutput !== '' && callSpeakerOutput !== 'default' && !external.some((d) => d.deviceId === callSpeakerOutput)),
-      });
-      external.forEach((d) => {
-        entries.push({
-          id: d.deviceId,
-          kind: 'external',
-          label: externalLabelFor(d),
-          active: callSpeakerOutput === d.deviceId,
-        });
-      });
-      if (external.length > 0) {
-        entries.push({ id: 'default', kind: 'default', label: 'Default audio (earpiece)', active: callSpeakerOutput === '' });
-      }
+      const onHandset = callSpeakerOutput === '' || external.some((d) => d.deviceId === callSpeakerOutput);
+      const currentHandsetLabel =
+        callDefaultOut.kind === 'handset' && callDefaultOut.name
+          ? `Handset (${callDefaultOut.name})`
+          : external.length > 0
+            ? `Handset (${external[0].label})`
+            : 'Handset';
+      const entries = [
+        { id: 'handset', kind: 'handset', label: currentHandsetLabel, active: onHandset },
+        { id: 'speaker', kind: 'speaker', label: 'Speaker', active: !onHandset },
+      ];
       const pick = (o) => {
-        if (o.kind === 'speaker') {
-          // Re-selecting Speaker without a real loudspeaker device to enable
-          // is a no-op loop, so treat the second tap as return-to-default.
-          if (callSpeakerOutput === 'speaker' && !speakerId) applyAudioOutput('', 'default');
-          else applyAudioOutput(speakerId, 'speaker');
-        } else if (o.kind === 'external') {
-          applyAudioOutput(o.id, 'external');
+        if (o.kind === 'handset') {
+          const target = callDefaultOut.kind === 'handset' ? '' : external[0] ? external[0].deviceId : '';
+          applyAudioOutput(target, target === '' ? 'default' : 'external');
         } else {
-          applyAudioOutput('', 'default');
+          applyAudioOutput(speakerId, 'speaker');
         }
         setCallSpeakerMenuOpen(false);
       };
@@ -9385,8 +9409,8 @@ setContacts(prev => {
           <div className="call-speaker-backdrop" onClick={() => setCallSpeakerMenuOpen(false)} />
           <div className="call-speaker-menu">
             {entries.map((o) => (
-              <button key={o.kind + o.id} onClick={() => pick(o)} className={o.active ? 'speaker-active' : ''}>
-                <span className="cs-icon">{o.kind === 'speaker' ? '🔊' : o.kind === 'default' ? '📱' : '🎧'}</span>
+              <button key={o.kind} onClick={() => pick(o)} className={o.active ? 'speaker-active' : ''}>
+                <span className="cs-icon">{o.kind === 'speaker' ? '🔊' : '🎧'}</span>
                 <span className="cs-label">{o.label}</span>
                 {o.active && <span className="cs-active">●</span>}
               </button>
@@ -9420,7 +9444,19 @@ setContacts(prev => {
           <button className="call-ctrl" onClick={() => { const on = toggleMuteCall(); setCallMicOn(on); }} aria-label="Mute" style={{ background: !callMicOn ? '#e02f5b' : undefined }}>
             <MicOff size={24} strokeWidth={2} />
           </button>
-          <button className={`call-ctrl ${callSpeakerOutput === 'speaker' || (callSpeakerOutput && callSpeakerOutput !== '' && callSpeakerOutput !== 'default') ? 'speaker-on' : ''}`} onClick={() => setCallSpeakerMenuOpen(true)} aria-label="Audio output"><Volume2 size={24} strokeWidth={2} /></button>
+          {(() => {
+            // Icon reflects what is REALLY being used: a loudspeaker when the
+            // user picked Speaker OR the system default route is a speaker, and
+            // the handset icon whenever a headset/earpiece/bluetooth device is
+            // the detected default (or an explicit external pick).
+            const onHandset = callSpeakerOutput === '' || audioOutputsCacheRef.current.external.some((d) => d.deviceId === callSpeakerOutput);
+            const activeIsSpeaker = !onHandset || (callSpeakerOutput === '' && callDefaultOut.kind === 'speaker');
+            return (
+              <button className={`call-ctrl ${activeIsSpeaker ? 'speaker-on' : ''}`} onClick={() => setCallSpeakerMenuOpen(true)} aria-label="Audio output">
+                {activeIsSpeaker ? <Volume2 size={24} strokeWidth={2} /> : <Headset size={24} strokeWidth={2} />}
+              </button>
+            );
+          })()}
           {activeCall.type === 'voice' && activeCall.mode === 'active' && !activeCall.group && !activeCall.videoSwitchPhase && (
             <button className="call-ctrl" onClick={requestVideoUpgrade} aria-label="Switch to video call"><Video size={24} strokeWidth={2} /></button>
           )}
