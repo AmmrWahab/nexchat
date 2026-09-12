@@ -46,13 +46,15 @@ router.get("/calls", async (req, res) => {
         video: c.type === "video",
         time: c.createdAt.getTime(),
         durationSec: c.durationSec || 0,
+        rejected: c.rejected || false,
         iCalled,
         // classify: outgoing / incoming / missed
         direction: c.status === "missed" ? "missed" : (iCalled ? "outgoing" : "incoming"),
-        // A missed call is an unread incoming missed call only for the CALLEE,
-        // and only when it was logged while they were away (calleeRead false).
-        // This drives the existing contact-list green unread badge for calls.
-        missedCallUnread: c.status === "missed" && !iCalled && !c.calleeRead,
+        // A missed call is an unread (green-badge) incoming missed call only for the
+        // CALLEE, and only when it was truly never answered: declined calls (and
+        // accepted calls) must not badge anyone. Drives the contact-list green
+        // unread badge for calls.
+        missedCallUnread: c.status === "missed" && !iCalled && !c.rejected && !c.calleeRead,
         // group-call info (if any)
         groupId: c.groupId ? String(c.groupId) : null,
         callerName: c.callerName || "",

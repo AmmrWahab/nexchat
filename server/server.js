@@ -863,27 +863,29 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
   async function logCall(callerId, calleeId, type, status, durationSec, opts) {
     try {
       const isMissed = status === 'missed';
+      const rejected = !!opts?.rejected;
       const realCallee = String(calleeId) !== String(callerId);
-      // A missed call is only an *unread incoming missed call* for the callee
-      // when the callee was NOT present (had no live sockets) the moment it was
-      // logged. Someone online when the call came in is not given a badge for a
-      // call they saw, just like an incoming message you are looking at is read.
-      const calleeAway = realCallee && isMissed && !getSocketIds(calleeId);
+      // A missed call is an *unread incoming missed call* for the callee: an
+      // incoming call that was never answered (caller hung up / timed out while
+      // ringing). It drives the contact-list green badge regardless of whether
+      // the callee was online or away at the time. Declined (rejected) and
+      // answered calls never carry an unread badge.
+      const unreadMissed = isMissed && !rejected;
       const call = await Call.create({
         caller: callerId,
         callee: calleeId,
         type: type === 'video' ? 'video' : 'voice',
         status: isMissed ? 'missed' : 'ended',
         durationSec: Math.max(0, Math.round(durationSec || 0)),
-        calleeRead: !calleeAway,
+        calleeRead: !unreadMissed,
+        rejected,
         groupId: opts?.groupId || null,
         callerName: opts?.callerName || '',
       });
-      // A missed call creates a contact entry for the recipient (mirrors how a
-      // received message auto-creates a chat), so when the callee returns and
-      // reopens the app the missed call is visible in the contact list with an
-      // unread badge - the same recovery path messages use.
-      if (calleeAway) {
+      // A truly missed call creates a contact entry for the recipient (mirrors
+      // how a received message auto-creates a chat), so a missed call is always
+      // visible in the contact list with an unread badge.
+      if (unreadMissed && realCallee) {
         const calleeDoc = await User.findById(calleeId).exec();
         if (calleeDoc && (!calleeDoc.contacts || !calleeDoc.contacts.some((id) => String(id) === String(callerId)))) {
           calleeDoc.contacts = calleeDoc.contacts || [];
@@ -1032,7 +1034,7 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
   socket.on('call:reject', async ({ to, callId, type }) => {
     if (!to) return;
     const peer = await User.exists({ _id: to }).catch(() => null);
-    if (peer) logCall(socket.userId, to, type, 'missed', 0);
+    if (peer) logCall(socket.userId, to, type, 'missed', 0, { rejected: true });
     socket.emit('call:rejectedRemote', { callId, type });
     emitToUser(to, 'call:rejected', { callId, type });
     // Also close the ringing/active call UI on the rejecting user's OTHER devices.
@@ -1040,12 +1042,14 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
   });
 
   // Either side hangs up -> both close; the CALLER records the finished call
-  // (caller was ringed to accept, so caller always initiated).
+  // (caller was ringed to accept, so caller always initiated). call:end only
+  // fires from the active (already-accepted) call UI, so it is never "missed"
+  // even if the accepted call lasted less than a second.
   socket.on('call:end', async ({ to, callId, type, durationSec }) => {
     if (!to) return;
     const secs = Math.max(0, Math.round(durationSec || 0));
     const peer = await User.exists({ _id: to }).catch(() => null);
-    if (peer) logCall(socket.userId, to, type, secs > 0 ? 'ended' : 'missed', secs);
+    if (peer) logCall(socket.userId, to, type, 'ended', secs);
     socket.emit('call:endedLocal', { callId });
     emitToUser(to, 'call:ended', { callId });
     // Also close the call UI on the hanging-up user's OTHER devices.

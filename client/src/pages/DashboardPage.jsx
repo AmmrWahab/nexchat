@@ -4783,7 +4783,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
             let preview = '';
             let timeToShow = chat.timestamp;
             if (useCall) {
-              const missedShow = latestCall.direction === 'missed' && !latestCall.iCalled;
+              const missedShow = latestCall.direction === 'missed' && !latestCall.iCalled && !latestCall.rejected;
               preview = `${latestCall.video ? '📹' : '📞'} ${missedShow ? 'Missed ' : ''}${latestCall.video ? (missedShow ? 'video' : 'Video') : (missedShow ? 'voice' : 'Voice')} call`;
               timeToShow = formatTime(latestCall.time) || chat.timestamp;
             } else if (previewMsg) {

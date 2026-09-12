@@ -12,11 +12,13 @@ const callSchema = new mongoose.Schema({
   status: { type: String, enum: ["missed", "ended"], default: "ended" },
   durationSec: { type: Number, default: 0 },
   // A missed incoming call is "unread" (drives the contact-list green badge)
-  // until the recipient sees it. True only for missed calls where the callee
-  // was away when the call ended; a callee who was present (online) is never
-  // given an unread badge for a call they saw coming in. Group rows and ended
-  // calls never use/need it.
+  // until the recipient sees it. False = unread for a truly missed (never
+  // answered) call; the recipient gets a badge even if they were online when it
+  // rang. Declined (rejected) and answered calls never carry an unread badge.
   calleeRead: { type: Boolean, default: false },
+  // True when the CALLEE actively declined the call. Such a call is recorded in
+  // history but must NOT produce an unread missed-call badge for anyone.
+  rejected: { type: Boolean, default: false },
   // Group calls: caller = the member who logged the call; groupId points at
   // the group chat so history rows can be interleaved in the thread.
   groupId: { type: mongoose.Schema.Types.ObjectId, ref: "Group", default: null },
