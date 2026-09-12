@@ -233,6 +233,10 @@ export default function DashboardPage() {
   const [newMsgCount, setNewMsgCount] = useState(0);
   const messagesScrollRef = useRef(null);
   const lastDmChatRef = useRef(null);
+  const dmOpenAtRef = useRef(0);
+  const dmStayBottomRef = useRef(false);
+  const dmRafRef = useRef(null);
+  const dmHistoryMergeAtRef = useRef(0);
   // ✅ Status feature (WhatsApp-style, mobile)
   const [statusFeed, setStatusFeed] = useState([]);
   const [statusAddSheet, setStatusAddSheet] = useState(false);
@@ -2446,13 +2450,79 @@ useEffect(() => {
   const id = selectedChat ? String(selectedChat.id) : null;
   const switched = lastDmChatRef.current !== id;
   lastDmChatRef.current = id;
-  if (!id) return;
+  if (!id) {
+    dmStayBottomRef.current = false;
+    return;
+  }
   const end = messagesEndRef.current;
-  if (!end) return;
-  if (switched || isAtChatBottom(messagesScrollRef.current)) {
+  const scroller = messagesScrollRef.current;
+  if (!end || !scroller) return;
+  if (switched) {
+    dmOpenAtRef.current = Date.now();
+    dmStayBottomRef.current = true;
+  } else if (Date.now() - dmHistoryMergeAtRef.current < 4000 &&
+             Date.now() - dmOpenAtRef.current < 10000) {
+    // Fresh server history for the open conversation just landed: re-anchor so
+    // the view settles on the (possibly extended) latest message instead of
+    // the old end. Plain incoming messages never re-activate this.
+    dmHistoryMergeAtRef.current = 0;
+    dmStayBottomRef.current = true;
+  }
+  if (switched || isAtChatBottom(scroller)) {
     end.scrollIntoView({ behavior: 'instant' });
   }
+  // When the chat was just opened, keep aiming at the latest message while the
+  // conversation finishes rendering: async server history and media
+  // (images/videos/documents) arrive/decode after the first paint and grow the
+  // scroll height, which would otherwise strand the view mid-chat (e.g. right
+  // where a photo just expanded). Stop re-anchoring once the layout has stayed
+  // unchanged well past the last media load, or the settle window elapses.
+  if (!dmStayBottomRef.current) return;
+  cancelAnimationFrame(dmRafRef.current);
+  let lastHeight = -1;
+  let stableMs = 0;
+  let lastTs = 0;
+  const tick = (ts) => {
+    const e = messagesEndRef.current;
+    const sc = messagesScrollRef.current;
+    if (!e || !sc) { dmStayBottomRef.current = false; return; }
+    if (!dmStayBottomRef.current) return;
+    if (Date.now() - dmOpenAtRef.current > 10000) {
+      dmStayBottomRef.current = false;
+      return;
+    }
+    const h = sc.scrollHeight;
+    const pendingMedia = dmHasPendingMedia(sc);
+    const dt = lastTs ? ts - lastTs : 16;
+    lastTs = ts;
+    if (h === lastHeight && !pendingMedia) {
+      stableMs += dt;
+    } else {
+      stableMs = 0;
+      lastHeight = h;
+    }
+    if (stableMs >= 1500) {
+      // The conversation has stayed at the same height well after its last
+      // media finished loading — it is fully settled. Stop anchoring and
+      // leave the user wherever they are now.
+      dmStayBottomRef.current = false;
+      return;
+    }
+    e.scrollIntoView({ behavior: 'instant' });
+    dmRafRef.current = requestAnimationFrame(tick);
+  };
+  dmRafRef.current = requestAnimationFrame(tick);
 }, [selectedChat, messages]);
+
+  // A media element is still shifting the layout if an image has not finished
+  // decoding or a video has not loaded its metadata yet.
+  const dmHasPendingMedia = (cont) => {
+    const imgs = cont.querySelectorAll('img');
+    for (const im of imgs) if (!im.complete || !im.naturalWidth) return true;
+    const vids = cont.querySelectorAll('video');
+    for (const vd of vids) if (vd.readyState < 1) return true;
+    return false;
+  };
 
   // Scroll a just-opened group to the oldest unread message if there are
   // unread messages (WhatsApp-style); otherwise to the latest (bottom).
@@ -2593,8 +2663,17 @@ newSocket.on('messagesHistory', ({ chatId, messages }) => {
     existing.forEach(m => seen.set(m.localId || m.id, m));
     fresh.forEach(m => seen.set(m.localId || m.id, m));
     const ordered = [...seen.values()].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
-    const idsCmp = (arr) => arr.map(m => m.localId || m.id).join('|');
-    if (existing.length === ordered.length && idsCmp(existing) === idsCmp(ordered)) return prev;
+    const sameList = existing.length === ordered.length &&
+      existing.map(m => m.localId || m.id).join('|') === ordered.map(m => m.localId || m.id).join('|');
+    if (!sameList && ordered.length > existing.length) {
+      // The server copy extended this conversation with messages the local
+      // state did not have. If the chat is open, re-anchor to the (newer)
+      // latest message. No-op merges and same-sized replacement copies (e.g.
+      // optimistic send → server ids, delivery/read flips) must NOT re-anchor,
+      // or incoming messages would yank a scrolled-up user back to the bottom.
+      dmHistoryMergeAtRef.current = Date.now();
+    }
+    if (sameList) return prev;
     return { ...prev, [cid]: ordered };
   });
 });
