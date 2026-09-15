@@ -5586,7 +5586,10 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
           : [];
 
         return (
-          <div className="chat-container">
+          <div
+            className="chat-container"
+            style={{ width: showGroupInfo ? 'calc(100% - 400px)' : '100%', transition: 'width 0.3s ease' }}
+          >
             <div className="chat-window">
               <div className="chat-header">
                 {isSelectionMode && isMobile ? (
@@ -5708,11 +5711,18 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
                   </>
                 ) : (
                 <>
-                <div className="header-left">
+                <div
+                  className="header-left"
+                  style={{ cursor: 'pointer' }}
+                  onClick={() => setShowGroupInfo(true)}
+                >
                   {isMobile && (
                     <button
                       className="mobile-header-back"
-                      onClick={goBackPage}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        goBackPage();
+                      }}
                       aria-label="Back"
                     >
                       ‹
@@ -6851,11 +6861,18 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
         </div>
       ) : (
         /* Regular Header */
-        <div className="header-left">
+        <div
+          className="header-left"
+          style={{ cursor: 'pointer' }}
+          onClick={() => setShowContactInfo(true)}
+        >
           {isMobile && (
             <button
               className="mobile-header-back"
-              onClick={goBackPage}
+              onClick={(e) => {
+                e.stopPropagation();
+                goBackPage();
+              }}
               aria-label="Back"
             >
               ‹
@@ -6865,11 +6882,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
             src={selectedChat?.photo || 'https://via.placeholder.com/40'}
             alt={nameOf(selectedChat?.id, selectedChat?.name)}
           />
-          <div
-            className="user-info"
-            style={isMobile ? { cursor: 'pointer' } : undefined}
-            onClick={() => isMobile && setShowContactInfo(true)}
-          >
+          <div className="user-info">
             <h4>{nameOf(selectedChat?.id, selectedChat?.name)}</h4>
             <p>
               {selectedChat?.online
