@@ -5016,8 +5016,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
       const saveProfileName = async () => {
         const clean = String(profileNameDraft || '').trim();
         if (!clean) return alert('Name is required');
-        if (clean.length > 10) return alert('Name must be 10 characters or fewer');
-        if (!/^[A-Za-z\s]+$/.test(clean)) return alert('Only alphabetic characters are allowed');
+        if (clean.length > 25) return alert('Name must be 25 characters or fewer');
         const tk = profileToken();
         if (!tk) return;
         setProfileSaveBusy(true);
@@ -5583,10 +5582,10 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
                     className="profile-edit-input"
                     value={profileNameDraft}
                     onChange={(e) => setProfileNameDraft(e.target.value)}
-                    maxLength={10}
+                    maxLength={25}
                     placeholder="Enter your name"
                   />
-                  <p className="profile-hint">Maximum length is 10 characters.</p>
+                  <p className="profile-hint">Maximum length is 25 characters. Letters, numbers and special characters allowed — {profileNameDraft.length}/25.</p>
                 </div>
                 <div className="profile-save-row">
                   <button type="button" className="profile-save-btn" onClick={saveProfileName} disabled={profileSaveBusy}>

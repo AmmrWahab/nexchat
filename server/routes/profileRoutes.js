@@ -67,8 +67,7 @@ export default function createProfileRouter(io) {
     if (name !== undefined) {
       const clean = typeof name === 'string' ? name.trim() : '';
       if (!clean) return res.status(400).json({ message: 'Name is required' });
-      if (clean.length > 10) return res.status(400).json({ message: 'Name must be 10 characters or fewer' });
-      if (!/^[A-Za-z\s]+$/.test(clean)) return res.status(400).json({ message: 'Name can only contain alphabetic characters' });
+      if (clean.length > 25) return res.status(400).json({ message: 'Name must be 25 characters or fewer' });
       update.name = clean;
       changed = true;
     }
