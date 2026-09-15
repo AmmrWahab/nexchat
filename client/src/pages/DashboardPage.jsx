@@ -9696,7 +9696,7 @@ setContacts(prev => {
         {activeCall.mode === 'incoming'
           ? 'Incoming call…'
           : activeCall.mode === 'outgoing'
-            ? 'Ringing…'
+            ? (contacts.some(c => String(c.id) === String(activeCall.peerId) && c.online) ? 'Ringing…' : 'Calling…')
             : <span className="call-elapsed">{fmtCallTime(activeCall.elapsed)}</span>}
       </span>
     </div>
