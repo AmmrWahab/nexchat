@@ -9224,9 +9224,9 @@ setContacts(prev => {
   <Phone size={24} strokeWidth={1.8} />
   <small>Calls</small>
 </button>
-      <button onClick={() => { setView('chats'); setActiveTab('profile'); }}>
-        <Video size={24} strokeWidth={1.8} />
-        <small>Camera</small>
+      <button onClick={() => { setView('chats'); setActiveTab('profile'); }} aria-label="Profile">
+        <User size={24} strokeWidth={1.8} />
+        <small>Profile</small>
       </button>
     </nav>
     )}
