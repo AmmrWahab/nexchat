@@ -239,17 +239,19 @@ socket.on("sendMessage", async (data) => {
     if (!sender) return console.error("Sender not found");
 
     // 🚫 Block enforcement: if either party blocked the other, the message is
-    //    queued (delivered:false) but never delivered while the block is active.
-    //    The blocked sender's optimistic message therefore stays at a single
-    //    tick, and the recipient never sees it. On UNBLOCK the queued messages
-    //    are delivered automatically (see DELETE /api/profile/:id/block).
+    //    silently dropped — never saved, never delivered. The blocked sender's
+    //    optimistic message stays at a single tick forever (even on unblock).
     const blockedPair = await Promise.all([
       User.findById(from).select("blockedUsers").exec(),
       User.findById(to).select("blockedUsers").exec(),
     ]);
     const senderBlocked = (blockedPair[0]?.blockedUsers || []).some((id) => String(id) === String(to));
     const receiverBlocked = (blockedPair[1]?.blockedUsers || []).some((id) => String(id) === String(from));
-    const blocked = senderBlocked || receiverBlocked;
+    if (senderBlocked || receiverBlocked) {
+      console.log(`🚫 Blocked DM rejected: ${from} -> ${to} (senderBlocked=${senderBlocked}, receiverBlocked=${receiverBlocked})`);
+      socket.emit("messageBlocked", { to, blocked: true });
+      return;
+    }
 
 console.log("💾 [DB] Attempting to save message..."); // 🔥
     const newMsg = await Message.create({
@@ -267,7 +269,7 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
         statusId: replyTo.statusId,
         senderId: replyTo.senderId
       } : null,
-      delivered: !blocked && !!receiverSocketIds,
+      delivered: !!receiverSocketIds,
       isForwarded: !!isForwarded,
       clientMessageId: data.messageId 
     });
@@ -278,11 +280,6 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
       clientMessageId: newMsg.clientMessageId
     });
     
-
-    if (blocked) {
-      console.log(`🚫 Queued blocked DM ${from} -> ${to}; will deliver on unblock`);
-      return;
-    }
 
     if (receiverSocketIds) {
       // ✅ Build one authoritative payload. `to` is included so ANY device of the
@@ -337,22 +334,6 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
     if (!chatId) return;
     try {
       const me = socket.userId;
-
-      // While either party has blocked the other, the other party's queued
-      // (delivered:false) messages must stay hidden — they only surface once
-      // the block is lifted. My own queued messages stay visible to me so the
-      // chat still shows my single-tick sends.
-      let blockedEitherWay = false;
-      try {
-        const [myDoc, theirDoc] = await Promise.all([
-          User.findById(me).select("blockedUsers").exec(),
-          User.findById(chatId).select("blockedUsers").exec(),
-        ]);
-        const myBlocked = new Set((myDoc?.blockedUsers || []).map((id) => String(id)));
-        const theirBlocked = new Set((theirDoc?.blockedUsers || []).map((id) => String(id)));
-        blockedEitherWay = myBlocked.has(String(chatId)) || theirBlocked.has(String(me));
-      } catch (e) { /* non-fatal */ }
-
       const messages = await Message.find({
         $or: [
           { from: me, to: chatId },
@@ -364,13 +345,7 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
         .limit(200)
         .exec();
 
-      const msgs = messages
-        .filter((m) => {
-          const fromId = String(m.from && (m.from._id || m.from));
-          if (blockedEitherWay && !m.delivered && fromId !== String(me)) return false;
-          return true;
-        })
-        .map(m => ({
+      const msgs = messages.map(m => ({
         _id: m._id.toString(),
         from: String(m.from._id),
         fromName: m.from.name || 'Unknown',
