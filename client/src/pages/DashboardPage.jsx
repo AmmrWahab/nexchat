@@ -208,10 +208,10 @@ export default function DashboardPage() {
     const chatId = selectedChat?.id;
     if (!chatId || selectedChat?.type === 'group') return;
     const currentlyBlocked = blockedByMeSet.has(String(chatId));
-    const action = currentlyBlocked ? 'unblock' : 'block';
     if (!window.confirm(`${currentlyBlocked ? 'Unblock' : 'Block'} ${nameOf(chatId, 'this contact')}?`)) return;
     try {
-      const res = await fetch(`${API_URL}/api/profile/${encodeURIComponent(chatId)}/${action}`, {
+      // POST /block = block, DELETE /block = unblock (the route is the same).
+      const res = await fetch(`${API_URL}/api/profile/${encodeURIComponent(chatId)}/block`, {
         method: currentlyBlocked ? 'DELETE' : 'POST',
         headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
       });
@@ -6731,6 +6731,8 @@ onClick={() => {
 
       const chatMessages = messages[selectedChat.id] || [];
       const chatIsBlocked = isChatBlocked(selectedChat.id);
+      // Presence (Online / last seen) is hidden for BOTH parties of a block.
+      const chatBlockedEitherWay = chatIsBlocked || blockedMeSet.has(String(selectedChat?.id ?? ''));
 
     const handleSendMessage = (e) => {
       
@@ -7013,9 +7015,11 @@ onClick={() => {
           <div className="user-info">
             <h4>{nameOf(selectedChat?.id, selectedChat?.name)}</h4>
             <p>
-              {selectedChat?.online
-                ? 'Online'
-                : formatLastSeen(selectedChat?.lastSeen)}
+              {chatBlockedEitherWay
+                ? ''
+                : (selectedChat?.online
+                  ? 'Online'
+                  : formatLastSeen(selectedChat?.lastSeen))}
             </p>
           </div>
         </div>

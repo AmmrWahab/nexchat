@@ -128,7 +128,7 @@ router.get('/contacts', auth, async (req, res) => {
         email: c.email,
         photo: blockedMe ? '' : (c.photo || 'https://via.placeholder.com/50'),
         about: blockedMe ? '' : (c.about || ''),
-        lastSeen: c.lastSeen,
+        lastSeen: (blockedByMe || blockedMe) ? null : c.lastSeen,
         blockedByMe,
         blockedMe,
       };

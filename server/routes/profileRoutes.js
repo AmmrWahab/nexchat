@@ -145,14 +145,19 @@ export default function createProfileRouter(io) {
         (id) => String(id) === String(req.userId)
       );
 
+      // Last seen disappears in BOTH directions of a block (WhatsApp-style):
+      // neither the blocker nor the blocked user can see the other's activity.
+      let viewerBlockedTarget = false;
       let isOwn = false;
       let isContact = false;
       if (String(targetId) === String(req.userId)) {
         isOwn = true;
       } else {
-        const me = await User.findById(req.userId).select('contacts');
+        const me = await User.findById(req.userId).select('contacts blockedUsers');
         isContact = (me?.contacts || []).some((c) => String(c) === String(targetId));
+        viewerBlockedTarget = (me?.blockedUsers || []).some((id) => String(id) === String(targetId));
       }
+      const blockEitherWay = viewerBlocked || viewerBlockedTarget;
 
       const body = {
         id: String(target._id),
@@ -162,7 +167,7 @@ export default function createProfileRouter(io) {
       if (isOwn || isContact) {
         body.about = viewerBlocked ? '' : (target.about || '');
         body.email = viewerBlocked ? '' : target.email;
-        body.lastSeen = viewerBlocked ? null : target.lastSeen;
+        body.lastSeen = blockEitherWay ? null : target.lastSeen;
       }
       res.json({ user: body });
     } catch (err) {
