@@ -10,6 +10,15 @@ import { API_URL } from '../config.js';
 
 const BLUE_TICK = '#53bdeb';
 
+// Hollow/profile-anonymous avatar shown when a user has BLOCKED you — per
+// privacy rules they get the default silhouette instead of the real photo.
+const HOLLOW_AVATAR = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">' +
+  '  <circle cx="50" cy="38" r="24" fill="#cfd4d8"/>' +
+  '  <path d="M22 90a28 28 0 0 1 56 0z" fill="#cfd4d8"/>' +
+  '</svg>'
+);
+
 // WhatsApp-style delivery ticks: single grey = sent, double tick = delivered, blue = read.
 function WhatsAppTicks({ read, delivered }) {
   return (
@@ -188,6 +197,46 @@ export default function DashboardPage() {
     const hit = (contactsRef.current || []).find((c) => c && String(c.id) === id);
     return hit && hit.name && String(hit.name).trim() ? hit.name : (fallback || 'Unknown');
   };
+  // Privacy-aware avatar: users who blocked us are shown the anonymous hollow
+  // silhouette instead of their real profile photo (WhatsApp-style).
+  const avatarFor = (id, photo, fallback) => {
+    if (blockedMeSet.has(String(id ?? ''))) return HOLLOW_AVATAR;
+    return photo || fallback || 'https://via.placeholder.com/50';
+  };
+  // Block / unblock the currently open DM from the Contact Info drawer.
+  const toggleBlockContact = async () => {
+    const chatId = selectedChat?.id;
+    if (!chatId || selectedChat?.type === 'group') return;
+    const currentlyBlocked = blockedByMeSet.has(String(chatId));
+    const action = currentlyBlocked ? 'unblock' : 'block';
+    if (!window.confirm(`${currentlyBlocked ? 'Unblock' : 'Block'} ${nameOf(chatId, 'this contact')}?`)) return;
+    try {
+      const res = await fetch(`${API_URL}/api/profile/${encodeURIComponent(chatId)}/${action}`, {
+        method: currentlyBlocked ? 'DELETE' : 'POST',
+        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
+      });
+      if (!res.ok) {
+        console.error('Block toggle failed', res.status);
+        return;
+      }
+      // Update local state immediately; profileRefreshTick triggers refetches.
+      setBlockedByMeSet(prev => {
+        const next = new Set(prev);
+        if (currentlyBlocked) next.delete(String(chatId));
+        else next.add(String(chatId));
+        return next;
+      });
+      setContacts(prev => prev.map(c =>
+        String(c.id) === String(chatId) ? { ...c, blockedByMe: !currentlyBlocked } : c
+      ));
+      setProfileRefreshTick(t => t + 1);
+    } catch (err) {
+      console.error('Block toggle error', err);
+    }
+  };
+  const isChatBlocked = (chatId) => {
+    return selectedChat?.type !== 'group' && blockedByMeSet.has(String(chatId ?? ''));
+  };
   const groupOpenAtRef = useRef(0);
   const groupsListRef = useRef([]);
   const groupMessageElsRef = useRef({});
@@ -272,6 +321,9 @@ export default function DashboardPage() {
   const [groupMobileSearchIndex, setGroupMobileSearchIndex] = useState(-1);
   const [showSelDropdown, setShowSelDropdown] = useState(false);
   const [showContactInfo, setShowContactInfo] = useState(false);
+  // Block state: blockedByMeSet = users I blocked; blockedMeSet = users who blocked me.
+  const [blockedByMeSet, setBlockedByMeSet] = useState(new Set());
+  const [blockedMeSet, setBlockedMeSet] = useState(new Set());
   const [contactInfoProfile, setContactInfoProfile] = useState(null);
   const [showGroupInfo, setShowGroupInfo] = useState(false);
   const [showForwardModal, setShowForwardModal] = useState(false);
@@ -3258,6 +3310,37 @@ newSocket.on('messageSendError', (err) => {
   if (err && err.message) alert(err.message);
 });
 
+// Someone blocked/unblocked us -> update the "users who blocked me" set and
+// refresh contacts/profile so the blocked party's photo/About immediately
+// turn into the anonymous silhouette + hidden About.
+newSocket.on('user:blocked', ({ by, target, blocked }) => {
+  const myId = userRef.current?.id;
+  if (target && String(target) === String(myId)) {
+    // A contact blocked (or unblocked) me.
+    setBlockedMeSet(prev => {
+      const next = new Set(prev);
+      if (blocked) next.add(String(by));
+      else next.delete(String(by));
+      return next;
+    });
+  } else if (by && String(by) === String(myId)) {
+    // I blocked/unblocked someone on another of my devices.
+    setBlockedByMeSet(prev => {
+      const next = new Set(prev);
+      if (blocked) next.add(String(target));
+      else next.delete(String(target));
+      return next;
+    });
+  }
+  setProfileRefreshTick(t => t + 1);
+});
+
+// Server rejected a message due to an active block — mark the optimistic
+// message as failed (single tick stays, and the user is informed).
+newSocket.on('messageBlocked', ({ to }) => {
+  console.warn('🚫 Message blocked by server for', to);
+});
+
 // ✅ 1:1 conversation history (server-authoritative) — lets every device of
 //    the same account rebuild identical conversation state on connect/open.
 newSocket.on('messagesHistory', ({ chatId, messages }) => {
@@ -3870,6 +3953,17 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
               });
               const data = await res.json();
               if (data && Array.isArray(data.contacts)) {
+                // Reconcile block state from the server (authoritative).
+                setBlockedByMeSet(prev => {
+                  const next = new Set(prev);
+                  data.contacts.forEach(c => (c.blockedByMe ? next.add(String(c._id)) : next.delete(String(c._id))));
+                  return next;
+                });
+                setBlockedMeSet(prev => {
+                  const next = new Set(prev);
+                  data.contacts.forEach(c => (c.blockedMe ? next.add(String(c._id)) : next.delete(String(c._id))));
+                  return next;
+                });
                 // Merge server contacts into state WITHOUT wiping contacts that were
                 // added at runtime (e.g. a sender who just messaged you), so the
                 // fresh chat stays visible.
@@ -4239,7 +4333,9 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
                         email: data.user.email || '',
                         photo: data.user.photo || 'https://via.placeholder.com/50',
                         about: data.user.about || '',
+                        blockedUsers: data.user.blockedUsers || [],
                       });
+                      setBlockedByMeSet(new Set((data.user.blockedUsers || []).map(String)));
                     }
                   })
                   .catch(() => {});
@@ -5053,7 +5149,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
         }}
         style={{ cursor: 'pointer' }}
       >
-          <img src={chat.photo || 'https://via.placeholder.com/50'} alt={nameOf(chat.id, chat.name)} />
+          <img src={avatarFor(chat.id, chat.photo, 'https://via.placeholder.com/50')} alt={nameOf(chat.id, chat.name)} />
           <div className="chat-info">
             <h4>{nameOf(chat.id, chat.name)}</h4>
             <p className={hasUnread ? 'unread-preview' : ''}>{preview}</p>
@@ -5154,7 +5250,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
                       return {
                         key: chat.id,
                         name: chat.name,
-                        photo: chat.photo || 'https://via.placeholder.com/50',
+                        photo: avatarFor(chat.id, chat.photo, 'https://via.placeholder.com/50'),
                         count: un.length + missedUnread,
                         text,
                         open: () => {
@@ -6634,10 +6730,12 @@ onClick={() => {
       }
 
       const chatMessages = messages[selectedChat.id] || [];
+      const chatIsBlocked = isChatBlocked(selectedChat.id);
 
     const handleSendMessage = (e) => {
       
   e.preventDefault();
+  if (chatIsBlocked) return;
   const input = messageInputRef.current;
   if (!input?.value.trim()) return;
 
@@ -6909,7 +7007,7 @@ onClick={() => {
             </button>
           )}
           <img
-            src={selectedChat?.photo || 'https://via.placeholder.com/40'}
+            src={avatarFor(selectedChat?.id, selectedChat?.photo, 'https://via.placeholder.com/40')}
             alt={nameOf(selectedChat?.id, selectedChat?.name)}
           />
           <div className="user-info">
@@ -7667,13 +7765,15 @@ onClick={() => {
                 ref={messageInputRef}
                 rows={1}
                 enterKeyHint="enter"
-                value={desktopDraft}
+                value={chatIsBlocked ? 'Please unblock first' : desktopDraft}
+                readOnly={chatIsBlocked}
                 onChange={(e) => {
+                  if (chatIsBlocked) return;
                   setDesktopDraft(e.target.value);
                   e.target.style.height = 'auto';
                   e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px';
                 }}
-                placeholder={replyTo ? 'Reply to message...' : 'Message'}
+                placeholder={chatIsBlocked ? 'Please unblock first' : (replyTo ? 'Reply to message...' : 'Message')}
                 aria-label="Message"
               />
               <button
@@ -7821,9 +7921,13 @@ onClick={() => {
             <input
               ref={messageInputRef}
               type="text"
-              value={desktopDraft}
-              onChange={(e) => setDesktopDraft(e.target.value)}
-              placeholder={replyTo ? 'Reply to message...' : 'Type a message'}
+              value={chatIsBlocked ? 'Please unblock first' : desktopDraft}
+              onChange={(e) => {
+                if (chatIsBlocked) return;
+                setDesktopDraft(e.target.value);
+              }}
+              placeholder={chatIsBlocked ? 'Please unblock first' : (replyTo ? 'Reply to message...' : 'Type a message')}
+              readOnly={chatIsBlocked}
               required
             />
 
@@ -7986,7 +8090,7 @@ onClick={() => {
           }}
         >
           <img
-            src={selectedChat?.photo || 'https://via.placeholder.com/80'}
+            src={avatarFor(selectedChat?.id, selectedChat?.photo, 'https://via.placeholder.com/80')}
             alt="Profile"
             style={{
               width: '80px',
@@ -8035,7 +8139,9 @@ onClick={() => {
             About
           </div>
           <div>
-            {contactInfoProfile?.about ? contactInfoProfile.about : 'No about info yet.'}
+            {blockedMeSet.has(String(selectedChat?.id ?? ''))
+              ? 'No about info yet.'
+              : (contactInfoProfile?.about ? contactInfoProfile.about : 'No about info yet.')}
           </div>
         </div>
 
@@ -8092,8 +8198,9 @@ onClick={() => {
     borderTop: '1px solid #eee',
   }}
 >
-  {/* Block */}
+  {/* Block / Unblock */}
   <div
+    onClick={toggleBlockContact}
     style={{
       display: 'flex',
       alignItems: 'center',
@@ -8104,11 +8211,22 @@ onClick={() => {
       cursor: 'pointer',
     }}
   >
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <circle cx="12" cy="12" r="10" stroke="red" strokeWidth="2" />
-      <line x1="7" y1="7" x2="17" y2="17" stroke="red" strokeWidth="2" />
-    </svg>
-    <span>Block {nameOf(selectedChat?.id, selectedChat?.name)}</span>
+    {blockedByMeSet.has(String(selectedChat?.id ?? '')) ? (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="12" cy="12" r="10" stroke="green" strokeWidth="2" />
+        <polyline points="8 12 11 15 16 9" stroke="green" strokeWidth="2" fill="none" />
+      </svg>
+    ) : (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="12" cy="12" r="10" stroke="red" strokeWidth="2" />
+        <line x1="7" y1="7" x2="17" y2="17" stroke="red" strokeWidth="2" />
+      </svg>
+    )}
+    <span>
+      {blockedByMeSet.has(String(selectedChat?.id ?? ''))
+        ? `Unblock ${nameOf(selectedChat?.id, selectedChat?.name)}`
+        : `Block ${nameOf(selectedChat?.id, selectedChat?.name)}`}
+    </span>
   </div>
 
   {/* Report */}

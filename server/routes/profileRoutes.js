@@ -39,7 +39,7 @@ export default function createProfileRouter(io) {
   // GET /api/profile/me — the current user's own profile
   router.get('/me', auth, async (req, res) => {
     try {
-      const me = await User.findById(req.userId).select('name email photo about lastSeen');
+      const me = await User.findById(req.userId).select('name email photo about lastSeen blockedUsers');
       if (!me) return res.status(404).json({ message: 'User not found' });
       res.json({
         user: {
@@ -49,6 +49,7 @@ export default function createProfileRouter(io) {
           photo: me.photo || DEFAULT_PHOTO,
           about: me.about || '',
           lastSeen: me.lastSeen,
+          blockedUsers: (me.blockedUsers || []).map((id) => String(id)),
         },
       });
     } catch (err) {
@@ -137,8 +138,12 @@ export default function createProfileRouter(io) {
     const targetId = req.params?.id;
     if (!targetId) return res.status(400).json({ message: 'id required' });
     try {
-      const target = await User.findById(targetId).select('name email photo about lastSeen');
+      const target = await User.findById(targetId).select('name email photo about lastSeen blockedUsers');
       if (!target) return res.status(404).json({ message: 'User not found' });
+
+      const viewerBlocked = (target.blockedUsers || []).some(
+        (id) => String(id) === String(req.userId)
+      );
 
       let isOwn = false;
       let isContact = false;
@@ -152,12 +157,12 @@ export default function createProfileRouter(io) {
       const body = {
         id: String(target._id),
         name: target.name,
-        photo: target.photo || DEFAULT_PHOTO,
+        photo: viewerBlocked ? '' : (target.photo || DEFAULT_PHOTO),
       };
       if (isOwn || isContact) {
-        body.about = target.about || '';
-        body.email = target.email;
-        body.lastSeen = target.lastSeen;
+        body.about = viewerBlocked ? '' : (target.about || '');
+        body.email = viewerBlocked ? '' : target.email;
+        body.lastSeen = viewerBlocked ? null : target.lastSeen;
       }
       res.json({ user: body });
     } catch (err) {
@@ -165,6 +170,41 @@ export default function createProfileRouter(io) {
       res.status(500).json({ message: 'Server error' });
     }
   });
+
+  function setBlock(req, res, blocked) {
+    const targetId = req.params?.id;
+    if (!targetId) return res.status(400).json({ message: 'id required' });
+    if (String(targetId) === String(req.userId)) {
+      return res.status(400).json({ message: "You can't block yourself" });
+    }
+    (async () => {
+      try {
+        const updater = blocked
+          ? { $addToSet: { blockedUsers: targetId } }
+          : { $pull: { blockedUsers: targetId } };
+        const me = await User.findByIdAndUpdate(req.userId, updater, { new: true }).select('blockedUsers');
+        if (!me) return res.status(404).json({ message: 'User not found' });
+        // Tell the target (and my own other devices) that the block changed.
+        // `by` = who acted, `target` = who is blocked/unblocked; clients use
+        // this to decide whether THEY were blocked or did the blocking.
+        emitToUsers([targetId, req.userId], 'user:blocked', {
+          by: String(req.userId),
+          target: String(targetId),
+          blocked,
+        });
+        res.json({ user: { id: String(me._id), blockedUsers: (me.blockedUsers || []).map((id) => String(id)) } });
+      } catch (err) {
+        console.error('Block user error:', err.message);
+        res.status(500).json({ message: 'Server error' });
+      }
+    })();
+  }
+
+  // POST /api/profile/:id/block — block a user
+  router.post('/:id/block', auth, (req, res) => setBlock(req, res, true));
+
+  // DELETE /api/profile/:id/block — unblock a user
+  router.delete('/:id/block', auth, (req, res) => setBlock(req, res, false));
 
   return router;
 }

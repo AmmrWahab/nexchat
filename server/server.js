@@ -237,6 +237,23 @@ socket.on("sendMessage", async (data) => {
   try {
     const sender = await User.findById(from).select("name").exec();
     if (!sender) return console.error("Sender not found");
+
+    // 🚫 Block enforcement: if either party blocked the other, the message is
+    //    silently dropped — never saved, never delivered. The blocked sender's
+    //    optimistic message therefore stays at a single tick, and the blocker
+    //    is free in the chat without any inbox pollution.
+    const blockedPair = await Promise.all([
+      User.findById(from).select("blockedUsers").exec(),
+      User.findById(to).select("blockedUsers").exec(),
+    ]);
+    const senderBlocked = (blockedPair[0]?.blockedUsers || []).some((id) => String(id) === String(to));
+    const receiverBlocked = (blockedPair[1]?.blockedUsers || []).some((id) => String(id) === String(from));
+    if (senderBlocked || receiverBlocked) {
+      console.log(`🚫 Blocked DM rejected: ${from} -> ${to} (senderBlocked=${senderBlocked}, receiverBlocked=${receiverBlocked})`);
+      socket.emit("messageBlocked", { to, blocked: true });
+      return;
+    }
+
 console.log("💾 [DB] Attempting to save message..."); // 🔥
     const newMsg = await Message.create({
       from,
@@ -1155,7 +1172,30 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
       if (undelivered.length > 0) {
         console.log(`📦 Delivering ${undelivered.length} undelivered messages to ${socket.userId}`);
 
+        // 🚫 Never deliver a message across an active block: skip any message
+        //    where either side blocked the other in the meantime.
+        const recipient = await User.findById(socket.userId).select("blockedUsers").exec();
+        const recipientBlocked = new Set((recipient?.blockedUsers || []).map((id) => String(id)));
+        const senderBlockCache = new Map();
+
         for (const msg of undelivered) {
+          const senderId = String((msg.from && (msg.from._id || msg.from)) || '');
+          if (!senderId) continue;
+          if (recipientBlocked.has(senderId)) {
+            console.log(`🚫 Skipping undelivered ${msg._id}: recipient blocked sender ${senderId}`);
+            continue;
+          }
+          let senderBlockedIds = senderBlockCache.get(senderId);
+          if (senderBlockedIds === undefined) {
+            const senderDoc = await User.findById(senderId).select("blockedUsers").exec();
+            senderBlockedIds = new Set((senderDoc?.blockedUsers || []).map((id) => String(id)));
+            senderBlockCache.set(senderId, senderBlockedIds);
+          }
+          if (senderBlockedIds.has(String(msg.to))) {
+            console.log(`🚫 Skipping undelivered ${msg._id}: sender blocked recipient`);
+            continue;
+          }
+
           // 1. Send message to now-online recipient
           io.to(socket.id).emit("receiveMessage", {
             _id: msg._id,

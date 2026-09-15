@@ -115,17 +115,22 @@ function customNameFor(me, userId) {
 // saved name when present, otherwise the target user's real account name.
 router.get('/contacts', auth, async (req, res) => {
   try {
-    const me = await User.findById(req.userId).populate('contacts', 'name email photo about lastSeen');
+    const me = await User.findById(req.userId).populate('contacts', 'name email photo about lastSeen blockedUsers');
+    const myBlocked = new Set((me?.blockedUsers || []).map((id) => String(id)));
     const contacts = (me?.contacts || []).map((c) => {
       const customName = customNameFor(me, c._id);
+      const blockedByMe = myBlocked.has(String(c._id));
+      const blockedMe = (c.blockedUsers || []).some((id) => String(id) === String(req.userId));
       return {
         _id: String(c._id),
         name: customName || c.name || 'Unknown',
         customName,
         email: c.email,
-        photo: c.photo || 'https://via.placeholder.com/50',
-        about: c.about || '',
+        photo: blockedMe ? '' : (c.photo || 'https://via.placeholder.com/50'),
+        about: blockedMe ? '' : (c.about || ''),
         lastSeen: c.lastSeen,
+        blockedByMe,
+        blockedMe,
       };
     });
     res.json({ contacts });
