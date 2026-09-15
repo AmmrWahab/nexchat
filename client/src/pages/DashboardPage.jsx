@@ -205,7 +205,7 @@ export default function DashboardPage() {
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [user, setUser] = useState({ name: 'You' }); // Update this to include id
-  const [profileRoute, setProfileRoute] = useState(isMobile ? 'page' : 'list'); // 'list' (desktop preview) | 'page' | 'name' | 'about'
+  const [profileRoute, setProfileRoute] = useState('page'); // 'page' | 'name' | 'about'; desktop opens directly on 'page'
   const [profilePhotoMenu, setProfilePhotoMenu] = useState(false);
   const [profileNameDraft, setProfileNameDraft] = useState('');
   const [profileAboutDraft, setProfileAboutDraft] = useState('');
@@ -2900,10 +2900,9 @@ useEffect(() => { activeCallRef.current = activeCall; }, [activeCall]);
 
 useEffect(() => {
   if (activeTab === 'profile') {
-    // Desktop: the Profile tab opens on a compact preview inside this panel,
-    // then expands into the full editable profile page when an option is
-    // clicked. Mobile lands directly on the full profile page.
-    setProfileRoute(isMobile ? 'page' : 'list');
+    // The Profile tab always lands directly on the editable profile page —
+    // there is no intermediate preview page anymore.
+    setProfileRoute('page');
     setProfilePhotoMenu(false);
   }
 }, [activeTab, isMobile]);
@@ -4833,9 +4832,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
 
       const profileBack = () => {
         if (profileRoute === 'name' || profileRoute === 'about') setProfileRoute('page');
-        else if (profileRoute === 'list') { setActiveTab('chats'); setView('chats'); }
         else if (isMobile) { setActiveTab('chats'); setView('chats'); }
-        else { setProfileRoute('list'); }
       };
       const openProfileName = () => { setProfileNameDraft(user.name || ''); setProfileRoute('name'); };
       const openProfileAbout = () => { setProfileAboutDraft(user.about || profileDefaultAbout); setProfileRoute('about'); };
@@ -5437,46 +5434,6 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
         const aboutText = user.about ? String(user.about).trim() : profileDefaultAbout;
         const myName = user.name || 'You';
 
-        // Desktop layout: the Profile tab opens as a compact PREVIEW first
-        // (avatar + name + about, styled like the chat list). Clicking it or
-        // any profile option expands into the full editable profile page
-        // inside this same panel — mirroring how Chats/Groups show a preview
-        // here first.
-        if (profileRoute === 'list') {
-          return (
-            <div className="profile-page">
-              <div className="profile-body">
-                <div className="chat-item" role="button" aria-label="Open profile" onClick={() => setProfileRoute('page')}>
-                  <img src={photo} alt={myName} />
-                  <div className="chat-info">
-                    <h4>{myName}</h4>
-                    <p>{aboutText}</p>
-                  </div>
-                  <div className="chat-item-right">
-                    <ChevronRight size={20} strokeWidth={1.8} />
-                  </div>
-                </div>
-                <div className="profile-row" role="button" aria-label="Edit name" onClick={() => setProfileRoute('page')}>
-                  <span className="profile-row-icon"><User size={20} strokeWidth={1.8} /></span>
-                  <span className="profile-row-text">
-                    <span className="profile-row-head">Name</span>
-                    <span className="profile-row-value">{myName}</span>
-                  </span>
-                  <ChevronRight size={20} strokeWidth={1.8} className="profile-chevron" />
-                </div>
-                <div className="profile-row" role="button" aria-label="Edit about" onClick={() => setProfileRoute('page')}>
-                  <span className="profile-row-icon"><Info size={20} strokeWidth={1.8} /></span>
-                  <span className="profile-row-text">
-                    <span className="profile-row-head">About</span>
-                    <span className="profile-row-value profile-row-about">{aboutText}</span>
-                  </span>
-                  <ChevronRight size={20} strokeWidth={1.8} className="profile-chevron" />
-                </div>
-              </div>
-            </div>
-          );
-        }
-
         const photoMenu = (
           <div className="profile-photo-menu">
             <button type="button" className="profile-photo-menu-btn" onClick={() => profilePhotoInputRef.current?.click()} disabled={profileSaveBusy}>
@@ -5550,18 +5507,21 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
           );
         }
 
-        // Main profile page. On desktop it sits inside the left panel as a
-        // nested view: its back arrow returns to the profile preview ('list').
-        // On mobile the back arrow returns to the Chats list.
+        // Main profile page. On desktop the Profile tab behaves like every
+        // other top-level tab (its "Profile" header is rendered by the panel),
+        // so there is no back arrow here. On mobile the topbar with a back
+        // arrow is preserved so the page works like a nested view.
         return (
           <div className="profile-page">
-            <div className="profile-topbar">
-              <button type="button" className="profile-back" onClick={profileBack} aria-label="Back">
-                <ArrowLeft size={22} strokeWidth={1.8} />
-              </button>
-              <h2>Profile</h2>
-              <span className="profile-topbar-spacer" />
-            </div>
+            {isMobile && (
+              <div className="profile-topbar">
+                <button type="button" className="profile-back" onClick={profileBack} aria-label="Back">
+                  <ArrowLeft size={22} strokeWidth={1.8} />
+                </button>
+                <h2>Profile</h2>
+                <span className="profile-topbar-spacer" />
+              </div>
+            )}
             <div className="profile-body">
               <div className="profile-avatar-wrap">
                 <div
@@ -8330,7 +8290,6 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
         className={`nav-item ${activeTab === item.id ? 'active' : ''}`}
         onClick={() => {
           setActiveTab(item.id);
-          if (item.id === 'profile' && !isMobile) setProfileRoute('list');
           setSelectedChat(null);
          
           setIsSidebarExpanded(false); // ✅ Close sidebar on click
@@ -8346,7 +8305,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
 
       {/* Center Panel (30%) */}
 <main className="center-panel">
-{!showGroupFlow && (activeTab !== 'profile' || (!isMobile && profileRoute === 'list')) && (
+{!showGroupFlow && (activeTab !== 'profile' || (!isMobile && profileRoute === 'page')) && (
   <h2 className="panel-title">
     {activeTab.charAt(0).toUpperCase() + activeTab.slice(1)}
   </h2>
