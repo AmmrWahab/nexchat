@@ -35,10 +35,35 @@ function linkify(text) {
 // localStorage write that never crashes the UI on QuotaExceededError.
 function safeSetItem(key, value) {
   try {
-    localStorage.setItem(key, JSON.stringify(value));
+    localStorage.setItem(accountScopedKey(key), JSON.stringify(value));
   } catch (err) {
     console.warn(`localStorage write failed for "${key}"`, err);
   }
+}
+
+// Conversation data (chatMessages, selectedChat, dashboardChatOpen) is keyed
+// per account so a second account signing in on the SAME device can never see
+// another account's chats. localStorage is only a cache — the server is the
+// source of truth.
+function currentUserIdFromToken() {
+  try {
+    const token = localStorage.getItem('token');
+    if (!token) return null;
+    const payload = JSON.parse(atob(token.split('.')[1]));
+    return payload && payload.userId ? String(payload.userId) : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+function accountScopedKey(key) {
+  const uid = currentUserIdFromToken();
+  return uid ? `${key}_${uid}` : key;
+}
+
+function readChatMessages() {
+  const saved = localStorage.getItem(accountScopedKey('chatMessages'));
+  return saved ? JSON.parse(saved) : null;
 }
 
 // WhatsApp-style call-history row date ("today at 3:45 PM" / "yesterday at …" / "12 Mar at …")
@@ -232,6 +257,7 @@ export default function DashboardPage() {
   const isMobileRef = useRef(isMobile);
   const socketRef = useRef(null);
   const userRef = useRef(user);
+  const onlineUsersRef = useRef(new Set());
   const lastStatusUpdate = useRef({});
   const [showClearChatConfirm, setShowClearChatConfirm] = useState(false);
   const [isSelectionMode, setIsSelectionMode] = useState(false);
@@ -1089,8 +1115,7 @@ function formatTime(value) {
 
   const [messages, setMessages] = useState(() => {
   try {
-    const saved = localStorage.getItem('chatMessages');
-    return saved ? JSON.parse(saved) : {};
+    return readChatMessages() || {};
   } catch (err) {
     console.error('Failed to load messages', err);
     return {};
@@ -2953,8 +2978,8 @@ useEffect(() => {
 
 
 useEffect(() => {
-  const saved = localStorage.getItem('chatMessages');
-  console.log('📁 Messages on load:', saved ? Object.keys(JSON.parse(saved)) : 'none');
+  const saved = readChatMessages();
+  console.log('📁 Messages on load:', saved ? Object.keys(saved) : 'none');
 }, []);
 
   // Auto-scroll to the latest message for the open DM — always when the chat
@@ -3289,6 +3314,9 @@ newSocket.on('userStatus', (data) => {
 
   const targetId = String(data.userId);
 
+  if (data.isOnline) onlineUsersRef.current.add(targetId);
+  else onlineUsersRef.current.delete(targetId);
+
   setContacts(prev => prev.map(c =>
     c && String(c.id) === targetId
       ? {
@@ -3315,6 +3343,7 @@ newSocket.on('userStatus', (data) => {
 // ✅ Initial snapshot of already-online users (sent once on connect)
 newSocket.on('userStatusSnapshot', (snapshot) => {
   if (!Array.isArray(snapshot)) return;
+  onlineUsersRef.current = new Set(snapshot.map(s => String(s.userId)));
   setContacts(prev => {
     let changed = false;
     const next = prev.map(c => {
@@ -3449,7 +3478,7 @@ newSocket.on("receiveMessage", (data) => {
       if (exists) {
         const next = prev.map(c =>
           String(c.id) === senderId
-            ? { ...c, lastMsg: data.message, time: data.time, online: true }
+            ? { ...c, lastMsg: data.message, time: data.timestamp, online: true }
             : c
         );
         contactsRef.current = next;
@@ -3461,7 +3490,7 @@ newSocket.on("receiveMessage", (data) => {
         photo: data.fromPhoto || 'https://placehold.co/50x50',
 
         lastMsg: data.message,
-        time: data.time,
+        time: data.timestamp,
         online: true
       };
       const updated = [newContact, ...prev];
@@ -4005,7 +4034,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
         // Save whenever chat changes
         useEffect(() => {
           if (selectedChat?.id) {
-            localStorage.setItem('selectedChat', JSON.stringify(selectedChat));
+            localStorage.setItem(accountScopedKey('selectedChat'), JSON.stringify(selectedChat));
           }
         }, [selectedChat]);
 
@@ -4023,7 +4052,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
             return;
           }
           const chatOpen = !!(selectedChat?.id || selectedGroup?.id);
-          try { localStorage.setItem('dashboardChatOpen', chatOpen ? 'true' : 'false'); } catch { console.warn('Failed to persist chat-open state'); }
+          try { localStorage.setItem(accountScopedKey('dashboardChatOpen'), chatOpen ? 'true' : 'false'); } catch { console.warn('Failed to persist chat-open state'); }
         }, [selectedChat?.id, selectedGroup?.id]);
 
         // Restore the previous chat ONLY if, at page load, a chat was genuinely
@@ -4039,14 +4068,14 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
         useEffect(() => {
           if (!dataReady || restoredChatOnceRef.current) return;
           restoredChatOnceRef.current = true;
-          const saved = localStorage.getItem('selectedChat');
+          const saved = localStorage.getItem(accountScopedKey('selectedChat'));
           const parsed = saved ? JSON.parse(saved) : null;
           if (!parsed?.id) return;
           let savedSection;
           try { savedSection = isMobile ? localStorage.getItem('dashboardView') : localStorage.getItem('dashboardActiveTab'); } catch { savedSection = null; }
           if ((savedSection || '') !== 'chats') return;
           let chatWasOpen;
-          try { chatWasOpen = localStorage.getItem('dashboardChatOpen') === 'true'; } catch { chatWasOpen = false; }
+          try { chatWasOpen = localStorage.getItem(accountScopedKey('dashboardChatOpen')) === 'true'; } catch { chatWasOpen = false; }
           if (!chatWasOpen) return;
           const stillExists =
             contacts.some(c => String(c.id) === String(parsed.id)) ||
@@ -4192,18 +4221,18 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
                   })
                   .catch(() => {});
 
-                // ✅ Migrate messages from "undefined" to real userId
-                const saved = localStorage.getItem('chatMessages');
+                // ✅ Per-account chat cache: read ONLY this account's messages
+                //    so a second account on the same device never sees another
+                //    account's conversations.
+                const saved = readChatMessages();
                 if (saved) {
-                  const messages = JSON.parse(saved);
-                  if (messages.undefined && !messages[userId]) {
-                    messages[userId] = messages.undefined;
-                    delete messages.undefined;
-                    safeSetItem('chatMessages', messages);
-                    setMessages(messages);
-                  } else {
-                    setMessages(messages);
+                  // Legacy cleanup: a stale "undefined" chat key must never
+                  // surface as a ghost conversation under this account.
+                  if ('undefined' in saved) {
+                    delete saved.undefined;
+                    safeSetItem('chatMessages', saved);
                   }
+                  setMessages(saved);
                 }
               } catch (err) {
                 console.error('Failed to decode token', err);
@@ -4922,7 +4951,19 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
           <input type="text" placeholder="Search" />
         </div>
         <div className="items-list">
-          {activeTab === 'chats' && [...contacts, ...chats].map(chat => {
+          {activeTab === 'chats' && [...contacts, ...chats]
+            .sort((a, b) => {
+              const latestActivity = (chat) => {
+                const msgs = messages[chat.id] || [];
+                const last = msgs[msgs.length - 1];
+                const msgTime = last ? Number(last.timestamp) || 0 : 0;
+                const ct = calls.filter(c => !c.groupId && String(c.userId) === String(chat.id));
+                const callTime = ct.length ? Number(ct.reduce((x, y) => (Number(y.time) || 0) > (Number(x.time) || 0) ? y : x).time) || 0 : 0;
+                return Math.max(msgTime, callTime);
+              };
+              return latestActivity(b) - latestActivity(a);
+            })
+            .map(chat => {
             const chatMsgs = messages[chat.id] || [];
             const last = chatMsgs[chatMsgs.length - 1];
             const unreadMsgs = chatMsgs.filter(m => m.sender !== 'You' && !m.read);
@@ -9695,8 +9736,16 @@ setContacts(prev => {
       <span className="call-min-status">
         {activeCall.mode === 'incoming'
           ? 'Incoming call…'
-          : activeCall.mode === 'outgoing'
-            ? (contacts.some(c => String(c.id) === String(activeCall.peerId) && c.online) ? 'Ringing…' : 'Calling…')
+            : activeCall.mode === 'outgoing'
+              ? (() => {
+                  if (activeCall.group) {
+                    const g = groupsList.find(x => String(x.id) === String(activeCall.groupId));
+                    const memberIds = (g?.members || []).map(m => String((m?._id || m?.id) || m)).filter(x => x && x !== String(user.id));
+                    if (memberIds.length === 0) return 'Ringing…';
+                    return memberIds.every(id => onlineUsersRef.current.has(id)) ? 'Ringing…' : 'Calling…';
+                  }
+                  return onlineUsersRef.current.has(String(activeCall.peerId)) ? 'Ringing…' : 'Calling…';
+                })()
             : <span className="call-elapsed">{fmtCallTime(activeCall.elapsed)}</span>}
       </span>
     </div>
@@ -9826,7 +9875,15 @@ setContacts(prev => {
         </div>
         <h2>{nameOf(activeCall.peerId, activeCall.peerName)}</h2>
         <p>
-          {activeCall.mode === 'outgoing' && 'Ringing…'}
+          {activeCall.mode === 'outgoing' && (() => {
+            if (activeCall.group) {
+              const g = groupsList.find(x => String(x.id) === String(activeCall.groupId));
+              const memberIds = (g?.members || []).map(m => String((m?._id || m?.id) || m)).filter(x => x && x !== String(user.id));
+              const allOnline = memberIds.length > 0 && memberIds.every(id => onlineUsersRef.current.has(id));
+              return allOnline ? 'Ringing…' : 'Calling…';
+            }
+            return onlineUsersRef.current.has(String(activeCall.peerId)) ? 'Ringing…' : 'Calling…';
+          })()}
           {activeCall.mode === 'incoming' && 'Incoming video call…'}
           {activeCall.mode !== 'active' && (nameOf(activeCall.peerId, activeCall.peerName) || '') }
           {activeCall.mode === 'active' && activeCall.type === 'voice' && (
