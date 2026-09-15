@@ -22,6 +22,7 @@ const messageSchema = new mongoose.Schema({
   delivered: { type: Boolean, default: false },
   read: { type: Boolean, default: false },
   clientMessageId: String,
+  isForwarded: { type: Boolean, default: false },
 
   createdAt: { type: Date, default: Date.now }
 });

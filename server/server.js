@@ -218,7 +218,7 @@ io.on('connection', (socket) => {
 
 socket.on("sendMessage", async (data) => {
     console.log("📨 [DEBUG] Full data received:", JSON.stringify(data, null, 2)); // 🔥 Full payload
-  const { to, message, from, file, fileName, fileType, replyTo, messageId, duration } = data; // 👈 Make sure you receive `messageId`
+  const { to, message, from, file, fileName, fileType, replyTo, messageId, duration, isForwarded } = data; // 👈 Make sure you receive `messageId`
     console.log("📄 [DEBUG] Extracted fields:", { to, message, from, messageId }); // 🔥 Check values
   const receiverSocketIds = getSocketIds(to);
   if (!from || !to) {
@@ -254,6 +254,7 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
         senderId: replyTo.senderId
       } : null,
       delivered: !!receiverSocketIds,
+      isForwarded: !!isForwarded,
       clientMessageId: data.messageId 
     });
      console.log("✅ [SUCCESS] Saved to DB:", {
@@ -280,7 +281,8 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
         duration,
         replyTo: replyTo,
         timestamp: newMsg.createdAt.getTime(),
-        messageId // 👈 Send back to client
+        messageId, // 👈 Send back to client
+        isForwarded: !!isForwarded,
       };
 
       // ✅ Recipient: deliver to ALL of their connected sockets
@@ -347,6 +349,7 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
         read: !!m.read,
         delivered: !!m.delivered,
         messageId: m.clientMessageId,
+        isForwarded: !!m.isForwarded,
       }));
 
       // Emit to every one of this user's sockets so all synced devices get the
@@ -483,7 +486,7 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
 
   // ✅ Handle group message
   socket.on("sendGroupMessage", async (data) => {
-    const { groupId, message, file, fileName, fileType, messageId, duration } = data;
+    const { groupId, message, file, fileName, fileType, messageId, duration, isForwarded } = data;
     if (!groupId) return;
     if (typeof file === 'string' && file.length > MAX_FILE_BASE64) {
       socket.emit('messageSendError', { groupId, reason: 'file_too_large', message: 'This file is too large to send (max ~9 MB).' });
@@ -506,6 +509,7 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
         fileName,
         fileType,
         duration,
+        isForwarded: !!isForwarded,
         clientMessageId: data.messageId
       });
 
@@ -521,7 +525,8 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
         fileType,
         duration,
         timestamp: newMsg.createdAt.getTime(),
-        messageId
+        messageId,
+        isForwarded: !!isForwarded,
       };
 
       // Send to every member's sockets (except sender's own — sender already shows optimistically)
@@ -684,6 +689,7 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
           // device has received the message. Same server-side aggregation as allRead.
           deliveredBy: deliveredByIds,
           allDelivered: otherMemberIds.length > 0 && otherMemberIds.every(id => deliveredByIds.includes(id)),
+          isForwarded: !!m.isForwarded,
         };
       });
 

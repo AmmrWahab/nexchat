@@ -569,6 +569,23 @@ export default function DashboardPage() {
     socket.emit('postStatus', { type, text: text || '', bg: bg || 'default', file: file || '' });
   };
 
+  // WhatsApp-style "Forwarded" tag shown above forwarded text or media.
+  const ForwardedLabel = () => (
+    <div
+      style={{
+        fontSize: '0.72rem',
+        fontWeight: 600,
+        color: '#128c7e',
+        fontStyle: 'italic',
+        letterSpacing: '0.02em',
+        textTransform: 'uppercase',
+        marginBottom: '2px',
+      }}
+    >
+      Forwarded
+    </div>
+  );
+
   // Voice message bubble with play/pause, animated bars and live progress.
   const VoiceBubble = ({ msg }) => {
     const [playing, setPlaying] = useState(false);
@@ -3270,6 +3287,7 @@ newSocket.on('messagesHistory', ({ chatId, messages }) => {
       photo: m.fromPhoto || 'https://placehold.co/50x50',
       delivered: m.delivered,
       read: !!m.read,
+      isForwarded: !!m.isForwarded,
     }));
     // Merge: server copies (fresh) win over local copies with the same id/localId.
     const seen = new Map();
@@ -3420,6 +3438,7 @@ newSocket.on("receiveMessage", (data) => {
         duration: data.duration,
         replyTo: data.replyTo ? { ...data.replyTo } : null,
         photo: data.fromPhoto || 'https://placehold.co/50x50',
+        isForwarded: !!data.isForwarded,
         delivered: true,
         read: false,
       };
@@ -3450,6 +3469,7 @@ newSocket.on("receiveMessage", (data) => {
         
       } : null,
       photo: data.fromPhoto || 'https://placehold.co/50x50',
+      isForwarded: !!data.isForwarded,
       delivered: true,
       read: autoRead,
     };
@@ -3608,6 +3628,7 @@ newSocket.on("receiveMessage", (data) => {
               fileType: data.fileType,
               duration: data.duration,
               photo: data.fromPhoto || 'https://placehold.co/50x50',
+              isForwarded: !!data.isForwarded,
               // My own message echoed to my other devices is NEVER "read" just
               // because a device has the group open (read ticks come from the
               // server once ALL members have seen the message).
@@ -3713,6 +3734,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
             read: String(m.from) !== user.id,
             allRead: !!m.allRead,
             readBy: m.readBy || [],
+            isForwarded: !!m.isForwarded,
           }))];
           // Dedupe by id/messageId so reopening a group replaces rather than
           // duplicates the ticking message. Last occurrence wins so the server's
@@ -6234,6 +6256,7 @@ onClick={() => {
                         </div>
                       )}
 
+                      {msg.isForwarded && <ForwardedLabel />}
 {!msg.file && msg.text && (
             <div style={{ wordBreak: 'break-word' }}>{linkify(msg.text)}</div>
           )}
@@ -7488,6 +7511,7 @@ onClick={() => {
             )}
 
             {/* Message Text */}
+            {msg.isForwarded && <ForwardedLabel />}
             {!msg.file && msg.text && <div style={{ wordBreak: 'break-word' }}>{linkify(msg.text)}</div>}
 
             {/* Image */}
@@ -8197,6 +8221,7 @@ onClick={() => {
           fromName: currentUser.name,
           timestamp: now,
           messageId: tempId,
+          isForwarded: true,
         };
         currentSocket.emit('sendGroupMessage', payload);
 
@@ -8213,6 +8238,7 @@ onClick={() => {
               file: payload.file || undefined,
               fileName: payload.fileName,
               fileType: payload.fileType,
+              isForwarded: true,
               delivered: false,
               read: false,
             },
@@ -8245,6 +8271,7 @@ onClick={() => {
           fromPhoto: target.photo,
           timestamp: now,
           messageId: tempId,
+          isForwarded: true,
         };
         if (msg.file) {
           payload.file = msg.file;
@@ -8269,6 +8296,7 @@ onClick={() => {
               fileType: payload.fileType,
               sender: 'You',
               timestamp: now,
+              isForwarded: true,
               delivered: false,
               read: false,
             },

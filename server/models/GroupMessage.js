@@ -9,6 +9,7 @@ const groupMessageSchema = new mongoose.Schema({
   fileType: { type: String, default: null },
   duration: { type: Number, default: null },    // seconds (voice messages)
   clientMessageId: String,
+  isForwarded: { type: Boolean, default: false },
   delivered: { type: Boolean, default: false },
   read: { type: Boolean, default: false },
   // Users who have actually seen this message (drives WhatsApp-style read ticks)
