@@ -277,6 +277,7 @@ export default function DashboardPage() {
   const [showForwardModal, setShowForwardModal] = useState(false);
   const [forwardSearchQuery, setForwardSearchQuery] = useState('');
   const [selectedForwardChats, setSelectedForwardChats] = useState(new Set());
+  const [selectedForwardGroups, setSelectedForwardGroups] = useState(new Set());
   const [newMsgCount, setNewMsgCount] = useState(0);
   const messagesScrollRef = useRef(null);
   const lastDmChatRef = useRef(null);
@@ -4398,6 +4399,9 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
               break;
             case 'forward':
               setShowForwardModal(false);
+              setSelectedForwardChats(new Set());
+              setSelectedForwardGroups(new Set());
+              setForwardSearchQuery('');
               forwardOnRef.current = false;
               break;
             case 'groupflow':
@@ -5654,10 +5658,11 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
                         </button>
                         <button
                           className="mobile-selection-action"
-                          onClick={() => {
+onClick={() => {
                             setShowForwardModal(true);
                             setForwardSearchQuery('');
                             setSelectedForwardChats(new Set());
+                            setSelectedForwardGroups(new Set());
                           }}
                           aria-label="Forward selected messages"
                         >
@@ -6735,6 +6740,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
                     setShowForwardModal(true);
                     setForwardSearchQuery('');
                     setSelectedForwardChats(new Set());
+                    setSelectedForwardGroups(new Set());
                   }}
                   aria-label="Forward selected messages"
                 >
@@ -6842,6 +6848,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
                   setShowForwardModal(true);
                   setForwardSearchQuery('');
                   setSelectedForwardChats(new Set());
+                  setSelectedForwardGroups(new Set());
                 }}
                 style={{
                   background: 'none',
@@ -8156,13 +8163,16 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
   );
 };
 
-  const forwardSelectedMessages = (target) => {
+  const forwardSelectedMessages = (target, targetType) => {
     const currentSocket = socketRef.current;
     const currentUser = userRef.current;
     if (!currentSocket || !currentUser?.id || !target?.id) return;
 
-    const chatMessages = messages[selectedChat?.id] || [];
-    const toForward = chatMessages.filter((m) => selectedMessages.has(m.id));
+    const fromGroup = !!selectedGroup;
+    const sourceMsgs = fromGroup
+      ? (groupMessages[selectedGroup.id] || [])
+      : (messages[selectedChat?.id] || []);
+    const toForward = sourceMsgs.filter((m) => selectedMessages.has(m.id));
     if (toForward.length === 0) {
       goBackPage();
       setIsSelectionMode(false);
@@ -8171,45 +8181,100 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
     }
 
     const now = Date.now();
+    const isGroupTarget = targetType === 'group';
 
     toForward.forEach((msg, idx) => {
       const tempId = `fwd-${now}-${idx}-${Math.random()}`;
-      const payload = {
-        to: target.id,
-        from: currentUser.id,
-        fromName: currentUser.name,
-        fromPhoto: target.photo,
-        timestamp: now,
-        messageId: tempId,
-      };
-      if (msg.file) {
-        payload.file = msg.file;
-        payload.fileName = msg.fileName;
-        payload.fileType = msg.fileType;
-        payload.message = msg.text || '';
+
+      if (isGroupTarget) {
+        const payload = {
+          groupId: target.id,
+          message: msg.text || '',
+          file: msg.file || undefined,
+          fileName: msg.fileName,
+          fileType: msg.fileType,
+          from: currentUser.id,
+          fromName: currentUser.name,
+          timestamp: now,
+          messageId: tempId,
+        };
+        currentSocket.emit('sendGroupMessage', payload);
+
+        setGroupMessages((prev) => ({
+          ...prev,
+          [target.id]: [
+            ...(prev[target.id] || []),
+            {
+              id: tempId,
+              text: payload.message || '',
+              sender: 'You',
+              senderId: currentUser.id,
+              timestamp: now,
+              file: payload.file || undefined,
+              fileName: payload.fileName,
+              fileType: payload.fileType,
+              delivered: false,
+              read: false,
+            },
+          ],
+        }));
+
+        setGroupsList((prev) => {
+          const exists = prev.some((g) => String(g.id) === String(target.id));
+          return exists
+            ? prev.map((g) =>
+                String(g.id) === String(target.id)
+                  ? {
+                      ...g,
+                      lastMsg: msg.file
+                        ? (String(msg.fileType || '').startsWith('image/')
+                            ? 'You: 📷 Photo'
+                            : `You: 📄 ${msg.fileName || 'File'}`)
+                        : `You: ${msg.text || ''}`,
+                      lastTime: now,
+                    }
+                  : g
+              )
+            : prev;
+        });
       } else {
-        payload.message = msg.text || '';
+        const payload = {
+          to: target.id,
+          from: currentUser.id,
+          fromName: currentUser.name,
+          fromPhoto: target.photo,
+          timestamp: now,
+          messageId: tempId,
+        };
+        if (msg.file) {
+          payload.file = msg.file;
+          payload.fileName = msg.fileName;
+          payload.fileType = msg.fileType;
+          payload.message = msg.text || '';
+        } else {
+          payload.message = msg.text || '';
+        }
+
+        currentSocket.emit('sendMessage', payload);
+
+        setMessages((prev) => ({
+          ...prev,
+          [target.id]: [
+            ...(prev[target.id] || []),
+            {
+              id: tempId,
+              text: payload.message,
+              file: payload.file || undefined,
+              fileName: payload.fileName,
+              fileType: payload.fileType,
+              sender: 'You',
+              timestamp: now,
+              delivered: false,
+              read: false,
+            },
+          ],
+        }));
       }
-
-      currentSocket.emit('sendMessage', payload);
-
-      setMessages((prev) => ({
-        ...prev,
-        [target.id]: [
-          ...(prev[target.id] || []),
-          {
-            id: tempId,
-            text: payload.message,
-            file: payload.file || undefined,
-            fileName: payload.fileName,
-            fileType: payload.fileType,
-            sender: 'You',
-            timestamp: now,
-            delivered: false,
-            read: false,
-          },
-        ],
-      }));
     });
 
     goBackPage();
@@ -9433,7 +9498,7 @@ setContacts(prev => {
       <div className="modal-body">
         <input
           type="text"
-          placeholder="Search name"
+          placeholder="Search name or group"
           value={forwardSearchQuery}
           onChange={(e) => setForwardSearchQuery(e.target.value)}
           className="modal-input"
@@ -9441,11 +9506,17 @@ setContacts(prev => {
           autoFocus
         />
 
-        <div style={{ fontSize: '0.85rem', color: '#999', marginBottom: '6px' }}>
-          Recent chats — tap to select
-        </div>
-
-        <div style={{ maxHeight: '320px', overflowY: 'auto' }}>
+        <div style={{ maxHeight: '360px', overflowY: 'auto' }}>
+          {/* Contacts */}
+          {contacts
+            .filter((c) => String(c.id) !== String(selectedChat?.id))
+            .filter((c) =>
+              c.name?.toLowerCase().includes(forwardSearchQuery.toLowerCase())
+            ).length > 0 && (
+            <div style={{ fontSize: '0.85rem', color: '#999', marginBottom: '6px' }}>
+              Contacts
+            </div>
+          )}
           {contacts
             .filter((c) => String(c.id) !== String(selectedChat?.id))
             .filter((c) =>
@@ -9508,10 +9579,91 @@ setContacts(prev => {
                 </div>
               );
             })}
+
+          {/* Groups */}
+          {groupsList
+            .filter((g) => !selectedGroup || String(g._id || g.id) !== String(selectedGroup.id))
+            .filter((g) =>
+              g.name?.toLowerCase().includes(forwardSearchQuery.toLowerCase())
+            ).length > 0 && (
+            <div style={{ fontSize: '0.85rem', color: '#999', marginTop: '10px', marginBottom: '6px' }}>
+              Groups
+            </div>
+          )}
+          {groupsList
+            .filter((g) => !selectedGroup || String(g._id || g.id) !== String(selectedGroup.id))
+            .filter((g) =>
+              g.name?.toLowerCase().includes(forwardSearchQuery.toLowerCase())
+            )
+            .map((group) => {
+              const gid = group._id || group.id;
+              const isChecked = selectedForwardGroups.has(String(gid));
+              return (
+                <div
+                  key={gid}
+                  onClick={() =>
+                    setSelectedForwardGroups((prev) => {
+                      const next = new Set(prev);
+                      const key = String(gid);
+                      if (next.has(key)) next.delete(key);
+                      else next.add(key);
+                      return next;
+                    })
+                  }
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '12px',
+                    padding: '10px 8px',
+                    borderRadius: '8px',
+                    cursor: 'pointer',
+                    background: isChecked ? '#e8f5f0' : 'transparent',
+                  }}
+                  onMouseEnter={(e) => {
+                    if (!isChecked) e.currentTarget.style.background = '#f0f2f5';
+                  }}
+                  onMouseLeave={(e) => {
+                    if (!isChecked) e.currentTarget.style.background = 'transparent';
+                  }}
+                >
+                  <span
+                    style={{
+                      width: '22px',
+                      height: '22px',
+                      borderRadius: '50%',
+                      border: `2px solid ${isChecked ? '#075e54' : '#ccc'}`,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      background: isChecked ? '#075e54' : 'white',
+                      flexShrink: 0,
+                    }}
+                  >
+                    {isChecked && <span style={{ color: 'white', fontSize: '13px' }}>✓</span>}
+                  </span>
+                  <img
+                    src={group.dp || 'https://via.placeholder.com/50/4a00e0/fff?text=G'}
+                    alt={group.name}
+                    style={{ width: '40px', height: '40px', borderRadius: '50%', objectFit: 'cover' }}
+                  />
+                  <div>
+                    <div style={{ fontWeight: '600' }}>{group.name}</div>
+                    <div style={{ fontSize: '0.8rem', color: '#666' }}>
+                      {group.memberCount || (group.members?.length || 0)} members
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+
           {contacts.filter(
             (c) =>
               String(c.id) !== String(selectedChat?.id) &&
               c.name?.toLowerCase().includes(forwardSearchQuery.toLowerCase())
+          ).length === 0 && groupsList.filter(
+            (g) =>
+              (!selectedGroup || String(g._id || g.id) !== String(selectedGroup.id)) &&
+              g.name?.toLowerCase().includes(forwardSearchQuery.toLowerCase())
           ).length === 0 && (
             <div style={{ color: '#999', textAlign: 'center', padding: '16px' }}>
               No chats found
@@ -9531,8 +9683,8 @@ setContacts(prev => {
           }}
         >
           <span style={{ fontSize: '0.9rem', color: '#555' }}>
-            {selectedForwardChats.size > 0
-              ? `${selectedForwardChats.size} chat${selectedForwardChats.size > 1 ? 's' : ''} selected`
+            {selectedForwardChats.size + selectedForwardGroups.size > 0
+              ? `${selectedForwardChats.size + selectedForwardGroups.size} chat${selectedForwardChats.size + selectedForwardGroups.size > 1 ? 's' : ''} selected`
               : 'No chat selected'}
           </span>
           <div style={{ display: 'flex', gap: '10px' }}>
@@ -9551,13 +9703,20 @@ setContacts(prev => {
               Cancel
             </button>
             <button
-              disabled={selectedForwardChats.size === 0}
+              disabled={selectedForwardChats.size + selectedForwardGroups.size === 0}
               onClick={() => {
-                const targets = contacts.filter((c) =>
+                const contactTargets = contacts.filter((c) =>
                   selectedForwardChats.has(String(c.id))
                 );
-                targets.forEach((t) => forwardSelectedMessages(t));
+                contactTargets.forEach((t) => forwardSelectedMessages(t, 'contact'));
+
+                const groupTargets = groupsList.filter((g) =>
+                  selectedForwardGroups.has(String(g._id || g.id))
+                );
+                groupTargets.forEach((t) => forwardSelectedMessages(t, 'group'));
+
                 setSelectedForwardChats(new Set());
+                setSelectedForwardGroups(new Set());
                 setForwardSearchQuery('');
               }}
               style={{
@@ -9567,8 +9726,8 @@ setContacts(prev => {
                 border: 'none',
                 borderRadius: '8px',
                 fontWeight: '600',
-                cursor: selectedForwardChats.size === 0 ? 'not-allowed' : 'pointer',
-                opacity: selectedForwardChats.size === 0 ? 0.5 : 1,
+                cursor: selectedForwardChats.size + selectedForwardGroups.size === 0 ? 'not-allowed' : 'pointer',
+                opacity: selectedForwardChats.size + selectedForwardGroups.size === 0 ? 0.5 : 1,
               }}
             >
               Forward
