@@ -101,9 +101,16 @@ export default function createProfileRouter(io) {
       if (!me) return res.status(404).json({ message: 'User not found' });
 
       // Notify contacts + group members so their lists refresh live.
+      // Targets = everyone who needs to know about this rename:
+      //   - the user themself
+      //   - users the renamed user saved (their chat rows show this profile name)
+      //   - users who SAVED the renamed user (their saved-contact rows show this name)
+      //     -> without this, a viewer who saved E but hired no custom name never updates.
       const groups = await Group.find({ members: req.userId }).select('members');
       const targets = new Set([String(me._id)]);
       (me.contacts || []).forEach((c) => targets.add(String(c)));
+      const savers = await User.find({ contacts: req.userId }).select('_id');
+      savers.forEach((s) => targets.add(String(s._id)));
       groups.forEach((g) => (g.members || []).forEach((m) => targets.add(String(m))));
       emitToUsers([...targets], 'user:profileUpdated', { userId: String(me._id), changed: Object.keys(update) });
 

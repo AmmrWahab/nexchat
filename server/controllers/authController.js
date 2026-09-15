@@ -23,7 +23,8 @@ export const register = async (req, res) => {
     const user = new User({
       name,
       email,
-      password: hashedPassword
+      password: hashedPassword,
+      about: 'Hey there! I am using NexChat.'
     });
 
     await user.save();
@@ -107,6 +108,7 @@ export const googleLogin = async (req, res) => {
         email,
         googleId,
         photo: photo || 'https://via.placeholder.com/150',
+        about: 'Hey there! I am using NexChat.',
         password: 'google_oauth_placeholder' // Not used
       });
       await user.save();
