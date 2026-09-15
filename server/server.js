@@ -7,6 +7,7 @@ import mongoose from 'mongoose';
 import dotenv from 'dotenv';
 import cors from 'cors';
 import authRoutes from './routes/authRoutes.js';
+import createProfileRouter from './routes/profileRoutes.js';
 import passport from './config/passport.js';
 import User from './models/User.js'; // ✅ Add this line
 import Group from './models/Group.js'; // ✅ Group model
@@ -82,6 +83,7 @@ app.use('/api', authRoutes);
 app.use('/api', groupRoutes);
 app.use('/api', statusRoutes);
 app.use('/api', callRoutes);
+app.use('/api/profile', createProfileRouter(io));
 
 // Google Auth Routes
 app.get('/api/auth/google',

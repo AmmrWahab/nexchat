@@ -5,7 +5,7 @@ import { createPortal } from 'react-dom';
 import { useNavigate, useLocation } from 'react-router-dom';
 import './dashboard.css';
 import { io } from 'socket.io-client';
-import { Search, X, CornerUpRight, CornerUpLeft, Phone, Video, Paperclip, Camera, Mic, User, FileText, Trash2, Copy, Forward, Reply, ArrowLeft, ChevronUp, ChevronDown, Info, MessageCircle, Users, Settings, Menu, SquarePen, Images, Image, PencilLine, Check, MicOff, VideoOff, Volume2, Headset } from "lucide-react";
+import { Search, X, CornerUpRight, CornerUpLeft, Phone, Video, Paperclip, Camera, Mic, User, FileText, Trash2, Copy, Forward, Reply, ArrowLeft, ChevronUp, ChevronDown, ChevronRight, Info, MessageCircle, Users, Settings, Menu, SquarePen, Images, Image, PencilLine, Check, MicOff, VideoOff, Volume2, Headset } from "lucide-react";
 import { API_URL } from '../config.js';
 
 const BLUE_TICK = '#53bdeb';
@@ -180,6 +180,13 @@ export default function DashboardPage() {
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [user, setUser] = useState({ name: 'You' }); // Update this to include id
+  const [profileRoute, setProfileRoute] = useState('page'); // 'preview' | 'page' | 'name' | 'about'
+  const [profilePhotoMenu, setProfilePhotoMenu] = useState(false);
+  const [profileNameDraft, setProfileNameDraft] = useState('');
+  const [profileAboutDraft, setProfileAboutDraft] = useState('');
+  const [profileSaveBusy, setProfileSaveBusy] = useState(false);
+  const [profileRefreshTick, setProfileRefreshTick] = useState(0);
+  const profilePhotoInputRef = useRef(null);
   const messagesEndRef = useRef(null);
   const [isSearching, setIsSearching] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -2837,6 +2844,7 @@ useEffect(() => {
   // the server; reload it so the contact list preview + badge recover without
   // requiring a page refresh.
   s.on('connect', loadCalls);
+  s.on('user:profileUpdated', () => { setProfileRefreshTick((t) => t + 1); loadStatusFeed(); });
 
   return () => {
     s.off('call:incoming', onIncoming);
@@ -2858,10 +2866,18 @@ useEffect(() => {
     s.off('call:memberJoined', onMemberJoined);
     s.off('call:memberLeft', onMemberLeft);
     s.off('connect', loadCalls);
+    s.off('user:profileUpdated');
   };
 }, [socket]);
 
 useEffect(() => { activeCallRef.current = activeCall; }, [activeCall]);
+
+useEffect(() => {
+  if (activeTab === 'profile') {
+    setProfileRoute(isMobile ? 'page' : 'preview');
+    setProfilePhotoMenu(false);
+  }
+}, [activeTab, isMobile]);
 
 // One elapsed-time interval per connected call. Created exactly when a call
 // goes active (keyed by callId + mode + type), cleared when it ends. The tick
@@ -3786,7 +3802,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
               console.error('Failed to fetch groups', err);
             }
           })();
-        }, [user.id]);
+        }, [user.id, profileRefreshTick]);
 
         // ✅ Load this user's private address book from the server (per-account)
         useEffect(() => {
@@ -3826,7 +3842,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
               console.error('Failed to fetch contacts', err);
             }
           })();
-        }, [user.id]);
+        }, [user.id, profileRefreshTick]);
 
         // Prefetch each group's message history so the list shows
         // previews/times without needing to open the group first.
@@ -4127,6 +4143,24 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
                 const payload = JSON.parse(atob(token.split('.')[1]));
                 const userId = payload.userId;
                 setUser({ id: userId, name: 'You' });
+
+                // Hydrate the current user's own profile (real name, photo, about).
+                fetch(`${API_URL}/api/profile/me`, {
+                  headers: { Authorization: `Bearer ${token}` },
+                })
+                  .then((res) => (res.ok ? res.json() : null))
+                  .then((data) => {
+                    if (data && data.user && data.user.id) {
+                      setUser({
+                        id: String(data.user.id),
+                        name: data.user.name || 'You',
+                        email: data.user.email || '',
+                        photo: data.user.photo || 'https://via.placeholder.com/50',
+                        about: data.user.about || '',
+                      });
+                    }
+                  })
+                  .catch(() => {});
 
                 // ✅ Migrate messages from "undefined" to real userId
                 const saved = localStorage.getItem('chatMessages');
@@ -4732,19 +4766,125 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
         );
       };
 
+      // ==================== Profile page state + actions ====================
+      const profileDefaultPhoto = 'https://via.placeholder.com/150';
+      const profileDefaultAbout = 'Hey there! I am using NexChat.';
+      const profileToken = () => localStorage.getItem('token');
+
+      const profileBack = () => {
+        if (profileRoute === 'name' || profileRoute === 'about') setProfileRoute('page');
+        else if (profileRoute === 'page') {
+          if (isMobile) { setActiveTab('chats'); setView('chats'); }
+          else setProfileRoute('preview');
+        } else setProfileRoute('preview');
+      };
+      const openProfilePage = () => { setProfilePhotoMenu(false); setProfileRoute('page'); };
+      const openProfileName = () => { setProfileNameDraft(user.name || ''); setProfileRoute('name'); };
+      const openProfileAbout = () => { setProfileAboutDraft(user.about || profileDefaultAbout); setProfileRoute('about'); };
+
+      const downscaleImage = (dataUrl, maxDim) => new Promise((resolve) => {
+        try {
+          const img = new Image();
+          img.onload = () => {
+            try {
+              const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+              if (scale === 1) return resolve(dataUrl);
+              const canvas = document.createElement('canvas');
+              canvas.width = Math.round(img.width * scale);
+              canvas.height = Math.round(img.height * scale);
+              canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+              resolve(canvas.toDataURL('image/jpeg', 0.85));
+            } catch { resolve(dataUrl); }
+          };
+          img.onerror = () => resolve(dataUrl);
+          img.src = dataUrl;
+        } catch { resolve(dataUrl); }
+      });
+
+      const saveProfilePhoto = async (photo) => {
+        const next = photo === null || photo === '' ? null : photo;
+        const tk = profileToken();
+        if (!tk) return;
+        setProfileSaveBusy(true);
+        try {
+          const res = await fetch(`${API_URL}/api/profile/me`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tk}` },
+            body: JSON.stringify({ photo: next }),
+          });
+          const data = await res.json();
+          if (!res.ok || !data.user) { alert(data?.message || 'Could not update profile picture'); return; }
+          setUser((u) => ({ ...u, photo: data.user.photo }));
+          setProfilePhotoMenu(false);
+        } catch { alert('Could not update profile picture'); }
+        finally { setProfileSaveBusy(false); }
+      };
+
+      const handleProfilePhotoFile = async (e) => {
+        const file = e.target.files?.[0];
+        e.target.value = '';
+        if (!file) return;
+        try {
+          const dataUrl = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => reject(new Error('read failed'));
+            reader.readAsDataURL(file);
+          });
+          const resized = await downscaleImage(dataUrl, 512);
+          await saveProfilePhoto(resized);
+        } catch { alert('Could not read the image'); }
+      };
+
+      const saveProfileName = async () => {
+        const clean = String(profileNameDraft || '').trim();
+        if (!clean) return alert('Name is required');
+        if (clean.length > 10) return alert('Name must be 10 characters or fewer');
+        if (!/^[A-Za-z\s]+$/.test(clean)) return alert('Only alphabetic characters are allowed');
+        const tk = profileToken();
+        if (!tk) return;
+        setProfileSaveBusy(true);
+        try {
+          const res = await fetch(`${API_URL}/api/profile/me`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tk}` },
+            body: JSON.stringify({ name: clean }),
+          });
+          const data = await res.json();
+          if (!res.ok || !data.user) { alert(data?.message || 'Could not save name'); return; }
+          setUser((u) => ({ ...u, name: data.user.name }));
+          setProfileRoute('page');
+        } catch { alert('Could not save name'); }
+        finally { setProfileSaveBusy(false); }
+      };
+
+      const saveProfileAbout = async () => {
+        const clean = String(profileAboutDraft || '').trim();
+        if (clean.length > 100) return alert('About must be 100 characters or fewer');
+        const tk = profileToken();
+        if (!tk) return;
+        setProfileSaveBusy(true);
+        try {
+          const res = await fetch(`${API_URL}/api/profile/me`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tk}` },
+            body: JSON.stringify({ about: clean }),
+          });
+          const data = await res.json();
+          if (!res.ok || !data.user) { alert(data?.message || 'Could not save about'); return; }
+          setUser((u) => ({ ...u, about: data.user.about }));
+          setProfileRoute('page');
+        } catch { alert('Could not save about'); }
+        finally { setProfileSaveBusy(false); }
+      };
+      // ==================== End Profile actions ====================
+
       const renderCenterContent = () => {
         if (showGroupFlow) {
           return renderGroupFlow();
         }
         if (activeTab === 'profile') {
-          return (
-            <div className="profile-view">
-              <h2><User size={22} strokeWidth={1.8} style={{ marginRight: 8, verticalAlign: 'middle' }} /> Profile</h2>
-              <p>Name: {user.name}</p>
-              <p>Status: Online</p>
-              <button onClick={handleLogout} className="btn-logout">Logout</button>
-            </div>
-          );
+          return renderProfileArea();
         }
 
    
@@ -5214,6 +5354,159 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
           <circle cx="12" cy="12" r="3.2" fill="#025144" />
         </svg>
       );
+
+      const profileEmptyIcon = (
+        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="12" cy="8" r="3.2" fill="currentColor" />
+          <path d="M4.5 20c.6-3.6 3.4-5.5 7.5-5.5s6.9 1.9 7.5 5.5H4.5Z" fill="currentColor" opacity="0.9" />
+        </svg>
+      );
+
+      const renderProfileArea = () => {
+        const photo = user.photo || profileDefaultPhoto;
+        const aboutText = user.about ? String(user.about).trim() : profileDefaultAbout;
+        const myName = user.name || 'You';
+
+        const photoMenu = (
+          <div className="profile-photo-menu">
+            <button type="button" className="profile-photo-menu-btn" onClick={() => profilePhotoInputRef.current?.click()} disabled={profileSaveBusy}>
+              Change profile picture
+            </button>
+            <button type="button" className="profile-photo-menu-btn remove" onClick={() => { if (!profileSaveBusy) saveProfilePhoto(null); }}>
+              Remove profile picture
+            </button>
+          </div>
+        );
+
+        if (profileRoute === 'name') {
+          return (
+            <div className="profile-page">
+              <div className="profile-topbar">
+                <button type="button" className="profile-back" onClick={profileBack} aria-label="Back">
+                  <ArrowLeft size={22} strokeWidth={1.8} />
+                </button>
+                <h2>Name</h2>
+                <span className="profile-topbar-spacer" />
+              </div>
+              <div className="profile-body">
+                <div className="profile-edit-wrap">
+                  <input
+                    className="profile-edit-input"
+                    value={profileNameDraft}
+                    onChange={(e) => setProfileNameDraft(e.target.value)}
+                    maxLength={10}
+                    placeholder="Enter your name"
+                  />
+                  <p className="profile-hint">Maximum length is 10 characters.</p>
+                </div>
+                <div className="profile-save-row">
+                  <button type="button" className="profile-save-btn" onClick={saveProfileName} disabled={profileSaveBusy}>
+                    <Check size={20} strokeWidth={2.2} /> Save
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        }
+
+        if (profileRoute === 'about') {
+          return (
+            <div className="profile-page">
+              <div className="profile-topbar">
+                <button type="button" className="profile-back" onClick={profileBack} aria-label="Back">
+                  <ArrowLeft size={22} strokeWidth={1.8} />
+                </button>
+                <h2>About</h2>
+                <span className="profile-topbar-spacer" />
+              </div>
+              <div className="profile-body">
+                <div className="profile-edit-wrap">
+                  <textarea
+                    className="profile-edit-input profile-edit-about"
+                    value={profileAboutDraft}
+                    onChange={(e) => setProfileAboutDraft(e.target.value)}
+                    maxLength={100}
+                    placeholder="Write something about you..."
+                  />
+                  <p className="profile-hint">Maximum length is 100 characters.</p>
+                </div>
+                <div className="profile-save-row">
+                  <button type="button" className="profile-save-btn" onClick={saveProfileAbout} disabled={profileSaveBusy}>
+                    <Check size={20} strokeWidth={2.2} /> Done
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        }
+
+        if (profileRoute === 'page') {
+          return (
+            <div className="profile-page">
+              <div className="profile-topbar">
+                <button type="button" className="profile-back" onClick={profileBack} aria-label="Back">
+                  <ArrowLeft size={22} strokeWidth={1.8} />
+                </button>
+                <h2>Profile</h2>
+                <span className="profile-topbar-spacer" />
+              </div>
+              <div className="profile-body">
+                <div className="profile-avatar-wrap">
+                  <div
+                    className="profile-avatar"
+                    onClick={() => setProfilePhotoMenu((pm) => !pm)}
+                    role="button"
+                    aria-label="Profile picture"
+                  >
+                    <img src={photo} alt="Profile" />
+                    <span className="profile-avatar-badge">
+                      <Camera size={18} strokeWidth={2} />
+                    </span>
+                  </div>
+                  {profilePhotoMenu && photoMenu}
+                  <input
+                    ref={profilePhotoInputRef}
+                    type="file"
+                    accept="image/*"
+                    hidden
+                    onChange={handleProfilePhotoFile}
+                  />
+                </div>
+
+                <div className="profile-row" onClick={openProfileName} role="button">
+                  <span className="profile-row-icon"><User size={20} strokeWidth={1.8} /></span>
+                  <span className="profile-row-text">
+                    <span className="profile-row-head">Name</span>
+                    <span className="profile-row-value">{myName}</span>
+                  </span>
+                  <ChevronRight size={20} strokeWidth={1.8} className="profile-chevron" />
+                </div>
+
+                <div className="profile-row" onClick={openProfileAbout} role="button">
+                  <span className="profile-row-icon"><Info size={20} strokeWidth={1.8} /></span>
+                  <span className="profile-row-text">
+                    <span className="profile-row-head">About</span>
+                    <span className="profile-row-value profile-row-about">{aboutText}</span>
+                  </span>
+                  <ChevronRight size={20} strokeWidth={1.8} className="profile-chevron" />
+                </div>
+              </div>
+            </div>
+          );
+        }
+
+        // Default: the compact preview shown in the left panel (desktop).
+        return (
+          <div className="profile-preview" onClick={openProfilePage} role="button" aria-label="Open full profile">
+            <div className="profile-preview-avatar">
+              <img src={photo} alt="Profile" />
+            </div>
+            <div className="profile-preview-name">{myName}</div>
+            <div className="profile-preview-about">{aboutText}</div>
+            <div className="profile-preview-hint">Click to open your profile</div>
+          </div>
+        );
+      };
 
       const renderGroupChat = () => {
         if (!selectedGroup) {
@@ -7951,7 +8244,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
 
       {/* Center Panel (30%) */}
 <main className="center-panel">
-{!showGroupFlow && (
+{!showGroupFlow && activeTab !== 'profile' && (
   <>
   <h2 className="panel-title">
     {activeTab.charAt(0).toUpperCase() + activeTab.slice(1)}
@@ -8153,6 +8446,8 @@ setContacts(prev => {
       emptyState('Status', 'Share photo, text and video updates with your contacts. Your statuses appear in the list on the left.', statusEmptyIcon)
     ) : activeTab === 'calls' ? (
       emptyState('Calls', 'Your call history appears in the list on the left. Select a call to view its details here.', callEmptyIcon)
+    ) : activeTab === 'profile' ? (
+      emptyState('Profile', 'Your profile appears in the panel on the left.', profileEmptyIcon)
     ) : (
       emptyState('Feature Coming Soon', `The ${activeTab} view is not available here.`, chatEmptyIcon)
     )
@@ -8670,7 +8965,7 @@ setContacts(prev => {
                 <div className="dropdown-menu">
                   <button onClick={() => { setShowAddContact(true); setShowMobileMenu(false); }}>Add new contact</button>
                   <button onClick={() => { setShowMobileMenu(false); openGroupFlow(); }}>New Group</button>
-                  <button onClick={() => setActiveTab('profile')}>Profile</button>
+                  <button onClick={() => { setShowMobileMenu(false); setActiveTab('profile'); }}>Profile</button>
                   <button onClick={() => alert('Settings')}>Settings</button>
                   <button onClick={() => { setShowMobileMenu(false); handleLogout(); }}>Logout</button>
                 </div>
@@ -8790,6 +9085,8 @@ setContacts(prev => {
   </div>
 </div>
   </>
+) : activeTab === 'profile' ? (
+  renderProfileArea()
 ) : (
   
   <>
@@ -8827,9 +9124,14 @@ setContacts(prev => {
 >
   New Group
 </button>
-      <button onClick={() => setActiveTab('profile')}>
-        Profile
-      </button>
+      <button
+  onClick={() => {
+    setShowMobileMenu(false);
+    setActiveTab('profile');
+  }}
+>
+  Profile
+</button>
       <button onClick={() => alert('Settings')}>
         Settings
       </button>
@@ -8880,7 +9182,7 @@ setContacts(prev => {
     </main>
 
     {/* Bottom Nav */}
-    {!showGroupFlow && (
+    {!showGroupFlow && activeTab !== 'profile' && (
     <nav className="mobile-nav">
       <button onClick={() => {
   setView('chats');

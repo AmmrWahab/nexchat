@@ -45,6 +45,11 @@ const userSchema = new mongoose.Schema({
     }
   }],
     lastSeen: { type: Date, default: Date.now }, // ← Add this
+  about: {
+    type: String,
+    trim: true,
+    default: ''
+  },
 }, {
   timestamps: true
 });

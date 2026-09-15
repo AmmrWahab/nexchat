@@ -43,8 +43,8 @@ router.post('/groups/create', auth, async (req, res) => {
     });
 
     const populated = await Group.findById(group._id)
-      .populate('admin', 'name photo')
-      .populate('members', 'name photo');
+      .populate('admin', 'name photo about')
+      .populate('members', 'name photo about');
 
     res.status(201).json({ group: populated });
   } catch (err) {
@@ -57,8 +57,8 @@ router.post('/groups/create', auth, async (req, res) => {
 router.get('/groups', auth, async (req, res) => {
   try {
     const groups = await Group.find({ members: req.userId })
-      .populate('admin', 'name photo')
-      .populate('members', 'name photo')
+      .populate('admin', 'name photo about')
+      .populate('members', 'name photo about')
       .sort({ createdAt: -1 });
 
     // Attach the last message + time of each group so the list preview
@@ -115,7 +115,7 @@ function customNameFor(me, userId) {
 // saved name when present, otherwise the target user's real account name.
 router.get('/contacts', auth, async (req, res) => {
   try {
-    const me = await User.findById(req.userId).populate('contacts', 'name email photo lastSeen');
+    const me = await User.findById(req.userId).populate('contacts', 'name email photo about lastSeen');
     const contacts = (me?.contacts || []).map((c) => {
       const customName = customNameFor(me, c._id);
       return {
@@ -124,6 +124,7 @@ router.get('/contacts', auth, async (req, res) => {
         customName,
         email: c.email,
         photo: c.photo || 'https://via.placeholder.com/50',
+        about: c.about || '',
         lastSeen: c.lastSeen,
       };
     });
