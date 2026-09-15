@@ -4,6 +4,7 @@ import jwt from 'jsonwebtoken';
 import { promisify } from 'util';
 import User from '../models/User.js';
 import Group from '../models/Group.js';
+import Message from '../models/Message.js';
 
 const verifyAsync = promisify(jwt.verify);
 
@@ -196,6 +197,52 @@ export default function createProfileRouter(io) {
           target: String(targetId),
           blocked,
         });
+
+        // 🔓 On UNBLOCK, deliver every message the now-unblocked user sent
+        //    while the block was active. The recipient finally sees them and
+        //    the sender's single ticks advance to delivered.
+        if (!blocked) {
+          try {
+            const senderDoc = await User.findById(targetId).select('name');
+            const pending = await Message.find({ from: targetId, to: req.userId, delivered: false });
+            if (pending.length) {
+              console.log(`📦 Delivering ${pending.length} queued messages after unblock: ${targetId} -> ${req.userId}`);
+            }
+            for (const msg of pending) {
+              msg.delivered = true;
+              await msg.save();
+              emitToUsers([req.userId], 'receiveMessage', {
+                _id: String(msg._id),
+                to: String(req.userId),
+                from: String(targetId),
+                fromName: (senderDoc && senderDoc.name) || 'Unknown',
+                message: msg.message,
+                file: msg.file,
+                fileName: msg.fileName,
+                fileType: msg.fileType,
+                duration: msg.duration,
+                replyTo: msg.replyTo ? {
+                  sender: msg.replyTo.sender,
+                  text: msg.replyTo.text,
+                  messageId: msg.replyTo.messageId,
+                  statusId: msg.replyTo.statusId,
+                  senderId: msg.replyTo.senderId,
+                } : null,
+                timestamp: new Date(msg.createdAt).getTime(),
+                messageId: msg.clientMessageId,
+                isForwarded: !!msg.isForwarded,
+              });
+              emitToUsers([targetId], 'messageDelivered', {
+                chatId: String(req.userId),
+                messageId: msg.clientMessageId,
+                _id: String(msg._id),
+              });
+            }
+          } catch (err) {
+            console.error('Deliver queued messages after unblock error:', err.message);
+          }
+        }
+
         res.json({ user: { id: String(me._id), blockedUsers: (me.blockedUsers || []).map((id) => String(id)) } });
       } catch (err) {
         console.error('Block user error:', err.message);
