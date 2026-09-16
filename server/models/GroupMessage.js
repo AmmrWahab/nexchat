@@ -22,6 +22,9 @@ const groupMessageSchema = new mongoose.Schema({
   // differently in the chat and never attributed to a real sender.
   isSystem: { type: Boolean, default: false },
   systemType: { type: String, default: null }, // e.g. 'memberRemoved', 'memberRemovedYou', 'memberMadeAdmin'
+  // Personal system notice (e.g. "X removed you"): only delivered to this user.
+  // null/absent means the message is visible to every member (history included).
+  visibleTo: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
   createdAt: { type: Date, default: Date.now }
 });
 

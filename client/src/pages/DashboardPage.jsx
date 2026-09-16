@@ -5407,7 +5407,12 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
                         dp: group.dp,
                         memberCount: group.memberCount || (group.members?.length || 0),
                         members: group.members || [],
+                        admins: Array.isArray(group.admins) ? group.admins.map(String) : [],
                         admin: group.admin,
+                        adminName: group.adminName || null,
+                        removedAt: group.removedAt || null,
+                        removedBy: group.removedBy || null,
+                        removedByName: group.removedByName || '',
                       };
                       selectedGroupRef.current = normalized;
                       setSelectedGroup(normalized);

@@ -656,7 +656,16 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
       const removedEntry = (group.removedMembers || []).find((r) => String(r.user) === selfIdStr);
       if (!isMember && !removedEntry) return;
 
-      const query = { group: groupId };
+      const query = {
+        group: groupId,
+        // Personal system notices (visibleTo set) only reach the user they were
+        // written for, so "X removed you" never shows up in other members' history.
+        $or: [
+          { visibleTo: { $exists: false } },
+          { visibleTo: null },
+          { visibleTo: selfIdStr },
+        ],
+      };
       if (!isMember && removedEntry) query.createdAt = { $lte: removedEntry.removedAt };
 
       const history = await GroupMessage.find(query)
@@ -904,6 +913,7 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
         message: `${actorName} removed you`,
         isSystem: true,
         systemType: 'memberRemovedYou',
+        visibleTo: memberId, // personal notice — never shown in other members' history
       });
 
       const populated = await Group.findById(group._id)
