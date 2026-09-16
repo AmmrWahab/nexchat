@@ -299,6 +299,17 @@ export default function DashboardPage() {
     if (blockedMeSet.has(String(id ?? ''))) return HOLLOW_AVATAR;
     return photo || fallback || 'https://via.placeholder.com/50';
   };
+  // True when the email-lookup user is already in the private address book
+  // (matched by user id or by email), so adding them is blocked as a duplicate.
+  const isContactAlreadySaved = (lookupUser) => {
+    if (!lookupUser?._id) return false;
+    const uid = String(lookupUser._id);
+    const em = lookupUser.email ? String(lookupUser.email).toLowerCase() : '';
+    return (contacts || []).some(c =>
+      String(c.id) === uid ||
+      (c.email && String(c.email).toLowerCase() === em)
+    );
+  };
   // Block / unblock the currently open DM from the Contact Info drawer.
   // First opens an in-app confirmation popup (mobile + desktop), then acts.
   const askBlockToggle = () => {
@@ -9291,11 +9302,14 @@ You are no longer a participant of this group
             style={{
               fontSize: '13px',
               marginTop: '-8px',
-              color: emailLookupStatus === 'found' ? '#22c55e' : emailLookupStatus === 'not-found' ? '#e53935' : '#666',
+              color: emailLookupStatus === 'found' && isContactAlreadySaved(emailLookupUser)
+                ? '#f59e0b'
+                : emailLookupStatus === 'found' ? '#22c55e' : emailLookupStatus === 'not-found' ? '#e53935' : '#666',
             }}
           >
             {emailLookupStatus === 'checking' && 'Checking…'}
-            {emailLookupStatus === 'found' && (emailLookupUser?.name ? `✓ ${emailLookupUser.name} (${emailLookupUser.email})` : '✓ NexChat user found')}
+            {emailLookupStatus === 'found' && isContactAlreadySaved(emailLookupUser) && '✓ Contact already saved'}
+            {emailLookupStatus === 'found' && !isContactAlreadySaved(emailLookupUser) && (emailLookupUser?.name ? `✓ ${emailLookupUser.name} (${emailLookupUser.email})` : '✓ NexChat user found')}
             {emailLookupStatus === 'not-found' && '✗ No NexChat user with this email'}
           </div>
         )}
@@ -9325,7 +9339,7 @@ You are no longer a participant of this group
         </button>
         <button
   className="modal-btn save"
-  disabled={!email || emailLookupStatus !== 'found'}
+  disabled={!email || emailLookupStatus !== 'found' || isContactAlreadySaved(emailLookupUser)}
   onClick={async () => {
   const foundUser = await findUserByEmail(email);
   if (!foundUser) {
@@ -10262,7 +10276,7 @@ setContacts(prev => {
         <h3>New Contact</h3>
         <button
           className="drawer-btn done"
-          disabled={!email.trim() || emailLookupStatus !== 'found'}
+          disabled={!email.trim() || emailLookupStatus !== 'found' || isContactAlreadySaved(emailLookupUser)}
           onClick={async () => {
             if (!email.trim()) {
               alert('Please enter an email address.');
@@ -10373,11 +10387,14 @@ setContacts(prev => {
             style={{
               fontSize: '13px',
               marginTop: '-4px',
-              color: emailLookupStatus === 'found' ? '#22c55e' : emailLookupStatus === 'not-found' ? '#e53935' : '#666',
+              color: emailLookupStatus === 'found' && isContactAlreadySaved(emailLookupUser)
+                ? '#f59e0b'
+                : emailLookupStatus === 'found' ? '#22c55e' : emailLookupStatus === 'not-found' ? '#e53935' : '#666',
             }}
           >
             {emailLookupStatus === 'checking' && 'Checking…'}
-            {emailLookupStatus === 'found' && '✓ NexChat user found'}
+            {emailLookupStatus === 'found' && isContactAlreadySaved(emailLookupUser) && '✓ Contact already saved'}
+            {emailLookupStatus === 'found' && !isContactAlreadySaved(emailLookupUser) && '✓ NexChat user found'}
             {emailLookupStatus === 'not-found' && '✗ No NexChat user with this email'}
           </div>
         )}
