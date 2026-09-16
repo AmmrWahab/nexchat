@@ -288,12 +288,26 @@ export default function DashboardPage() {
     setOpenMemberMenuId(null);
   };
 
+  // Clicking anywhere outside the member menu (or its dots button) closes it.
+  useEffect(() => {
+    if (!memberMenu) return;
+    const handler = (e) => {
+      if (e.target && e.target.closest && e.target.closest('.member-dropdown, .member-sheet-overlay, .member-dots')) return;
+      setMemberMenu(null);
+      setOpenMemberMenuId(null);
+    };
+    document.addEventListener('pointerdown', handler);
+    return () => document.removeEventListener('pointerdown', handler);
+  }, [memberMenu]);
+
   const emitRemoveGroupMember = (gid, memberIdStr) => {
-    if (socket && gid && memberIdStr) socket.emit('removeGroupMember', { groupId: gid, memberId: memberIdStr });
+    const s = socketRef.current || socket;
+    if (s && gid && memberIdStr) s.emit('removeGroupMember', { groupId: gid, memberId: memberIdStr });
     closeMemberMenu();
   };
   const emitMakeGroupAdmin = (gid, memberIdStr) => {
-    if (socket && gid && memberIdStr) socket.emit('makeGroupAdmin', { groupId: gid, memberId: memberIdStr });
+    const s = socketRef.current || socket;
+    if (s && gid && memberIdStr) s.emit('makeGroupAdmin', { groupId: gid, memberId: memberIdStr });
     closeMemberMenu();
   };
 
@@ -9198,7 +9212,7 @@ setContacts(prev => {
                       isAdmin,
                       isSelf,
                       isMobile: false,
-                      rect: { top: r.bottom, right: Math.round(window.innerWidth - r.right) },
+                      rect: { top: r.top, bottom: r.bottom, right: Math.round(window.innerWidth - r.right) },
                     });
                     setOpenMemberMenuId(memberId);
                   }}
@@ -10051,13 +10065,25 @@ setContacts(prev => {
     </div>
   ) : (
     memberMenu.rect && (
-      <div
-        className="member-dropdown"
-        style={{ position: 'fixed', top: memberMenu.rect.top + 6, right: memberMenu.rect.right }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        {body}
-      </div>
+      (() => {
+        // Keep the menu on screen: open downward when there's room, otherwise
+        // flip it above the three-dot button (helps members near the bottom).
+        const MENU_H = 250;
+        const fitsBelow = memberMenu.rect.bottom + 10 + MENU_H <= window.innerHeight;
+        const pos = fitsBelow
+          ? { top: memberMenu.rect.bottom + 6 }
+          : { bottom: Math.round(window.innerHeight - memberMenu.rect.top) + 6 };
+        return (
+          <div
+            className="member-dropdown"
+            style={{ position: 'fixed', right: memberMenu.rect.right, maxHeight: 'min(60vh, 340px)', overflowY: 'auto', ...pos }}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {body}
+          </div>
+        );
+      })()
     )
   );
 })()}
