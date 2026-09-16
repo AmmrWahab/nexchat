@@ -5748,21 +5748,21 @@ setGroupMessages(prev => {
 
                 <div className="group-details">
                   <div className="group-settings-row">
-                    <div className="group-settings-row-label">
-                      <span className="group-settings-row-title">Add members</span>
-                      <span className="group-settings-row-sub">Who can add new members to this group</span>
+                    <div className="group-settings-row-label" style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                      <span className="group-settings-row-title" style={{ fontSize: '0.95rem', fontWeight: 500, color: '#1f2933' }}>Add members</span>
+                      <span className="group-settings-row-sub" style={{ fontSize: '0.8rem', color: '#8a8f99' }}>Who can add new members to this group</span>
                     </div>
-                    <div className="group-perm-toggle">
+                    <div className="group-perm-toggle" style={{ display: 'flex', gap: '8px' }}>
                       <button
                         type="button"
-                        className={groupAddPref === 'everyone' ? 'active' : ''}
+                        style={{ flex: 1, padding: '8px 10px', borderRadius: '8px', border: '1px solid #dde1e5', background: groupAddPref === 'everyone' ? '#075e54' : '#f6f7f8', color: groupAddPref === 'everyone' ? '#fff' : '#5a6066', fontSize: '0.85rem', fontWeight: 500, cursor: 'pointer' }}
                         onClick={() => setGroupAddPref('everyone')}
                       >
                         Everyone
                       </button>
                       <button
                         type="button"
-                        className={groupAddPref === 'admins' ? 'active' : ''}
+                        style={{ flex: 1, padding: '8px 10px', borderRadius: '8px', border: '1px solid #dde1e5', background: groupAddPref === 'admins' ? '#075e54' : '#f6f7f8', color: groupAddPref === 'admins' ? '#fff' : '#5a6066', fontSize: '0.85rem', fontWeight: 500, cursor: 'pointer' }}
                         onClick={() => setGroupAddPref('admins')}
                       >
                         Admins only
@@ -5771,21 +5771,21 @@ setGroupMessages(prev => {
                   </div>
 
                   <div className="group-settings-row">
-                    <div className="group-settings-row-label">
-                      <span className="group-settings-row-title">Send messages</span>
-                      <span className="group-settings-row-sub">Who can send messages in this group</span>
+                    <div className="group-settings-row-label" style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                      <span className="group-settings-row-title" style={{ fontSize: '0.95rem', fontWeight: 500, color: '#1f2933' }}>Send messages</span>
+                      <span className="group-settings-row-sub" style={{ fontSize: '0.8rem', color: '#8a8f99' }}>Who can send messages in this group</span>
                     </div>
-                    <div className="group-perm-toggle">
+                    <div className="group-perm-toggle" style={{ display: 'flex', gap: '8px' }}>
                       <button
                         type="button"
-                        className={groupSendPref === 'everyone' ? 'active' : ''}
+                        style={{ flex: 1, padding: '8px 10px', borderRadius: '8px', border: '1px solid #dde1e5', background: groupSendPref === 'everyone' ? '#075e54' : '#f6f7f8', color: groupSendPref === 'everyone' ? '#fff' : '#5a6066', fontSize: '0.85rem', fontWeight: 500, cursor: 'pointer' }}
                         onClick={() => setGroupSendPref('everyone')}
                       >
                         Everyone
                       </button>
                       <button
                         type="button"
-                        className={groupSendPref === 'admins' ? 'active' : ''}
+                        style={{ flex: 1, padding: '8px 10px', borderRadius: '8px', border: '1px solid #dde1e5', background: groupSendPref === 'admins' ? '#075e54' : '#f6f7f8', color: groupSendPref === 'admins' ? '#fff' : '#5a6066', fontSize: '0.85rem', fontWeight: 500, cursor: 'pointer' }}
                         onClick={() => setGroupSendPref('admins')}
                       >
                         Admins only
@@ -5825,6 +5825,7 @@ setGroupMessages(prev => {
                     className="group-settings-icon-btn"
                     onClick={() => setGroupFlowSettingsOpen(true)}
                     aria-label="Group Settings"
+                    style={{ marginLeft: 'auto' }}
                   >
                     <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                       <circle cx="12" cy="12" r="3"/>
@@ -10049,9 +10050,9 @@ setContacts(prev => {
                     </svg>
                   </span>
                   {contact.photo ? (
-                    <img className="add-members-avatar" src={contact.photo} alt={contactName} />
+                    <img className="add-members-avatar" src={contact.photo} alt={contactName} style={{ width: 40, height: 40, minWidth: 40, minHeight: 40, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
                   ) : (
-                    <span className="add-members-avatar">{(contactName || '?').charAt(0).toUpperCase()}</span>
+                    <span className="add-members-avatar" style={{ width: 40, height: 40, minWidth: 40, minHeight: 40 }}>{(contactName || '?').charAt(0).toUpperCase()}</span>
                   )}
                   <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{contactName}</span>
                 </div>
@@ -10108,21 +10109,21 @@ setContacts(prev => {
           )}
 
           <div className="group-settings-row" style={{ width: '100%' }}>
-            <div className="group-settings-row-label">
-              <span className="group-settings-row-title">Send messages</span>
-              <span className="group-settings-row-sub">Who can send messages in this group</span>
+            <div className="group-settings-row-label" style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              <span className="group-settings-row-title" style={{ fontSize: '0.95rem', fontWeight: 500, color: '#1f2933' }}>Send messages</span>
+              <span className="group-settings-row-sub" style={{ fontSize: '0.8rem', color: '#8a8f99' }}>Who can send messages in this group</span>
             </div>
-            <div className="group-perm-toggle">
+            <div className="group-perm-toggle" style={{ display: 'flex', gap: '8px' }}>
               <button
                 type="button"
-                className={selectedGroup.sendMessages === 'everyone' ? 'active' : ''}
+                style={{ flex: 1, padding: '8px 10px', borderRadius: '8px', border: '1px solid #dde1e5', background: selectedGroup.sendMessages === 'everyone' ? '#075e54' : '#f6f7f8', color: selectedGroup.sendMessages === 'everyone' ? '#fff' : '#5a6066', fontSize: '0.85rem', fontWeight: 500, cursor: 'pointer' }}
                 onClick={() => updateGroupSetting('sendMessages', 'everyone')}
               >
                 Everyone
               </button>
               <button
                 type="button"
-                className={selectedGroup.sendMessages === 'admins' ? 'active' : ''}
+                style={{ flex: 1, padding: '8px 10px', borderRadius: '8px', border: '1px solid #dde1e5', background: selectedGroup.sendMessages === 'admins' ? '#075e54' : '#f6f7f8', color: selectedGroup.sendMessages === 'admins' ? '#fff' : '#5a6066', fontSize: '0.85rem', fontWeight: 500, cursor: 'pointer' }}
                 onClick={() => updateGroupSetting('sendMessages', 'admins')}
               >
                 Admins only
@@ -10131,21 +10132,21 @@ setContacts(prev => {
           </div>
 
           <div className="group-settings-row" style={{ width: '100%' }}>
-            <div className="group-settings-row-label">
-              <span className="group-settings-row-title">Add members</span>
-              <span className="group-settings-row-sub">Who can add new members to this group</span>
+            <div className="group-settings-row-label" style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              <span className="group-settings-row-title" style={{ fontSize: '0.95rem', fontWeight: 500, color: '#1f2933' }}>Add members</span>
+              <span className="group-settings-row-sub" style={{ fontSize: '0.8rem', color: '#8a8f99' }}>Who can add new members to this group</span>
             </div>
-            <div className="group-perm-toggle">
+            <div className="group-perm-toggle" style={{ display: 'flex', gap: '8px' }}>
               <button
                 type="button"
-                className={selectedGroup.addMembers === 'everyone' ? 'active' : ''}
+                style={{ flex: 1, padding: '8px 10px', borderRadius: '8px', border: '1px solid #dde1e5', background: selectedGroup.addMembers === 'everyone' ? '#075e54' : '#f6f7f8', color: selectedGroup.addMembers === 'everyone' ? '#fff' : '#5a6066', fontSize: '0.85rem', fontWeight: 500, cursor: 'pointer' }}
                 onClick={() => updateGroupSetting('addMembers', 'everyone')}
               >
                 Everyone
               </button>
               <button
                 type="button"
-                className={selectedGroup.addMembers === 'admins' ? 'active' : ''}
+                style={{ flex: 1, padding: '8px 10px', borderRadius: '8px', border: '1px solid #dde1e5', background: selectedGroup.addMembers === 'admins' ? '#075e54' : '#f6f7f8', color: selectedGroup.addMembers === 'admins' ? '#fff' : '#5a6066', fontSize: '0.85rem', fontWeight: 500, cursor: 'pointer' }}
                 onClick={() => updateGroupSetting('addMembers', 'admins')}
               >
                 Admins only
@@ -10244,6 +10245,7 @@ setContacts(prev => {
               type="button"
               className="group-add-members-top"
               onClick={openAddMembers}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '6px 12px', border: '1px solid #b0b8c1', borderRadius: '16px', background: '#e8f5e9', color: '#075e54', fontSize: '0.8rem', fontWeight: 500, cursor: 'pointer' }}
             >
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M12 5v14M5 12h14"/>
@@ -10452,6 +10454,8 @@ setContacts(prev => {
         padding: '8px 0',
         minWidth: '250px',
         boxShadow: '0 4px 20px rgba(0,0,0,0.2)',
+        display: 'flex',
+        flexDirection: 'column',
       }}
       onClick={(e) => e.stopPropagation()}
     >
