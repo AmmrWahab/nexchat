@@ -251,9 +251,15 @@ export default function DashboardPage() {
   const [selectedGroup, setSelectedGroup] = useState(null);
   const [memberProfile, setMemberProfile] = useState(null);
   const [groupMessages, setGroupMessages] = useState({});
-  // Permission preferences chosen while creating a group (stage 3).
+  // Permission preferences chosen while creating a group (opened via the Group
+  // Settings sub-page of the creation flow).
   const [groupAddPref, setGroupAddPref] = useState('everyone'); // 'everyone' | 'admins'
   const [groupSendPref, setGroupSendPref] = useState('everyone'); // 'everyone' | 'admins'
+  // Whether the nested "Group Settings" page is shown INSIDE the group-creation
+  // panel (opened from the hollow Settings icon on the name+photo page).
+  const [groupFlowSettingsOpen, setGroupFlowSettingsOpen] = useState(false);
+  // Group Info: options popup for the group profile picture (true = open).
+  const [groupDpMenuOpen, setGroupDpMenuOpen] = useState(false);
   // Group Info -> nested "Group Settings" screen (photo + permissions).
   const [groupSettingsOpen, setGroupSettingsOpen] = useState(false);
   // Group Info -> "Add members" screen state.
@@ -4238,6 +4244,7 @@ newSocket.on("receiveMessage", (data) => {
         setShowGroupInfo(false);
         setAddMembersOpen(false);
         setGroupSettingsOpen(false);
+        setGroupDpMenuOpen(false);
         closeMemberMenu();
       });
 
@@ -4261,7 +4268,7 @@ newSocket.on("receiveMessage", (data) => {
         const reason =
           data && (data.message
             || (data.reason === 'admins_only'
-              ? 'Only admins can send messages in this group'
+              ? 'Only admins can send messages'
               : data.reason === 'not_member'
                 ? 'You are no longer a participant of this group'
                 : null));
@@ -5409,6 +5416,7 @@ setGroupMessages(prev => {
         setGroupDp(null);
         setGroupAddPref('everyone');
         setGroupSendPref('everyone');
+        setGroupFlowSettingsOpen(false);
         setSlideClass('slide-in-forward');
       };
 
@@ -5418,7 +5426,7 @@ setGroupMessages(prev => {
 
       const advanceGroupStep = () => {
         setSlideClass('slide-in-forward');
-        setGroupStep(s => Math.min(s + 1, 3));
+        setGroupStep(s => Math.min(s + 1, 2));
       };
 
       const backGroupStep = () => {
@@ -5450,13 +5458,24 @@ setGroupMessages(prev => {
           (selectedGroup.members || []).map(m => String(m?._id || m?.id || m))
         );
         const q = addMembersQuery.trim().toLowerCase();
-        return (contacts || []).filter(c => {
-          if (!c || !c.id) return false;
+        const seen = new Set();
+        const out = [];
+        (contacts || []).forEach(c => {
+          if (!c || !c.id) return;
           const cid = String(c.id);
-          if (memberIds.has(cid) || cid === String(user.id)) return false;
-          if (q && !String(c.name || '').toLowerCase().includes(q)) return false;
-          return true;
+          if (memberIds.has(cid) || cid === String(user.id)) return;
+          // Search across the viewer's saved contact name, the user's
+          // profile/database name, and their email.
+          const savedName = (nameOf(cid, c.name || '') || '').toLowerCase();
+          const profileName = String(c.name || '').toLowerCase();
+          const email = String(c.email || '').toLowerCase();
+          if (q && !savedName.includes(q) && !profileName.includes(q) && !email.includes(q)) return;
+          // Avoid exposing duplicate identity rows.
+          if (seen.has(cid)) return;
+          seen.add(cid);
+          out.push(c);
         });
+        return out;
       })();
 
       // Add the selected contacts to the group (server re-validates the
@@ -5491,10 +5510,13 @@ setGroupMessages(prev => {
         });
       };
 
-      // Group profile picture: change (dataURL) or remove (null).
+      // Group profile picture: change (dataURL) or remove (null). Any member can
+      // change the photo (server permits dp changes for members, while the
+      // permission toggles stay admin-only).
       const handleGroupInfoDpChange = (e) => {
         const file = e.target.files?.[0];
         if (!file) return;
+        setGroupDpMenuOpen(false);
         const reader = new FileReader();
         reader.onload = () => {
           const s = socketRef.current || socket;
@@ -5511,6 +5533,7 @@ setGroupMessages(prev => {
       const removeGroupDp = () => {
         const s = socketRef.current || socket;
         if (!s || !selectedGroup) return;
+        setGroupDpMenuOpen(false);
         s.emit('group:updateSettings', {
           groupId: String(selectedGroup.id || selectedGroup._id),
           dp: null,
@@ -5705,7 +5728,83 @@ setGroupMessages(prev => {
                   </button>
                 </div>
               </div>
-            ) : groupStep === 2 ? (
+            ) : groupFlowSettingsOpen ? (
+              <div className="group-screen">
+                <div className="group-header">
+                  <button
+                    type="button"
+                    className="group-back-btn"
+                    onClick={() => setGroupFlowSettingsOpen(false)}
+                    aria-label="Back"
+                  >
+                    <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true">
+                      <path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/>
+                    </svg>
+                  </button>
+                  <div className="group-header-text">
+                    <span className="group-header-title">Group Settings</span>
+                  </div>
+                </div>
+
+                <div className="group-details">
+                  <div className="group-settings-row">
+                    <div className="group-settings-row-label">
+                      <span className="group-settings-row-title">Add members</span>
+                      <span className="group-settings-row-sub">Who can add new members to this group</span>
+                    </div>
+                    <div className="group-perm-toggle">
+                      <button
+                        type="button"
+                        className={groupAddPref === 'everyone' ? 'active' : ''}
+                        onClick={() => setGroupAddPref('everyone')}
+                      >
+                        Everyone
+                      </button>
+                      <button
+                        type="button"
+                        className={groupAddPref === 'admins' ? 'active' : ''}
+                        onClick={() => setGroupAddPref('admins')}
+                      >
+                        Admins only
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="group-settings-row">
+                    <div className="group-settings-row-label">
+                      <span className="group-settings-row-title">Send messages</span>
+                      <span className="group-settings-row-sub">Who can send messages in this group</span>
+                    </div>
+                    <div className="group-perm-toggle">
+                      <button
+                        type="button"
+                        className={groupSendPref === 'everyone' ? 'active' : ''}
+                        onClick={() => setGroupSendPref('everyone')}
+                      >
+                        Everyone
+                      </button>
+                      <button
+                        type="button"
+                        className={groupSendPref === 'admins' ? 'active' : ''}
+                        onClick={() => setGroupSendPref('admins')}
+                      >
+                        Admins only
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="group-bottom-bar">
+                  <button
+                    type="button"
+                    className="group-done-btn"
+                    onClick={() => setGroupFlowSettingsOpen(false)}
+                  >
+                    Done
+                  </button>
+                </div>
+              </div>
+            ) : (
               <div className="group-screen">
                 <div className="group-header">
                   <button
@@ -5721,6 +5820,17 @@ setGroupMessages(prev => {
                   <div className="group-header-text">
                     <span className="group-header-title">New Group</span>
                   </div>
+                  <button
+                    type="button"
+                    className="group-settings-icon-btn"
+                    onClick={() => setGroupFlowSettingsOpen(true)}
+                    aria-label="Group Settings"
+                  >
+                    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <circle cx="12" cy="12" r="3"/>
+                      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                    </svg>
+                  </button>
                 </div>
 
                 <div className="group-details">
@@ -5760,115 +5870,6 @@ setGroupMessages(prev => {
                   <p className="group-member-count">
                     {selCount} member{selCount === 1 ? '' : 's'}
                   </p>
-                </div>
-
-                <div className="group-bottom-bar">
-                  <button
-                    type="button"
-                    className="group-forward-btn"
-                    disabled={!groupName.trim() || selCount === 0}
-                    onClick={advanceGroupStep}
-                    aria-label="Next"
-                  >
-                    <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true">
-                      <path fill="currentColor" d="M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8z"/>
-                    </svg>
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="group-screen">
-                <div className="group-header">
-                  <button
-                    type="button"
-                    className="group-back-btn"
-                    onClick={backGroupStep}
-                    aria-label="Back"
-                  >
-                    <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true">
-                      <path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/>
-                    </svg>
-                  </button>
-                  <div className="group-header-text">
-                    <span className="group-header-title">Group Settings</span>
-                  </div>
-                </div>
-
-                <div className="group-details">
-                  <label className="group-dp-picker" style={{ cursor: 'pointer' }}>
-                    {groupDp ? (
-                      <img className="group-dp-preview" src={groupDp} alt="Group DP" />
-                    ) : (
-                      <span className="group-dp-placeholder">{groupInitial}</span>
-                    )}
-                    <span className="group-dp-edit">
-                      <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
-                        <path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/>
-                      </svg>
-                    </span>
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={handleGroupDpChange}
-                      hidden
-                    />
-                  </label>
-
-                  {groupDp && (
-                    <button
-                      type="button"
-                      className="group-remove-dp-btn"
-                      onClick={() => setGroupDp(null)}
-                    >
-                      Remove photo
-                    </button>
-                  )}
-
-                  <div className="group-settings-row">
-                    <div className="group-settings-row-label">
-                      <span className="group-settings-row-title">Send messages</span>
-                      <span className="group-settings-row-sub">Who can send messages in this group</span>
-                    </div>
-                    <div className="group-perm-toggle">
-                      <button
-                        type="button"
-                        className={groupSendPref === 'everyone' ? 'active' : ''}
-                        onClick={() => setGroupSendPref('everyone')}
-                      >
-                        Everyone
-                      </button>
-                      <button
-                        type="button"
-                        className={groupSendPref === 'admins' ? 'active' : ''}
-                        onClick={() => setGroupSendPref('admins')}
-                      >
-                        Admins
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="group-settings-row">
-                    <div className="group-settings-row-label">
-                      <span className="group-settings-row-title">Add members</span>
-                      <span className="group-settings-row-sub">Who can add new members to this group</span>
-                    </div>
-                    <div className="group-perm-toggle">
-                      <button
-                        type="button"
-                        className={groupAddPref === 'everyone' ? 'active' : ''}
-                        onClick={() => setGroupAddPref('everyone')}
-                      >
-                        Everyone
-                      </button>
-                      <button
-                        type="button"
-                        className={groupAddPref === 'admins' ? 'active' : ''}
-                        onClick={() => setGroupAddPref('admins')}
-                      >
-                        Admins
-                      </button>
-                    </div>
-                  </div>
                 </div>
 
                 <div className="group-bottom-bar">
@@ -7487,7 +7488,7 @@ You are no longer a participant of this group
                 </div>
               ) : !viewerCanSendGroup ? (
                 <div className="group-compose-locked" style={isMobile ? { display: 'none' } : undefined}>
-Only admins can send messages in this group
+Only admins can send messages
                 </div>
               ) : (
               <div className="message-input" style={{ display: isMobile ? 'none' : 'flex' }}>
@@ -7595,7 +7596,7 @@ Only admins can send messages in this group
               {isMobile && (selectedGroup?.removedAt ? (
                 <div className="mobile-compose-locked">You are no longer a participant of this group</div>
               ) : !viewerCanSendGroup ? (
-                <div className="mobile-compose-locked">Only admins can send messages in this group</div>
+                <div className="mobile-compose-locked">Only admins can send messages</div>
               ) : (
                 <div className="mobile-compose">
                   {!showMobileAttach && (
@@ -9961,9 +9962,18 @@ setContacts(prev => {
             color: '#000000ff',
             padding: '4px',
             marginRight: '20px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
           }}
         >
-          ✖
+          {isMobile ? (
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M15 18l-6-6 6-6"/>
+            </svg>
+          ) : (
+            '✖'
+          )}
         </button>
         <div
           className="drawer-title"
@@ -9976,6 +9986,28 @@ setContacts(prev => {
         >
           {addMembersOpen ? 'Add members' : (groupSettingsOpen ? 'Group Settings' : 'Group Info')}
         </div>
+        {!addMembersOpen && !groupSettingsOpen && viewerIsGroupAdmin(selectedGroup) && (
+          <button
+            type="button"
+            aria-label="Group Settings"
+            onClick={() => setGroupSettingsOpen(true)}
+            style={{
+              background: 'none',
+              border: 'none',
+              cursor: 'pointer',
+              color: '#333',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: '6px',
+            }}
+          >
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+            </svg>
+          </button>
+        )}
       </div>
 
       {addMembersOpen ? (
@@ -9997,6 +10029,7 @@ setContacts(prev => {
           <div>
             {groupMembersForAdd.map((contact) => {
               const isTicked = addMembersSelected.has(String(contact.id));
+              const contactName = nameOf(contact.id, contact.name || 'Someone');
               return (
                 <div
                   key={contact.id}
@@ -10016,11 +10049,11 @@ setContacts(prev => {
                     </svg>
                   </span>
                   {contact.photo ? (
-                    <img className="add-members-avatar" src={contact.photo} alt={contact.name} />
+                    <img className="add-members-avatar" src={contact.photo} alt={contactName} />
                   ) : (
-                    <span className="add-members-avatar">{(contact.name || '?').charAt(0).toUpperCase()}</span>
+                    <span className="add-members-avatar">{(contactName || '?').charAt(0).toUpperCase()}</span>
                   )}
-                  <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{contact.name}</span>
+                  <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{contactName}</span>
                 </div>
               );
             })}
@@ -10092,7 +10125,7 @@ setContacts(prev => {
                 className={selectedGroup.sendMessages === 'admins' ? 'active' : ''}
                 onClick={() => updateGroupSetting('sendMessages', 'admins')}
               >
-                Admins
+                Admins only
               </button>
             </div>
           </div>
@@ -10115,7 +10148,7 @@ setContacts(prev => {
                 className={selectedGroup.addMembers === 'admins' ? 'active' : ''}
                 onClick={() => updateGroupSetting('addMembers', 'admins')}
               >
-                Admins
+                Admins only
               </button>
             </div>
           </div>
@@ -10138,17 +10171,25 @@ setContacts(prev => {
           gap: '12px',
         }}
       >
-        <img
-          src={selectedGroup.dp || 'https://via.placeholder.com/80?text=G'}
-          alt="Group"
-          style={{
-            width: '80px',
-            height: '80px',
-            borderRadius: '50%',
-            objectFit: 'cover',
-            border: '3px solid #ddd',
-          }}
-        />
+        <button
+          type="button"
+          className="group-dp-options-btn"
+          aria-label="Group profile picture options"
+          onClick={() => { if (!selectedGroup.removedAt) setGroupDpMenuOpen(true); }}
+        >
+          <img
+            src={selectedGroup.dp || 'https://via.placeholder.com/80?text=G'}
+            alt="Group"
+            style={{
+              width: '80px',
+              height: '80px',
+              borderRadius: '50%',
+              objectFit: 'cover',
+              border: '3px solid #ddd',
+              display: 'block',
+            }}
+          />
+        </button>
         <div
           className="saved-name"
           style={{ fontSize: '18px', fontWeight: '500', color: '#111' }}
@@ -10188,9 +10229,28 @@ setContacts(prev => {
       >
         <div
           className="section-title"
-          style={{ fontSize: '14px', color: '#333', marginBottom: '12px' }}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            fontSize: '14px',
+            color: '#333',
+            marginBottom: '12px',
+          }}
         >
-          Members
+          <span>Members</span>
+          {!selectedGroup.removedAt && (viewerIsGroupAdmin(selectedGroup) || selectedGroup.addMembers !== 'admins') && (
+            <button
+              type="button"
+              className="group-add-members-top"
+              onClick={openAddMembers}
+            >
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M12 5v14M5 12h14"/>
+              </svg>
+              Add members
+            </button>
+          )}
         </div>
         {(Array.isArray(selectedGroup.members) ? selectedGroup.members : []).map((m, idx) => {
           const memberId = String(m?._id || m?.id || m || '');
@@ -10310,49 +10370,6 @@ setContacts(prev => {
       </div>
 
       <div className="section" style={{ padding: '16px', borderTop: '1px solid #eee' }}>
-        {/* Group Settings */}
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '12px',
-            padding: '12px 0',
-            fontSize: '16px',
-            color: '#333',
-            cursor: 'pointer',
-          }}
-          onClick={() => {
-            if (selectedGroup) setGroupSettingsOpen(true);
-          }}
-        >
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M12 15.5A2.5 2.5 0 1 0 12 10.5 2.5 2.5 0 0 0 12 15.5zm7.5-2.08c0-.49 0-.93-.08-1.34L21 10.58l-2-3.46-2.19.9a7.6 7.6 0 0 0-2.3-1.34L14.27 4h-4.54l-.24 2.68a7.6 7.6 0 0 0-2.3 1.34L5 7.12 3 10.58l1.58 1.5a7.6 7.6 0 0 0 0 2.68L3 16.26l2 3.46 2.19-.9a7.6 7.6 0 0 0 2.3 1.34l.24 2.68h4.54l.24-2.68a7.6 7.6 0 0 0 2.3-1.34l2.19.9 2-3.46-1.58-1.5c.08-.41.08-.85.08-1.34z" stroke="#333" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-          <span>Group Settings</span>
-        </div>
-
-        {/* Add members */}
-        {!selectedGroup.removedAt && (viewerIsGroupAdmin(selectedGroup) || selectedGroup.addMembers !== 'admins') && (
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '12px',
-              padding: '12px 0',
-              fontSize: '16px',
-              color: '#333',
-              cursor: 'pointer',
-              borderTop: '1px solid #eee',
-            }}
-            onClick={openAddMembers}
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M16 11c1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3 1.34 3 3 3zm-8 0c1.66 0 3-1.34 3-3S9.66 5 8 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5C15 14.17 10.33 13 8 13zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z" stroke="#333" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-            <span>Add members</span>
-          </div>
-        )}
-
         {/* Clear Chat */}
         <div
           style={{
@@ -10408,6 +10425,49 @@ setContacts(prev => {
       )}
     </div>
   </>
+)}
+
+{/* Group profile picture options popup (opened from the Group Info photo) */}
+{groupDpMenuOpen && selectedGroup && (
+  <div
+    style={{
+      position: 'fixed',
+      top: 0,
+      left: 0,
+      width: '100vw',
+      height: '100vh',
+      background: 'rgba(0, 0, 0, 0.5)',
+      display: 'flex',
+      justifyContent: 'center',
+      alignItems: 'center',
+      zIndex: 20000,
+    }}
+    onClick={() => setGroupDpMenuOpen(false)}
+  >
+    <div
+      style={{
+        background: 'white',
+        borderRadius: '12px',
+        padding: '8px 0',
+        minWidth: '250px',
+        boxShadow: '0 4px 20px rgba(0,0,0,0.2)',
+      }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <label className="group-dp-menu-row">
+        {selectedGroup.dp ? 'Change profile picture' : 'Add profile picture'}
+        <input type="file" accept="image/*" onChange={handleGroupInfoDpChange} hidden />
+      </label>
+      {selectedGroup.dp && (
+        <button type="button" className="group-dp-menu-row group-dp-menu-remove" onClick={removeGroupDp}>
+          Remove profile picture
+        </button>
+      )}
+      <button type="button" className="group-dp-menu-row" onClick={() => setGroupDpMenuOpen(false)}>
+        Cancel
+      </button>
+    </div>
+  </div>
 )}
 
 {/* Member Profile Drawer */}

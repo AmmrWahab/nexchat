@@ -558,7 +558,7 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
         const adminsStr = (group.admins || []).map(String);
         const isAdmin = adminStr === String(socket.userId) || adminsStr.includes(String(socket.userId));
         if (!isAdmin) {
-          socket.emit("groupSendRestricted", { groupId, reason: "admins_only", message: "Only admins can send messages in this group" });
+          socket.emit("groupSendRestricted", { groupId, reason: "admins_only", message: "Only admins can send messages" });
           return;
         }
       }
@@ -1252,7 +1252,13 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
       const actorId = String(socket.userId);
       const adminsStr = (group.admins || []).map(String);
       const isActorAdmin = String(group.admin) === actorId || adminsStr.includes(actorId);
-      if (!isActorAdmin) return; // Only admins can change group settings
+      const isActiveMember = group.members.map(String).includes(actorId);
+      const hasPermChange =
+        addMembers === 'admins' || addMembers === 'everyone' ||
+        sendMessages === 'admins' || sendMessages === 'everyone';
+      if (hasPermChange && !isActorAdmin) return; // Permissions: admins only
+      if (!hasPermChange && dp === undefined) return; // Nothing to change
+      if (dp !== undefined && !isActiveMember) return; // Photo: any member
 
       const nextAddMembers = addMembers === 'admins' || addMembers === 'everyone' ? addMembers : undefined;
       const nextSendMessages = sendMessages === 'admins' || sendMessages === 'everyone' ? sendMessages : undefined;
@@ -1263,11 +1269,15 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
 
       const actor = await User.findById(socket.userId).select('name').lean().exec();
       const actorName = actor?.name || 'Someone';
+      const changedPhoto = dp !== undefined && !hasPermChange;
+      const sysMessageText = changedPhoto
+        ? `${actorName} changed the group photo`
+        : `${actorName} changed the group info`;
 
       const sys = await GroupMessage.create({
         group: groupId,
         from: socket.userId,
-        message: `${actorName} changed the group info`,
+        message: sysMessageText,
         isSystem: true,
         systemType: 'groupSettingsUpdated',
       });
@@ -1280,7 +1290,7 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
         groupId,
         from: String(socket.userId),
         fromName: actorName,
-        message: `${actorName} changed the group info`,
+        message: sysMessageText,
         isSystem: true,
         systemType: 'groupSettingsUpdated',
         timestamp: sys.createdAt.getTime(),
