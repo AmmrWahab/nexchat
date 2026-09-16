@@ -21,6 +21,7 @@ const messageSchema = new mongoose.Schema({
 
   delivered: { type: Boolean, default: false },
   read: { type: Boolean, default: false },
+  blocked: { type: Boolean, default: false }, // sent while a block was active: kept for the SENDER's view only (single tick), never delivered
   clientMessageId: String,
   isForwarded: { type: Boolean, default: false },
 

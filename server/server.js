@@ -238,20 +238,17 @@ socket.on("sendMessage", async (data) => {
     const sender = await User.findById(from).select("name").exec();
     if (!sender) return console.error("Sender not found");
 
-    // 🚫 Block enforcement: if either party blocked the other, the message is
-    //    silently dropped — never saved, never delivered. The blocked sender's
-    //    optimistic message stays at a single tick forever (even on unblock).
+    // 🚫 Block enforcement: if either party blocked the other the message is
+    //    saved with blocked:true + delivered:false so the SENDER still sees a
+    //    single-tick copy after refresh. The recipient never receives it — not
+    //    while blocked, not after unblock.
     const blockedPair = await Promise.all([
       User.findById(from).select("blockedUsers").exec(),
       User.findById(to).select("blockedUsers").exec(),
     ]);
     const senderBlocked = (blockedPair[0]?.blockedUsers || []).some((id) => String(id) === String(to));
     const receiverBlocked = (blockedPair[1]?.blockedUsers || []).some((id) => String(id) === String(from));
-    if (senderBlocked || receiverBlocked) {
-      console.log(`🚫 Blocked DM rejected: ${from} -> ${to} (senderBlocked=${senderBlocked}, receiverBlocked=${receiverBlocked})`);
-      socket.emit("messageBlocked", { to, blocked: true });
-      return;
-    }
+    const blocked = senderBlocked || receiverBlocked;
 
 console.log("💾 [DB] Attempting to save message..."); // 🔥
     const newMsg = await Message.create({
@@ -269,7 +266,8 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
         statusId: replyTo.statusId,
         senderId: replyTo.senderId
       } : null,
-      delivered: !!receiverSocketIds,
+      delivered: !blocked && !!receiverSocketIds,
+      blocked: !!blocked,
       isForwarded: !!isForwarded,
       clientMessageId: data.messageId 
     });
@@ -280,6 +278,10 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
       clientMessageId: newMsg.clientMessageId
     });
     
+    if (blocked) {
+      console.log(`🚫 Blocked DM saved for sender view only (single tick): ${from} -> ${to}`);
+      return;
+    }
 
     if (receiverSocketIds) {
       // ✅ Build one authoritative payload. `to` is included so ANY device of the
@@ -345,7 +347,15 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
         .limit(200)
         .exec();
 
-      const msgs = messages.map(m => ({
+      const msgs = messages
+        .filter((m) => {
+          const fromId = String(m.from && (m.from._id || m.from));
+          // Messages sent during a block are visible only to the sender
+          // (single tick); the recipient must never see them, even after unblock.
+          if (m.blocked && fromId !== String(me)) return false;
+          return true;
+        })
+        .map(m => ({
         _id: m._id.toString(),
         from: String(m.from._id),
         fromName: m.from.name || 'Unknown',
@@ -1163,9 +1173,12 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
       io.to(socket.id).emit('userStatusSnapshot', onlineSnapshot);
 
       // ✅ Deliver undelivered messages
+      //    blocked:true messages are sender-only (single tick) and must NEVER
+      //    be delivered — not even after an unblock.
       const undelivered = await Message.find({
         to: socket.userId,
-        delivered: false
+        delivered: false,
+        blocked: { $ne: true }
       }).populate("from", "name");
 
       if (undelivered.length > 0) {
