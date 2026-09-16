@@ -8682,7 +8682,68 @@ You are no longer a participant of this group
           >
             Groups in Common
           </div>
-          <div className="action-item">No groups yet</div>
+          {(() => {
+            const selfId = String(user.id);
+            const contactId = String(selectedChat?.id ?? '');
+            const commonGroups = (groupsList || []).filter(g => {
+              const ids = (g.members || []).map(m => String(m?._id || m?.id || m || ''));
+              return ids.includes(selfId) && ids.includes(contactId);
+            });
+            if (commonGroups.length === 0) {
+              return <div className="action-item">No groups yet</div>;
+            }
+            return (
+              <div>
+                {commonGroups.map(g => {
+                  const gid = String(g._id || g.id);
+                  return (
+                    <div
+                      key={gid}
+                      onClick={() => {
+                        setSelectedChat(null);
+                        selectedChatRef.current = null;
+                        const normalized = {
+                          id: gid,
+                          name: g.name,
+                          dp: g.dp,
+                          memberCount: g.memberCount || (g.members?.length || 0),
+                          members: g.members || [],
+                          admins: Array.isArray(g.admins) ? g.admins.map(String) : [],
+                          admin: g.admin,
+                          adminName: g.adminName || null,
+                          removedAt: g.removedAt || null,
+                          removedBy: g.removedBy || null,
+                          removedByName: g.removedByName || '',
+                        };
+                        selectedGroupRef.current = normalized;
+                        setSelectedGroup(normalized);
+                        setShowContactInfo(false);
+                        setMobileChatOpen(true);
+                        setActiveTab('groups');
+                        if (socket) socket.emit('fetchGroupMessages', { groupId: gid });
+                      }}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '12px',
+                        padding: '10px 0',
+                        cursor: 'pointer',
+                        borderBottom: '1px solid #f0f0f0',
+                      }}
+                    >
+                      <img
+                        src={g.dp || 'https://via.placeholder.com/40/4a00e0/fff?text=G'}
+                        alt=""
+                        style={{ width: '40px', height: '40px', borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }}
+                      />
+                      <div style={{ fontSize: '15px', color: '#111', flex: 1 }}>{g.name}</div>
+                      <span style={{ color: '#666', fontSize: '13px' }}>{g.memberCount || (g.members?.length || 0)} members</span>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
         </div>
 
         <div
