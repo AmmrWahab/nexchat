@@ -260,6 +260,10 @@ export default function DashboardPage() {
   const [groupFlowSettingsOpen, setGroupFlowSettingsOpen] = useState(false);
   // Group Info: options popup for the group profile picture (true = open).
   const [groupDpMenuOpen, setGroupDpMenuOpen] = useState(false);
+  // Permission toggles that are awaiting the server's confirmation. While a
+  // toggle is pending, the active button is blurred + shows a small spinner so
+  // users can't spam-click (the server round-trip is slow, 5-15s).
+  const [pendingGroupSettings, setPendingGroupSettings] = useState(new Set());
   // Group Info -> nested "Group Settings" screen (photo + permissions).
   const [groupSettingsOpen, setGroupSettingsOpen] = useState(false);
   // Group Info -> "Add members" screen state.
@@ -4254,6 +4258,10 @@ newSocket.on("receiveMessage", (data) => {
         const gid = String(data.groupId);
         appendGroupSystemMsg(gid, data.systemMessage);
         applyGroupSnapshot(gid, data.group);
+        // Server confirmed the last permission toggle (or rolled us back).
+        // Release the row lock + spinner so the buttons un-blur and re-enable
+        // on whichever value the server ended up with.
+        setPendingGroupSettings(new Set());
         setGroupsList(prev => prev.map(g =>
           String(g.id) === gid
             ? { ...g, lastMsg: groupEventLabel(data.systemMessage), lastTime: data.systemMessage?.timestamp || Date.now() }
@@ -5504,10 +5512,27 @@ setGroupMessages(prev => {
         if (!viewerIsGroupAdmin(selectedGroup)) return; // admins only
         const s = socketRef.current || socket;
         if (!s) return;
-        s.emit('group:updateSettings', {
-          groupId: String(selectedGroup.id || selectedGroup._id),
-          [key]: value,
-        });
+        const gid = String(selectedGroup.id || selectedGroup._id);
+        // If this exact setting is already being saved, ignore extra clicks so
+        // the user can't spam the (slow) permission round-trip.
+        if (pendingGroupSettings.has(key)) return;
+        // Optimistically flip the UI right now so the toggle feels instant,
+        // then let the server broadcast (groupInfoUpdated → applyGroupSnapshot)
+        // reconcile the authoritative value a few seconds later.
+        const applyLocal = (g) => (g && String(g.id) === gid ? { ...g, [key]: value } : g);
+        setGroupsList(prev => prev.map(applyLocal));
+        setSelectedGroup(prev => applyLocal(prev));
+        setPendingGroupSettings(prev => new Set(prev).add(key));
+        s.emit('group:updateSettings', { groupId: gid, [key]: value });
+        // Safety net: if the server never confirms, release the lock.
+        setTimeout(() => {
+          setPendingGroupSettings(prev => {
+            if (!prev.has(key)) return prev;
+            const next = new Set(prev);
+            next.delete(key);
+            return next;
+          });
+        }, 15000);
       };
 
       // Group profile picture: change (dataURL) or remove (null). Any member can
@@ -10113,7 +10138,7 @@ setContacts(prev => {
               <span className="group-settings-row-title" style={{ fontSize: '0.95rem', fontWeight: 500, color: '#1f2933' }}>Send messages</span>
               <span className="group-settings-row-sub" style={{ fontSize: '0.8rem', color: '#8a8f99' }}>Who can send messages in this group</span>
             </div>
-            <div className="group-perm-toggle" style={{ display: 'flex', gap: '8px' }}>
+            <div className="group-perm-toggle" style={{ display: 'flex', gap: '8px', alignItems: 'center', filter: pendingGroupSettings.has('sendMessages') ? 'blur(1.5px)' : 'none', opacity: pendingGroupSettings.has('sendMessages') ? 0.55 : 1, pointerEvents: pendingGroupSettings.has('sendMessages') ? 'none' : 'auto' }}>
               <button
                 type="button"
                 style={{ flex: 1, padding: '8px 10px', borderRadius: '8px', border: '1px solid #dde1e5', background: selectedGroup.sendMessages === 'everyone' ? '#075e54' : '#f6f7f8', color: selectedGroup.sendMessages === 'everyone' ? '#fff' : '#5a6066', fontSize: '0.85rem', fontWeight: 500, cursor: 'pointer' }}
@@ -10128,6 +10153,16 @@ setContacts(prev => {
               >
                 Admins only
               </button>
+              {pendingGroupSettings.has('sendMessages') && (
+                <span aria-hidden="true" style={{ display: 'inline-flex', width: '16px', height: '16px', marginLeft: '4px' }}>
+                  <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                    <circle cx="12" cy="12" r="10" fill="none" stroke="#dde1e5" strokeWidth="3" />
+                    <path d="M12 2a10 10 0 0 1 10 10" fill="none" stroke="#075e54" strokeWidth="3" strokeLinecap="round">
+                      <animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.7s" repeatCount="indefinite" />
+                    </path>
+                  </svg>
+                </span>
+              )}
             </div>
           </div>
 
@@ -10136,7 +10171,7 @@ setContacts(prev => {
               <span className="group-settings-row-title" style={{ fontSize: '0.95rem', fontWeight: 500, color: '#1f2933' }}>Add members</span>
               <span className="group-settings-row-sub" style={{ fontSize: '0.8rem', color: '#8a8f99' }}>Who can add new members to this group</span>
             </div>
-            <div className="group-perm-toggle" style={{ display: 'flex', gap: '8px' }}>
+            <div className="group-perm-toggle" style={{ display: 'flex', gap: '8px', alignItems: 'center', filter: pendingGroupSettings.has('addMembers') ? 'blur(1.5px)' : 'none', opacity: pendingGroupSettings.has('addMembers') ? 0.55 : 1, pointerEvents: pendingGroupSettings.has('addMembers') ? 'none' : 'auto' }}>
               <button
                 type="button"
                 style={{ flex: 1, padding: '8px 10px', borderRadius: '8px', border: '1px solid #dde1e5', background: selectedGroup.addMembers === 'everyone' ? '#075e54' : '#f6f7f8', color: selectedGroup.addMembers === 'everyone' ? '#fff' : '#5a6066', fontSize: '0.85rem', fontWeight: 500, cursor: 'pointer' }}
@@ -10151,6 +10186,16 @@ setContacts(prev => {
               >
                 Admins only
               </button>
+              {pendingGroupSettings.has('addMembers') && (
+                <span aria-hidden="true" style={{ display: 'inline-flex', width: '16px', height: '16px', marginLeft: '4px' }}>
+                  <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                    <circle cx="12" cy="12" r="10" fill="none" stroke="#dde1e5" strokeWidth="3" />
+                    <path d="M12 2a10 10 0 0 1 10 10" fill="none" stroke="#075e54" strokeWidth="3" strokeLinecap="round">
+                      <animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.7s" repeatCount="indefinite" />
+                    </path>
+                  </svg>
+                </span>
+              )}
             </div>
           </div>
 
