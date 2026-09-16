@@ -28,4 +28,11 @@ const messageSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
+// Hot-path indexes: the DM history + read-receipt queries filter on (from, to)
+// and (to, from) sorted by createdAt. Without these every fetchMessages /
+// lastMessage call scans the whole collection, which is what made Chats and
+// Groups feel slow right after a refresh.
+messageSchema.index({ from: 1, to: 1, createdAt: -1 });
+messageSchema.index({ to: 1, from: 1, createdAt: -1 });
+
 export default mongoose.model("Message", messageSchema);

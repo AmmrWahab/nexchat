@@ -32,4 +32,9 @@ const groupMessageSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
+// Hot-path index: every group-history query and the per-group "last message"
+// lookup filters on `group` sorted by createdAt. Without it, loading groups or
+// opening a group scans the entire GroupMessage collection.
+groupMessageSchema.index({ group: 1, createdAt: -1 });
+
 export default mongoose.model("GroupMessage", groupMessageSchema);

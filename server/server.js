@@ -346,9 +346,10 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
         ]
       })
         .populate("from", "name")
-        .sort({ createdAt: 1 })
+        .sort({ createdAt: -1 })
         .limit(200)
         .exec();
+      messages.reverse();
 
       const msgs = messages
         .filter((m) => {
@@ -361,7 +362,7 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
         .map(m => ({
         _id: m._id.toString(),
         from: String(m.from._id),
-        fromName: m.from.name || 'Unknown',
+        fromName: m.from.name || 'Someone',
         message: m.message,
         file: m.file,
         fileName: m.fileName,
@@ -515,7 +516,7 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
 
   // ✅ Handle group message
   socket.on("sendGroupMessage", async (data) => {
-    const { groupId, message, file, fileName, fileType, messageId, duration, isForwarded } = data;
+    const { groupId, message, file, fileName, fileType, messageId, duration, isForwarded, replyTo } = data;
     if (!groupId) return;
     if (typeof file === 'string' && file.length > MAX_FILE_BASE64) {
       socket.emit('messageSendError', { groupId, reason: 'file_too_large', message: 'This file is too large to send (max ~9 MB).' });
@@ -538,6 +539,13 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
         fileName,
         fileType,
         duration,
+        replyTo: replyTo ? {
+          sender: replyTo.sender,
+          text: replyTo.text,
+          messageId: replyTo.messageId,
+          statusId: replyTo.statusId,
+          senderId: replyTo.senderId,
+        } : null,
         isForwarded: !!isForwarded,
         clientMessageId: data.messageId
       });
@@ -553,6 +561,13 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
         fileName,
         fileType,
         duration,
+        replyTo: replyTo ? {
+          sender: replyTo.sender,
+          text: replyTo.text,
+          messageId: replyTo.messageId,
+          statusId: replyTo.statusId,
+          senderId: replyTo.senderId,
+        } : null,
         timestamp: newMsg.createdAt.getTime(),
         messageId,
         isForwarded: !!isForwarded,
@@ -671,9 +686,10 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
       const history = await GroupMessage.find(query)
         .populate('from', 'name photo')
         .populate('target', 'name photo')
-        .sort({ createdAt: 1 })
+        .sort({ createdAt: -1 })
         .limit(200)
         .exec();
+      history.reverse();
 
       // Opening the group means this member's device just received every message
       // in it (even ones from before the emitting socket connected). Record the
@@ -682,8 +698,11 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
       // Only ACTIVE members advance delivery bookkeeping (removed members get
       // no further updates).
       const groupMemberIds = (group.members || []).map(String);
-      const memberChanged = new Map();
 
+      // Batch the delivery receipt update into a single DB write instead of
+      // up to 200 sequential saves (one per message) — the old pattern is
+      // the dominant latency when a member opens a group after refresh.
+      const newlyDelivered = [];
       if (isMember) {
         for (const m of history) {
           const senderIdStr = String(m.from._id);
@@ -691,12 +710,18 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
           const deliveredIds = (m.deliveredBy || []).map(String);
           if (!deliveredIds.includes(selfIdStr)) {
             m.deliveredBy.push(selfIdStr);
-            await m.save();
-            memberChanged.set(m._id.toString(), m);
+            newlyDelivered.push(m);
           }
         }
 
-        for (const [msgId, m] of memberChanged) {
+        if (newlyDelivered.length) {
+          await GroupMessage.updateMany(
+            { _id: { $in: newlyDelivered.map(m => m._id) }, deliveredBy: { $ne: selfIdStr } },
+            { $addToSet: { deliveredBy: selfIdStr } }
+          );
+        }
+
+        for (const m of newlyDelivered) {
           const senderIdStr = String(m.from._id);
           const otherMemberIds = groupMemberIds.filter(id => id !== senderIdStr);
           const deliveredByIds = (m.deliveredBy || []).map(String);
@@ -706,8 +731,8 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
           if (allDelivered) {
             emitToUser(senderIdStr, "groupMessageDelivered", {
               groupId,
-              messageId: msgId,
-              _id: msgId,
+              messageId: m._id.toString(),
+              _id: m._id.toString(),
               allDelivered: true,
             });
           }
@@ -722,7 +747,7 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
           _id: m._id,
           groupId,
           from: String(m.from._id),
-          fromName: m.from.name || 'Unknown',
+          fromName: m.from.name || 'Someone',
           fromPhoto: m.from.photo,
           message: m.message,
           file: m.file,
@@ -730,6 +755,13 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
           fileType: m.fileType,
           duration: m.duration,
           timestamp: new Date(m.createdAt).getTime(),
+          replyTo: m.replyTo ? {
+            sender: m.replyTo.sender,
+            text: m.replyTo.text,
+            messageId: m.replyTo.messageId,
+            statusId: m.replyTo.statusId,
+            senderId: m.replyTo.senderId,
+          } : null,
           // WhatsApp-style group read tick: green only once every OTHER member
           // has seen the message. `allRead` is computed server-side so every
           // device of the sender agrees on the same tick state.

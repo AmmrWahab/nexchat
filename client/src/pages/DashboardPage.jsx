@@ -72,7 +72,78 @@ function accountScopedKey(key) {
 
 function readChatMessages() {
   const saved = localStorage.getItem(accountScopedKey('chatMessages'));
-  return saved ? JSON.parse(saved) : null;
+  if (!saved) return null;
+  try {
+    const parsed = JSON.parse(saved);
+    if (parsed && typeof parsed === 'object') {
+      for (const chatId of Object.keys(parsed)) {
+        if (Array.isArray(parsed[chatId])) healReplyTo(parsed[chatId]);
+      }
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+// Reply-to-file label used when quoting a file/image/voice message.
+// Replaces the old hardcoded "[Image]" fallback so every media type shows
+// its real type, and text messages never get labelled as "[Image]".
+function replyFileLabel(msg) {
+  if (!msg || msg.text) return null;
+  if (!msg.file && !msg.fileType) return null;
+  if (msg.fileType?.startsWith('image/')) return '[Photo]';
+  if (msg.fileType?.startsWith('video/')) return 'Video';
+  if (msg.duration || msg.fileType?.startsWith('audio/') || msg.fileType?.includes('ogg')) return 'Voice message';
+  return '[File]';
+}
+
+// Ghost/stale `replyTo` objects from older builds could leave an empty shell
+// behind in localStorage, causing a bogus "Unknown: [Image]" quote to render
+// above every message after a refresh. This drops any replyTo that carries no
+// queryable reference.
+function sanitizeReplyTo(replyTo) {
+  if (!replyTo || typeof replyTo !== 'object') return null;
+  const hasRef = replyTo.messageId || replyTo.statusId;
+  const hasContent = !!replyTo.text;
+  if (!hasRef && !hasContent) return null;
+  return {
+    sender: replyTo.sender ? String(replyTo.sender) : null,
+    text: replyTo.text ? String(replyTo.text) : null,
+    messageId: replyTo.messageId ? String(replyTo.messageId) : null,
+    statusId: replyTo.statusId ? String(replyTo.statusId) : null,
+    statusType: replyTo.statusType ? String(replyTo.statusType) : null,
+    senderId: replyTo.senderId ? String(replyTo.senderId) : null,
+  };
+}
+
+// Walk a chat's message array: sanitize every replyTo and backfill a proper
+// file label for quotes whose original message sits in the same batch, so the
+// reply pill never shows "Unknown: [Image]" after a refresh. Legacy clients
+// stored bare '[Image]'/'[File]' labels (or shared response shells) as the
+// replied text — those are treated as "no content" here so the label is
+// re-derived from the original message instead of being painted as a quote.
+function healReplyTo(list) {
+  if (!Array.isArray(list)) return;
+  for (const m of list) {
+    if (m && typeof m === 'object' && 'replyTo' in m) m.replyTo = sanitizeReplyTo(m.replyTo);
+  }
+  for (const m of list) {
+    const r = m?.replyTo;
+    if (!r) continue;
+    const rawText = String(r.text || '').trim();
+    if (rawText === '[Image]' || rawText === '[File]' || rawText === '[Photo]' || rawText === '📷 Photo') r.text = null;
+    if (!r.text && !r.statusId) {
+      const orig = r.messageId ? list.find(o => String(o?.id || o?.localId) === String(r.messageId)) : undefined;
+      const label = replyFileLabel(orig);
+      if (label) r.text = label;
+      if (orig) {
+        if (!r.senderId && orig.senderId) r.senderId = orig.senderId;
+        if (!r.sender && orig.sender) r.sender = orig.sender;
+      }
+    }
+    m.replyTo = sanitizeReplyTo(r);
+  }
 }
 
 // WhatsApp-style call-history row date ("today at 3:45 PM" / "yesterday at …" / "12 Mar at …")
@@ -3622,11 +3693,12 @@ newSocket.on('messagesHistory', ({ chatId, messages }) => {
   if (!Array.isArray(messages)) return;
   setMessages(prev => {
     const existing = prev[cid] || [];
+    healReplyTo(existing);
     const fresh = messages.map(m => ({
       id: m._id?.toString() || m.messageId || `dm-${m.timestamp}`,
       localId: m.messageId || null,
       text: m.message,
-      sender: String(m.from) === user.id ? 'You' : (m.fromName || 'Unknown'),
+      sender: String(m.from) === user.id ? 'You' : (m.fromName || 'Someone'),
       senderId: String(m.from),
       timestamp: m.timestamp || Date.now(),
       file: m.file,
@@ -3646,6 +3718,7 @@ newSocket.on('messagesHistory', ({ chatId, messages }) => {
       read: !!m.read,
       isForwarded: !!m.isForwarded,
     }));
+    healReplyTo(fresh);
     // Merge: server copies (fresh) win over local copies with the same id/localId.
     const seen = new Map();
     existing.forEach(m => seen.set(m.localId || m.id, m));
@@ -3745,7 +3818,7 @@ newSocket.on("receiveMessage", (data) => {
   const senderId = String(data.from);
   const isOwn = senderId === user.id;
   const chatKey = isOwn ? String(data.to) : senderId;
-  const displayName = isOwn ? "You" : data.fromName || "Unknown";
+  const displayName = isOwn ? "You" : data.fromName || "Someone";
   if (!chatKey) return;
 
   // If this DM chat is currently open and the user is at the bottom of it,
@@ -3793,7 +3866,7 @@ newSocket.on("receiveMessage", (data) => {
         fileName: data.fileName,
         fileType: data.fileType,
         duration: data.duration,
-        replyTo: data.replyTo ? { ...data.replyTo } : null,
+        replyTo: sanitizeReplyTo(data.replyTo),
         photo: data.fromPhoto || 'https://placehold.co/50x50',
         isForwarded: !!data.isForwarded,
         delivered: true,
@@ -3821,10 +3894,7 @@ newSocket.on("receiveMessage", (data) => {
       fileName: data.fileName,
       fileType: data.fileType,
       duration: data.duration,
-      replyTo: data.replyTo ? {
-        ...data.replyTo,
-        
-      } : null,
+      replyTo: sanitizeReplyTo(data.replyTo),
       photo: data.fromPhoto || 'https://placehold.co/50x50',
       isForwarded: !!data.isForwarded,
       delivered: true,
@@ -3856,7 +3926,7 @@ newSocket.on("receiveMessage", (data) => {
       if (exists) {
         const next = prev.map(c =>
           String(c.id) === senderId
-            ? { ...c, lastMsg: data.message, time: data.timestamp, online: true }
+            ? { ...c, lastMsg: data.message || replyFileLabel(data) || data.fileName || '', time: data.timestamp, online: true }
             : c
         );
         contactsRef.current = next;
@@ -4017,7 +4087,7 @@ newSocket.on("receiveMessage", (data) => {
       newSocket.on('receiveGroupMessage', (data) => {
         const gid = String(data.groupId);
         const senderId = String(data.from);
-        const displayName = senderId === user.id ? 'You' : data.fromName || 'Unknown';
+        const displayName = senderId === user.id ? 'You' : data.fromName || 'Someone';
         const isOpenGroup = selectedGroupRef.current && String(selectedGroupRef.current.id) === gid;
         const isOwnMessage = senderId === user.id;
         // If the user is scrolled up in this group, count the incoming message
@@ -4042,6 +4112,7 @@ newSocket.on("receiveMessage", (data) => {
               fileName: data.fileName,
               fileType: data.fileType,
               duration: data.duration,
+              replyTo: sanitizeReplyTo(data.replyTo),
               photo: data.fromPhoto || 'https://placehold.co/50x50',
               isForwarded: !!data.isForwarded,
               isSystem: !!data.isSystem,
@@ -4069,7 +4140,10 @@ newSocket.on("receiveMessage", (data) => {
           ? 'You'
           : nameOf(senderId, displayName);
         const previewText = data.file
-          ? (data.fileType?.startsWith('image/') ? '[Photo]' : '[File]')
+          ? (data.fileType?.startsWith('image/') ? '[Photo]'
+            : data.fileType?.startsWith('video/') ? 'Video'
+            : (data.duration || data.fileType?.startsWith('audio/') || data.fileType?.includes('ogg')) ? 'Voice message'
+            : '[File]')
           : (data.message || '');
         setGroupsList(prev => prev.map(g => String(g.id) === gid ? { ...g, lastMsg: previewName + (previewText ? ': ' + previewText : ''), lastTime: data.timestamp || Date.now() } : g));
       });
@@ -4130,48 +4204,52 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
       newSocket.on('groupMessagesHistory', ({ groupId, messages }) => {
         const gid = String(groupId);
         if (!Array.isArray(messages)) return;
-        setGroupMessages(prev => {
-          const existing = prev[gid] || [];
-          const merged = [...existing, ...messages.map(m => ({
-            id: m._id?.toString() || m.messageId || `g-${Date.now()}-${Math.random()}`,
-            text: m.message,
-            sender: String(m.from) === user.id ? 'You' : m.fromName || 'Unknown',
-            senderId: String(m.from),
-            timestamp: m.timestamp || Date.now(),
-            file: m.file,
-            fileName: m.fileName,
-            fileType: m.fileType,
-            duration: m.duration,
-            photo: m.fromPhoto || 'https://placehold.co/50x50',
-            delivered: !!m.allDelivered,
-            // On load, MY OWN messages show ✓ or ✓✓ per the server's per-member
-            // delivery receipts — a message stays single-tick until every OTHER
-            // member's device has received it (WhatsApp-style). Received messages
-            // don't show ticks anyway.
-            read: String(m.from) !== user.id,
-            allRead: !!m.allRead,
-            readBy: m.readBy || [],
-            isForwarded: !!m.isForwarded,
-            isSystem: !!m.isSystem,
-            systemType: m.systemType || null,
-            target: m.target ? String(m.target) : null,
-            targetName: m.targetName || '',
-          }))];
-          // Dedupe by id/messageId so reopening a group replaces rather than
-          // duplicates the ticking message. Last occurrence wins so the server's
-          // history (which carries the authoritative read state) overrides an
-          // earlier live copy — otherwise a message received while the group was
-          // closed stays "unread" forever and the badge never clears.
-          const seen = new Map();
-          merged.forEach(m => {
-            const key = m.id;
-            seen.set(key, m);
-          });
-          // Sort oldest→newest so live-received messages (which were
-          // appended before history arrived) don't end up before older ones.
-          const ordered = [...seen.values()].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
-          return { ...prev, [gid]: ordered };
+setGroupMessages(prev => {
+        const existing = prev[gid] || [];
+        healReplyTo(existing);
+        const fresh = messages.map(m => ({
+          id: m._id?.toString() || m.messageId || `g-${Date.now()}-${Math.random()}`,
+          text: m.message,
+          sender: String(m.from) === user.id ? 'You' : m.fromName || 'Someone',
+          senderId: String(m.from),
+          timestamp: m.timestamp || Date.now(),
+          file: m.file,
+          fileName: m.fileName,
+          fileType: m.fileType,
+          duration: m.duration,
+          replyTo: sanitizeReplyTo(m.replyTo),
+          photo: m.fromPhoto || 'https://placehold.co/50x50',
+          delivered: !!m.allDelivered,
+          // On load, MY OWN messages show ✓ or ✓✓ per the server's per-member
+          // delivery receipts — a message stays single-tick until every OTHER
+          // member's device has received it (WhatsApp-style). Received messages
+          // don't show ticks anyway.
+          read: String(m.from) !== user.id,
+          allRead: !!m.allRead,
+          readBy: m.readBy || [],
+          isForwarded: !!m.isForwarded,
+          isSystem: !!m.isSystem,
+          systemType: m.systemType || null,
+          target: m.target ? String(m.target) : null,
+          targetName: m.targetName || '',
+        }));
+        healReplyTo(fresh);
+        const merged = [...existing, ...fresh];
+        // Dedupe by id/messageId so reopening a group replaces rather than
+        // duplicates the ticking message. Last occurrence wins so the server's
+        // history (which carries the authoritative read state) overrides an
+        // earlier live copy — otherwise a message received while the group was
+        // closed stays "unread" forever and the badge never clears.
+        const seen = new Map();
+        merged.forEach(m => {
+          const key = m.id;
+          seen.set(key, m);
         });
+        // Sort oldest→newest so live-received messages (which were
+        // appended before history arrived) don't end up before older ones.
+        const ordered = [...seen.values()].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+        return { ...prev, [gid]: ordered };
+      });
         // If the user is viewing this group, mark all messages from others as
         // read (server propagates read ticks to senders).
         if (selectedGroupRef.current && String(selectedGroupRef.current.id) === gid) {
@@ -5538,7 +5616,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
                   if (previewMsg) {
                     const senderName = String(previewMsg.senderId) === String(user.id)
                       ? 'You'
-                      : nameOf(previewMsg.senderId, previewMsg.sender || 'Member');
+                      : nameOf(previewMsg.senderId, previewMsg.sender || 'Someone');
                     if (previewMsg.file) {
                       preview = previewMsg.fileType?.startsWith('image/') ? '[Photo]' : previewMsg.fileType?.startsWith('audio/') ? '🎤 Voice message' : '[File]';
                     } else if (previewMsg.text) {
@@ -5734,11 +5812,13 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
         const tempId = `group-temp-${now.getTime()}-${Math.random()}`;
         const gid = selectedGroup.id;
 
-        const replyToForPayload = groupReplyTo ? {
+        const replyToForPayload = groupReplyTo ? sanitizeReplyTo({
           id: groupReplyTo.id,
+          messageId: groupReplyTo.id,
           text: groupReplyTo.text,
+          sender: groupReplyTo.sender,
           senderId: groupReplyTo.senderId || (groupReplyTo.sender === 'You' ? user.id : groupReplyTo.from),
-        } : null;
+        }) : null;
 
         socket.emit('sendGroupMessage', {
           groupId: selectedGroup.id,
@@ -5776,7 +5856,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
           const exists = prev.some(g => String(g.id) === String(gid));
           return exists ? prev.map(g =>
             String(g.id) === String(gid)
-              ? { ...g, lastMsg: `You: ${text || '[Image]'}`, lastTime: now.getTime() }
+              ? { ...g, lastMsg: `You: ${text}`, lastTime: now.getTime() }
               : g
           ) : prev;
         });
@@ -5814,11 +5894,13 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
         reader.onload = () => {
           const base64 = reader.result;
 
-          const replyToForPayload = groupReplyTo ? {
+          const replyToForPayload = groupReplyTo ? sanitizeReplyTo({
             id: groupReplyTo.id,
+            messageId: groupReplyTo.id,
             text: groupReplyTo.text,
+            sender: groupReplyTo.sender,
             senderId: groupReplyTo.senderId || (groupReplyTo.sender === 'You' ? user.id : groupReplyTo.from),
-          } : null;
+          }) : null;
 
           socket.emit('sendGroupMessage', {
             groupId: gid,
@@ -6124,8 +6206,8 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
                             if (firstMsg) {
                               setGroupReplyTo({
                                 id: firstMsg.id,
-                                text: firstMsg.text || '[Image]',
-                                sender: nameOf(firstMsg.senderId || firstMsg.from, firstMsg.sender || firstMsg.fromName || firstMsg.from || 'Member'),
+                                text: firstMsg.text || replyFileLabel(firstMsg),
+                                sender: nameOf(firstMsg.senderId || firstMsg.from, firstMsg.sender || firstMsg.fromName || firstMsg.from || 'Someone'),
                                 from: firstMsg.senderId || firstMsg.from,
                               });
                             }
@@ -6622,7 +6704,7 @@ onClick={() => {
                             marginBottom: '2px',
                           }}
                         >
-                          {nameOf(msg.senderId, msg.sender || msg.fromName || msg.from || 'Member')}
+                          {nameOf(msg.senderId, msg.sender || msg.fromName || msg.from || 'Someone')}
                         </div>
                       )}
 
@@ -6640,8 +6722,8 @@ onClick={() => {
                           ↪{' '}
                           {String(msg.replyTo.senderId) === String(user.id)
                             ? 'You'
-                            : nameOf(msg.replyTo.senderId, msg.replyTo.sender || 'Member')}
-                          : {msg.replyTo.text || '[Image]'}
+                            : nameOf(msg.replyTo.senderId, msg.replyTo.sender || 'Someone')}
+                          : {msg.replyTo.text || 'Attachment'}
                         </div>
                       )}
 
@@ -6704,8 +6786,8 @@ onClick={() => {
                               onClick={() => {
                                 setGroupReplyTo({
                                   id: msg.id,
-                                  text: msg.text || '[Image]',
-                                  sender: nameOf(msg.senderId || msg.from, msg.sender || msg.fromName),
+                                  text: msg.text || replyFileLabel(msg),
+                                  sender: nameOf(msg.senderId || msg.from, msg.sender || msg.fromName || 'Someone'),
                                   from: msg.senderId || msg.from,
                                 });
                                 setOpenActionMenu(null);
@@ -6907,7 +6989,7 @@ You are no longer a participant of this group
                           marginBottom: '4px',
                         }}
                       >
-                        ↪ Replying to {nameOf(groupReplyTo.from || groupReplyTo.senderId, groupReplyTo.sender)}: "{groupReplyTo.text || '[Image]'}"
+                        ↪ Replying to {nameOf(groupReplyTo.from || groupReplyTo.senderId, groupReplyTo.sender)}: "{groupReplyTo.text || 'Attachment'}"
                         <button
                           type="button"
                           onClick={() => setGroupReplyTo(null)}
@@ -7051,7 +7133,7 @@ You are no longer a participant of this group
 
                   {groupReplyTo && (
                     <div className="mobile-reply-banner">
-                      ↪ Replying to {nameOf(groupReplyTo.from || groupReplyTo.senderId, groupReplyTo.sender)}: "{groupReplyTo.text || '[Image]'}"
+                      ↪ Replying to {nameOf(groupReplyTo.from || groupReplyTo.senderId, groupReplyTo.sender)}: "{groupReplyTo.text || 'Attachment'}"
                       <button type="button" onClick={() => setGroupReplyTo(null)}>×</button>
                     </div>
                   )}
@@ -7145,14 +7227,16 @@ You are no longer a participant of this group
   // ✅ Generate tempId first
   const tempId = `temp-${now.getTime()}-${Math.random()}`;
 
-  const replyToForPayload = replyTo ? {
+  const replyToForPayload = replyTo ? sanitizeReplyTo({
     id: replyTo.id,
+    messageId: replyTo.id,
     text: replyTo.text,
+    sender: replyTo.sender,
     senderId: replyTo.senderId || (replyTo.sender === 'You' ? user.id : selectedChat.id),
     statusId: replyTo.statusId || null,
     statusType: replyTo.statusType || null,
     statusOwnerId: replyTo.statusOwnerId || null,
-  } : null;
+  }) : null;
 
   // ✅ Emit with messageId
   socket.emit('sendMessage', {
@@ -7237,7 +7321,7 @@ You are no longer a participant of this group
                   className="mobile-selection-action"
                   onClick={() => {
                     const firstMsg = chatMessages.find((m) => selectedMessages.has(m.id));
-                    if (firstMsg) setReplyTo({ id: firstMsg.id, sender: firstMsg.sender === 'You' ? 'You' : nameOf(selectedChat?.id || firstMsg.senderId, firstMsg.sender), text: firstMsg.text });
+                    if (firstMsg) setReplyTo({ id: firstMsg.id, sender: firstMsg.sender === 'You' ? 'You' : nameOf(selectedChat?.id || firstMsg.senderId, firstMsg.sender), text: firstMsg.text || replyFileLabel(firstMsg) });
                     setIsSelectionMode(false);
                     setSelectedMessages(new Set());
                   }}
@@ -7907,8 +7991,8 @@ You are no longer a participant of this group
                 ↪{' '}
                 {String(msg.replyTo.senderId) === String(user.id)
                   ? 'You'
-                  : nameOf(msg.replyTo.senderId, 'Unknown')}
-                : {msg.replyTo.text || '[Image]'}
+                  : nameOf(msg.replyTo.senderId, msg.replyTo.sender || 'Someone')}
+                : {msg.replyTo.text || 'Attachment'}
                 {msg.replyTo.statusId && (
                   <span style={{ fontStyle: 'italic', opacity: 0.7 }}> · tap to open</span>
                 )}
@@ -7976,7 +8060,7 @@ You are no longer a participant of this group
                     onClick={() => {
                       setReplyTo({
                         id: msg.id,
-                        text: msg.text || '[Image]',
+                        text: msg.text || replyFileLabel(msg),
                         sender: String(msg.senderId) === String(user.id)
                           ? 'You'
                           : nameOf(msg.senderId || selectedChat?.id, msg.sender === 'You' ? 'You' : msg.sender),
@@ -8217,7 +8301,7 @@ You are no longer a participant of this group
 
           {replyTo && (
             <div className="mobile-reply-banner">
-              ↪ Replying to {nameOf(replyTo.statusOwnerId || replyTo.senderId, replyTo.sender === 'You' ? 'You' : replyTo.sender)}: "{replyTo.text || '[Image]'}"
+              ↪ Replying to {nameOf(replyTo.statusOwnerId || replyTo.senderId, replyTo.sender === 'You' ? 'You' : replyTo.sender)}: "{replyTo.text || 'Attachment'}"
               <button type="button" onClick={() => setReplyTo(null)}>×</button>
             </div>
           )}
@@ -8295,7 +8379,7 @@ You are no longer a participant of this group
                   marginBottom: '4px',
                 }}
               >
-                ↪ Replying to {nameOf(replyTo.statusOwnerId || replyTo.senderId, replyTo.sender === 'You' ? 'You' : replyTo.sender)}: "{replyTo.text || '[Image]'}"
+                ↪ Replying to {nameOf(replyTo.statusOwnerId || replyTo.senderId, replyTo.sender === 'You' ? 'You' : replyTo.sender)}: "{replyTo.text || 'Attachment'}"
                 <button
                   type="button"
                   onClick={() => setReplyTo(null)}
@@ -9349,7 +9433,7 @@ setContacts(prev => {
           const memberId = String(m?._id || m?.id || m || '');
           const memberName =
             nameOf(memberId, m?.name) ||
-            'Member';
+            'Someone';
           const memberPhoto = m?.photo || 'https://via.placeholder.com/40';
           const gAdmin = String(selectedGroup?.admin || '');
           const gAdmins = Array.isArray(selectedGroup?.admins) ? selectedGroup.admins.map(String) : [];
@@ -9600,10 +9684,10 @@ setContacts(prev => {
       >
         <img
           src={memberProfile.photo || 'https://via.placeholder.com/80'}
-          alt={nameOf(memberProfile.id, memberProfile.name || 'Member')}
+          alt={nameOf(memberProfile.id, memberProfile.name || 'Someone')}
           style={{ width: '80px', height: '80px', borderRadius: '50%', objectFit: 'cover', border: '2px solid #ddd' }}
         />
-        <div style={{ fontSize: '17px', fontWeight: '600', color: '#111' }}>{nameOf(memberProfile.id, memberProfile.name || 'Member')}</div>
+        <div style={{ fontSize: '17px', fontWeight: '600', color: '#111' }}>{nameOf(memberProfile.id, memberProfile.name || 'Someone')}</div>
       </div>
 
       <div className="section" style={{ padding: '16px', borderTop: '1px solid #eee' }}>
@@ -10805,7 +10889,7 @@ setContacts(prev => {
         return (
           <div className={`gcall-grid ${gridClass}`}>
             {pageTiles.length > 0 && pageTiles.map((pid) => {
-              const peerName = nameOf(pid, 'Member');
+              const peerName = nameOf(pid, 'Someone');
               return (
                 <div key={pid} className="gcall-tile">
                   <video

@@ -68,15 +68,39 @@ router.get('/groups', auth, async (req, res) => {
     // Attach the last message + time of each group so the list preview
     // updates immediately on refresh without depending on socket timing.
     // For a removed member the preview stops at the moment they were removed.
-    const withLast = await Promise.all(groups.map(async (group) => {
+    // Computed with ONE aggregation across all groups instead of a
+    // findOne+populate round-trip per group (previously N+1 DB queries that
+    // made the group list slow to appear after a page refresh).
+    const bounds = groups.map((group) => {
       const removedInfo = (group.removedMembers || []).find((r) => String(r.user) === String(req.userId));
-      const lastQuery = { group: group._id };
-      if (removedInfo) lastQuery.createdAt = { $lte: removedInfo.removedAt };
-      const last = await GroupMessage.findOne(lastQuery)
-        .populate('from', 'name photo')
-        .populate('target', 'name photo')
-        .sort({ createdAt: -1 })
-        .exec();
+      const bound = removedInfo ? { createdAt: { $lte: removedInfo.removedAt } } : {};
+      return { removedInfo, bound };
+    });
+
+    const orFilters = groups.map((group, i) => ({
+      group: group._id,
+      ...bounds[i].bound,
+    }));
+
+    const lastById = new Map();
+    if (orFilters.length) {
+      const latest = await GroupMessage.aggregate([
+        { $match: { $or: orFilters } },
+        { $sort: { createdAt: -1 } },
+        { $group: { _id: '$group', doc: { $first: '$$ROOT' } } },
+      ]).exec();
+      const ids = latest.map((r) => r.doc._id);
+      if (ids.length) {
+        const populated = await GroupMessage.find({ _id: { $in: ids } })
+          .populate('from', 'name photo')
+          .populate('target', 'name photo')
+          .exec();
+        populated.forEach((m) => lastById.set(String(m._id), m));
+      }
+    }
+
+    const withLast = groups.map((group, i) => {
+      const { removedInfo } = bounds[i];
       const g = group.toObject();
       g.admins = (g.admins || []).map(String);
       if (removedInfo) {
@@ -87,6 +111,7 @@ router.get('/groups', auth, async (req, res) => {
         delete g.removedBy;
       }
       delete g.removedMembers;
+      const last = lastById.get(String(group._id)) || null;
       if (last) {
         g.lastMessage = {
           text: last.message,
@@ -94,7 +119,7 @@ router.get('/groups', auth, async (req, res) => {
           fileName: last.fileName,
           fileType: last.fileType,
           from: String(last.from?._id || last.from),
-          fromName: last.from?.name || 'Unknown',
+          fromName: last.from?.name || 'Someone',
           fromPhoto: last.from?.photo,
           isSystem: !!last.isSystem,
           systemType: last.systemType || null,
@@ -104,7 +129,7 @@ router.get('/groups', auth, async (req, res) => {
         };
       }
       return g;
-    }));
+    });
 
     res.json({ groups: withLast });
   } catch (err) {

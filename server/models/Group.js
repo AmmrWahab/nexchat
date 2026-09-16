@@ -20,4 +20,9 @@ const groupSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// The group list loads every group the user is (or was) a member of, matched
+// on these two array fields and sorted by newest first.
+groupSchema.index({ members: 1, createdAt: -1 });
+groupSchema.index({ 'removedMembers.user': 1 });
+
 export default mongoose.model("Group", groupSchema);
