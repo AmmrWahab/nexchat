@@ -570,7 +570,7 @@ export default function DashboardPage() {
       memberCount: snap.memberCount ?? g.memberCount,
       members: snap.members || g.members,
       admins: snap.admins || g.admins || [],
-      admin: snap.admin || g.admin,
+      admin: (snap.admin && String(snap.admin) !== '[object Object]') ? snap.admin : g.admin,
       adminName: snap.adminName ?? g.adminName,
       dp: snap.dp ?? g.dp,
       name: snap.name ?? g.name,

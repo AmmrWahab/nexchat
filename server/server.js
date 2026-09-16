@@ -1228,7 +1228,7 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
       _id: String(populated._id),
       name: populated.name,
       dp: populated.dp,
-      admin: String(populated.admin),
+      admin: String(populated.admin?._id || populated.admin),
       adminName: populated.admin?.name || null,
       admins: (populated.admins || []).map(String),
       members: populated.members,
