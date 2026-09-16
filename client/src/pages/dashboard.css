@@ -2286,6 +2286,30 @@
   color: #e02f5b !important;
 }
 
+/* Group profile-picture options popup (overrides inline full-viewport style) */
+.group-dp-menu-overlay {
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  background: rgba(0, 0, 0, 0.5) !important;
+  display: flex !important;
+  justify-content: center !important;
+  align-items: center !important;
+  z-index: 20000 !important;
+}
+
+/* Desktop: keep the popup inside the 400px right drawer, not the whole window */
+@media (min-width: 769px) {
+  .group-dp-menu-overlay {
+    left: auto !important;
+    right: 0 !important;
+    width: 400px !important;
+    height: 100vh !important;
+  }
+}
+
 /* Group Info: "Add members" shortcut at the top of the Members section */
 .group-add-members-top {
   display: inline-flex !important;

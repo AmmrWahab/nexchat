@@ -10430,6 +10430,7 @@ setContacts(prev => {
 {/* Group profile picture options popup (opened from the Group Info photo) */}
 {groupDpMenuOpen && selectedGroup && (
   <div
+    className="group-dp-menu-overlay"
     style={{
       position: 'fixed',
       top: 0,
