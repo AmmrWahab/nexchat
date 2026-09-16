@@ -277,6 +277,83 @@ export default function DashboardPage() {
       setReportBusy(false);
     }
   };
+
+  // ---------- Group admin / member management ----------
+  const groupAdminsOf = (g) => (Array.isArray(g?.admins) ? g.admins.map(String) : []);
+  const viewerIsGroupAdmin = (g) =>
+    !!g && (String(g.admin) === String(user.id) || groupAdminsOf(g).includes(String(user.id)));
+
+  const closeMemberMenu = () => {
+    setMemberMenu(null);
+    setOpenMemberMenuId(null);
+  };
+
+  const emitRemoveGroupMember = (gid, memberIdStr) => {
+    if (socket && gid && memberIdStr) socket.emit('removeGroupMember', { groupId: gid, memberId: memberIdStr });
+    closeMemberMenu();
+  };
+  const emitMakeGroupAdmin = (gid, memberIdStr) => {
+    if (socket && gid && memberIdStr) socket.emit('makeGroupAdmin', { groupId: gid, memberId: memberIdStr });
+    closeMemberMenu();
+  };
+
+  // Compute which management options are allowed for the given member under the
+  // current viewer (who opened the menu, so always an admin).
+  const memberActionsFor = (member, group) => {
+    const gAdmin = String(group?.admin || '');
+    const viewerIsCreator = gAdmin === String(user.id);
+    const targetIsCreator = !!member?.isCreator;
+    const targetIsAdmin = !!member?.isAdmin;
+    const targetIsSelf = !!member?.isSelf;
+    // Original creator is the root admin and can never be removed by another
+    // admin. Promoted admins can only be removed by the creator; regular
+    // members can be removed by any admin.
+    const canRemove = viewerIsCreator
+      ? !targetIsCreator && !targetIsSelf
+      : !targetIsCreator && !targetIsSelf && !targetIsAdmin;
+    const canMakeAdmin = !targetIsCreator && !targetIsAdmin && !targetIsSelf;
+    const roleLabel = targetIsCreator ? 'Owner' : targetIsAdmin ? 'Admin' : 'Member';
+    return { canRemove, canMakeAdmin, roleLabel };
+  };
+
+  // Append a group system/history entry (e.g. "X removed Y") to the open chat.
+  const appendGroupSystemMsg = (gid, sys) => {
+    if (!sys || !sys._id) return;
+    const sysId = String(sys._id);
+    setGroupMessages(prev => {
+      const list = prev[gid] || [];
+      if (list.some(m => m.id === sysId)) return prev;
+      return {
+        ...prev,
+        [gid]: [...list, {
+          id: sysId,
+          text: sys.message,
+          senderId: String(sys.from || 'system'),
+          sender: sys.fromName || 'System',
+          timestamp: sys.timestamp || Date.now(),
+          isSystem: true,
+          systemType: sys.systemType || 'groupEvent',
+        }],
+      };
+    });
+  };
+
+  // Apply a server-provided group snapshot (fresh members/admin lists) to the
+  // groups list AND the currently open group.
+  const applyGroupSnapshot = (gid, snap) => {
+    if (!snap) return;
+    const merge = (g) => ({
+      ...g,
+      memberCount: snap.memberCount ?? g.memberCount,
+      members: snap.members || g.members,
+      admins: snap.admins || g.admins || [],
+      admin: snap.admin || g.admin,
+      adminName: snap.adminName ?? g.adminName,
+    });
+    const gidStr = String(gid);
+    setGroupsList(prev => prev.map(g => String(g.id) === gidStr ? merge(g) : g));
+    setSelectedGroup(prev => (prev && String(prev.id) === gidStr ? merge(prev) : prev));
+  };
   const isChatBlocked = (chatId) => {
     return selectedChat?.type !== 'group' && blockedByMeSet.has(String(chatId ?? ''));
   };
@@ -373,6 +450,11 @@ export default function DashboardPage() {
   const [showReportModal, setShowReportModal] = useState(false);
   const [reportReason, setReportReason] = useState('');
   const [reportBusy, setReportBusy] = useState(false);
+  // Group member management. memberMenu = the member being managed plus where
+  // to anchor the popup: { memberId, memberName, memberPhoto, isCreator,
+  // isAdmin, isSelf, isMobile, rect } — null when closed.
+  const [memberMenu, setMemberMenu] = useState(null);
+  const [openMemberMenuId, setOpenMemberMenuId] = useState(null);
   const [contactInfoProfile, setContactInfoProfile] = useState(null);
   const [showGroupInfo, setShowGroupInfo] = useState(false);
   const [showForwardModal, setShowForwardModal] = useState(false);
@@ -1581,6 +1663,7 @@ const handleSendPhoto = () => {
   if (!capturedPhoto || !socket) return;
   const isGroup = !!selectedGroup;
   if (!isGroup && !selectedChat) return;
+  if (isGroup && selectedGroup?.removedAt) return;
 
   const messageText = caption;
   const tempId = `photo-${Date.now()}-${Math.random()}`;
@@ -3697,23 +3780,17 @@ newSocket.on("receiveMessage", (data) => {
         if (!group || !group._id) return;
         setGroupsList(prev => {
           const exists = prev.some(g => String(g.id) === String(group._id));
-          const existing = exists ? prev.map(g => String(g.id) === String(group._id) ? {
+          const base = {
             id: group._id,
             name: group.name,
             dp: group.dp,
             memberCount: (group.members?.length || 0),
             lastMsg: `${group.members?.length || 0} members`,
             members: group.members || [],
+            admins: (group.admins || []).map(String),
             admin: group.admin?._id || group.admin,
-          } : g) : [{
-            id: group._id,
-            name: group.name,
-            dp: group.dp,
-            memberCount: (group.members?.length || 0),
-            lastMsg: `${group.members?.length || 0} members`,
-            members: group.members || [],
-            admin: group.admin?._id || group.admin,
-          }, ...prev];
+          };
+          const existing = exists ? prev.map(g => String(g.id) === String(group._id) ? base : g) : [base, ...prev];
           // remove temp placeholder
           const cleaned = existing.filter(g => !String(g.id).startsWith('group-temp-'));
           return cleaned;
@@ -3728,6 +3805,56 @@ newSocket.on("receiveMessage", (data) => {
       // Other members are notified they were added
       newSocket.on('groupAdded', ({ group }) => {
         upsertGroup(group);
+      });
+
+      // A member was removed by an admin. Received by the REMAINING members.
+      newSocket.on('groupMemberRemoved', (data) => {
+        const gid = String(data.groupId);
+        appendGroupSystemMsg(gid, data.systemMessage);
+        applyGroupSnapshot(gid, data.group);
+        setGroupsList(prev => prev.map(g =>
+          String(g.id) === gid
+            ? { ...g, lastMsg: data.systemMessage?.message, lastTime: data.systemMessage?.timestamp || Date.now() }
+            : g
+        ));
+        // If that member's profile drawer is open, close it.
+        if (memberProfile && String(memberProfile.id) === String(data.memberId)) setMemberProfile(null);
+      });
+
+      // Received by the member who was just removed: keep the group openable
+      // (they can still read history) but lock it down — no new updates, no
+      // sending. The input area shows a hardcoded "You are not a member".
+      newSocket.on('groupRemovedYou', (data) => {
+        const gid = String(data.groupId);
+        const removedFlag = {
+          removedAt: Date.now(),
+          removedBy: String(data.by || ''),
+          removedByName: data.byName || '',
+        };
+        setGroupsList(prev => prev.map(g =>
+          String(g.id) === gid
+            ? { ...g, ...removedFlag, admins: data.group?.admins || g.admins || [] }
+            : g
+        ));
+        setSelectedGroup(prev => {
+          if (!prev || String(prev.id) !== gid) return prev;
+          return { ...prev, ...removedFlag };
+        });
+        appendGroupSystemMsg(gid, data.systemMessage);
+        setShowGroupInfo(false);
+        closeMemberMenu();
+      });
+
+      // A member was promoted to admin. Received by all members.
+      newSocket.on('groupMemberMadeAdmin', (data) => {
+        const gid = String(data.groupId);
+        appendGroupSystemMsg(gid, data.systemMessage);
+        applyGroupSnapshot(gid, data.group);
+        setGroupsList(prev => prev.map(g =>
+          String(g.id) === gid
+            ? { ...g, lastMsg: data.systemMessage?.message, lastTime: data.systemMessage?.timestamp || Date.now() }
+            : g
+        ));
       });
 
       // ✅ Receive a group message
@@ -3761,6 +3888,8 @@ newSocket.on("receiveMessage", (data) => {
               duration: data.duration,
               photo: data.fromPhoto || 'https://placehold.co/50x50',
               isForwarded: !!data.isForwarded,
+              isSystem: !!data.isSystem,
+              systemType: data.systemType || null,
               // My own message echoed to my other devices is NEVER "read" just
               // because a device has the group open (read ticks come from the
               // server once ALL members have seen the message).
@@ -3867,6 +3996,8 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
             allRead: !!m.allRead,
             readBy: m.readBy || [],
             isForwarded: !!m.isForwarded,
+            isSystem: !!m.isSystem,
+            systemType: m.systemType || null,
           }))];
           // Dedupe by id/messageId so reopening a group replaces rather than
           // duplicates the ticking message. Last occurrence wins so the server's
@@ -3980,7 +4111,11 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
                     lastTime: g.lastMessage?.timestamp || null,
                     lastMessage: g.lastMessage || null,
                     members: g.members || [],
+                    admins: (g.admins || []).map(String),
                     admin: g.admin?._id || g.admin,
+                    removedAt: g.removedAt || null,
+                    removedBy: g.removedBy || null,
+                    removedByName: g.removedByName || '',
                   }));
                   return [...map.values()];
                 });
@@ -4795,6 +4930,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
           memberCount: groupSelectedContacts.length,
           lastMsg: `${groupSelectedContacts.length} members`,
           members: groupSelectedContacts,
+          admins: [],
           admin: user.id,
           temp: true,
         };
@@ -5407,6 +5543,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
 
       const handleSendGroupMessage = (e) => {
         e.preventDefault();
+        if (!selectedGroup || selectedGroup.removedAt) return;
         const input = messageInputRef.current;
         if (!input?.value.trim()) return;
         const text = input.value.trim();
@@ -5477,6 +5614,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
       const handleGroupFileChange = (e) => {
         const file = e.target.files[0];
         if (!file || !selectedGroup || !socket) return;
+        if (selectedGroup.removedAt) return;
 
         // Guard large uploads (see handleFileChange). Skip with a clear message
         // instead of letting the socket/DB silently drop them.
@@ -6221,6 +6359,15 @@ onClick={() => {
                     groupIsMobileHit && msg.id === groupMobileSearchResults[groupMobileSearchIndex];
                   const groupIsMsgSelected = isSelectionMode && selectedMessages.has(msg.id);
 
+                  // System/history entry (e.g. "X removed Y") — centered notice.
+                  if (msg.isSystem) {
+                    return (
+                      <div key={msg.id} className="group-system-msg">
+                        <span>{msg.text}</span>
+                      </div>
+                    );
+                  }
+
                   return (
                     <div
                       key={msg.id}
@@ -6544,6 +6691,11 @@ onClick={() => {
                 <div ref={messagesEndRef} />
               </div>
 
+              {selectedGroup?.removedAt ? (
+                <div className="group-compose-locked" style={isMobile ? { display: 'none' } : undefined}>
+                  You are not a member of this group
+                </div>
+              ) : (
               <div className="message-input" style={{ display: isMobile ? 'none' : 'flex' }}>
                 <form onSubmit={handleSendGroupMessage}>
                   <div className="input-wrapper">
@@ -6644,8 +6796,11 @@ onClick={() => {
                   </div>
                 )}
               </div>
+              )}
 
-              {isMobile && (
+              {isMobile && (selectedGroup?.removedAt ? (
+                <div className="mobile-compose-locked">You are not a member of this group</div>
+              ) : (
                 <div className="mobile-compose">
                   {!showMobileAttach && (
                   <>
@@ -6761,8 +6916,8 @@ onClick={() => {
                     onChange={handleGroupFileChange}
                     onClick={(e) => (e.target.value = null)}
                   />
-                </div>
-              )}
+</div>
+                ))}
             </div>
           </div>
         );
@@ -8386,6 +8541,8 @@ onClick={() => {
       const tempId = `fwd-${now}-${idx}-${Math.random()}`;
 
       if (isGroupTarget) {
+        // Can't forward into a group you're no longer a member of.
+        if (target.removedAt) return;
         const payload = {
           groupId: target.id,
           message: msg.text || '',
@@ -8948,17 +9105,62 @@ setContacts(prev => {
             nameOf(memberId, m?.name) ||
             'Member';
           const memberPhoto = m?.photo || 'https://via.placeholder.com/40';
+          const gAdmin = String(selectedGroup?.admin || '');
+          const gAdmins = Array.isArray(selectedGroup?.admins) ? selectedGroup.admins.map(String) : [];
+          const isCreator = gAdmin === memberId;
+          const isAdmin = isCreator || gAdmins.includes(memberId);
+          const isSelf = String(user.id) === memberId;
+          const canManage = viewerIsGroupAdmin(selectedGroup) && !isSelf;
+          const openMemberMenuFor = () => {
+            setMemberMenu({
+              memberId,
+              memberName,
+              memberPhoto,
+              isCreator,
+              isAdmin,
+              isSelf,
+              isMobile: true,
+              rect: null,
+            });
+          };
           return (
             <div
               key={memberId || idx}
+              className="group-member-row"
               style={{
+                position: 'relative',
                 display: 'flex',
                 alignItems: 'center',
-                gap: '12px',
-                padding: '8px 0',
+                gap: '10px',
+                padding: '8px 4px',
                 cursor: 'pointer',
               }}
-              onClick={() => setMemberProfile({ id: memberId, name: memberName, photo: memberPhoto })}
+              onClick={() => {
+                if (suppressClickRef.current) {
+                  suppressClickRef.current = false;
+                  return;
+                }
+                setMemberProfile({ id: memberId, name: memberName, photo: memberPhoto, isAdmin });
+              }}
+              onPointerDown={() => {
+                if (isMobile && canManage) {
+                  startLongPress(() => {
+                    setOpenMemberMenuId(memberId);
+                    openMemberMenuFor();
+                  });
+                }
+              }}
+              onPointerUp={clearLongPress}
+              onPointerLeave={clearLongPress}
+              onPointerCancel={clearLongPress}
+              onContextMenu={(e) => {
+                if (isMobile && canManage) {
+                  e.preventDefault();
+                  suppressClickRef.current = true;
+                  setOpenMemberMenuId(memberId);
+                  openMemberMenuFor();
+                }
+              }}
             >
               <img
                 src={memberPhoto}
@@ -8971,7 +9173,39 @@ setContacts(prev => {
                   border: '2px solid #ddd',
                 }}
               />
-              <div style={{ fontSize: '15px', color: '#111' }}>{memberName}</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: '15px', color: '#111', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {memberName}
+                </div>
+                {isAdmin && <span className="group-admin-badge">Admin</span>}
+              </div>
+              {!isMobile && canManage && (
+                <button
+                  className={`member-dots ${openMemberMenuId === memberId ? 'show' : ''}`}
+                  aria-label={`Options for ${memberName}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (openMemberMenuId === memberId) {
+                      closeMemberMenu();
+                      return;
+                    }
+                    const r = e.currentTarget.getBoundingClientRect();
+                    setMemberMenu({
+                      memberId,
+                      memberName,
+                      memberPhoto,
+                      isCreator,
+                      isAdmin,
+                      isSelf,
+                      isMobile: false,
+                      rect: { top: r.bottom, right: Math.round(window.innerWidth - r.right) },
+                    });
+                    setOpenMemberMenuId(memberId);
+                  }}
+                >
+                  ⋮
+                </button>
+              )}
             </div>
           );
         })}
@@ -9758,6 +9992,75 @@ setContacts(prev => {
     </div>
   </div>
 )}
+
+{/* Member management popup: bottom sheet on mobile, anchored dropdown on desktop */}
+{memberMenu && (() => {
+  const actions = memberActionsFor(memberMenu, selectedGroup);
+  const gid = String(selectedGroup?.id || selectedGroup?._id || '');
+  const body = (
+    <div className="member-actions">
+      <div className="member-actions-head">
+        <img
+          src={memberMenu.memberPhoto}
+          alt={memberMenu.memberName}
+          style={{ width: 36, height: 36, borderRadius: '50%', objectFit: 'cover', border: '2px solid #ddd' }}
+        />
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: '0.95rem', fontWeight: 600, color: '#111', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {memberMenu.memberName}
+          </div>
+          <div style={{ fontSize: '0.75rem', color: '#667781' }}>Permissions: {actions.roleLabel}</div>
+        </div>
+      </div>
+      {actions.canMakeAdmin && (
+        <button className="member-action-btn" onClick={() => emitMakeGroupAdmin(gid, memberMenu.memberId)}>
+          Make admin
+        </button>
+      )}
+      {actions.canRemove && (
+        <button
+          className="member-action-btn danger"
+          onClick={() => {
+            if (window.confirm(`Remove ${memberMenu.memberName} from this group?`)) {
+              emitRemoveGroupMember(gid, memberMenu.memberId);
+            } else {
+              closeMemberMenu();
+            }
+          }}
+        >
+          Remove member
+        </button>
+      )}
+      {!actions.canMakeAdmin && !actions.canRemove && (
+        <div className="member-action-note">
+          {memberMenu.isCreator ? 'This is the original group creator and cannot be removed.' : 'No available actions for this member.'}
+        </div>
+      )}
+      <button className="member-action-btn cancel" onClick={closeMemberMenu}>Cancel</button>
+    </div>
+  );
+  const closeProps = { onClick: closeMemberMenu };
+  return memberMenu.isMobile ? (
+    <div className="member-sheet-overlay" {...closeProps}>
+      <div
+        className="member-sheet"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {body}
+      </div>
+    </div>
+  ) : (
+    memberMenu.rect && (
+      <div
+        className="member-dropdown"
+        style={{ position: 'fixed', top: memberMenu.rect.top + 6, right: memberMenu.rect.right }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {body}
+      </div>
+    )
+  );
+})()}
 
 {/* Forward Modal */}
 {showForwardModal && (

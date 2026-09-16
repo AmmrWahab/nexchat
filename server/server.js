@@ -642,16 +642,24 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
     }
   });
 
-  // ✅ Load group message history when a member opens a group
+  // ✅ Load group message history when a member opens a group. A member who
+  //    was removed can still open the group and read the history they had
+  //    access to up to the removal moment, but gets nothing newer.
   socket.on("fetchGroupMessages", async (data) => {
     const { groupId } = data;
     if (!groupId) return;
     try {
       const group = await Group.findById(groupId).exec();
       if (!group) return;
-      if (!group.members.map(String).includes(String(socket.userId))) return;
+      const selfIdStr = String(socket.userId);
+      const isMember = group.members.map(String).includes(selfIdStr);
+      const removedEntry = (group.removedMembers || []).find((r) => String(r.user) === selfIdStr);
+      if (!isMember && !removedEntry) return;
 
-      const history = await GroupMessage.find({ group: groupId })
+      const query = { group: groupId };
+      if (!isMember && removedEntry) query.createdAt = { $lte: removedEntry.removedAt };
+
+      const history = await GroupMessage.find(query)
         .populate('from', 'name photo')
         .sort({ createdAt: 1 })
         .limit(200)
@@ -661,35 +669,38 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
       // in it (even ones from before the emitting socket connected). Record the
       // fetch in deliveredBy so their being offline never blocks the sender's
       // double-tick forever, then notify any sender the message newly completed.
-      const selfIdStr = String(socket.userId);
+      // Only ACTIVE members advance delivery bookkeeping (removed members get
+      // no further updates).
       const groupMemberIds = (group.members || []).map(String);
       const memberChanged = new Map();
 
-      for (const m of history) {
-        const senderIdStr = String(m.from._id);
-        if (senderIdStr === selfIdStr) continue;
-        const deliveredIds = (m.deliveredBy || []).map(String);
-        if (!deliveredIds.includes(selfIdStr)) {
-          m.deliveredBy.push(selfIdStr);
-          await m.save();
-          memberChanged.set(m._id.toString(), m);
+      if (isMember) {
+        for (const m of history) {
+          const senderIdStr = String(m.from._id);
+          if (senderIdStr === selfIdStr) continue;
+          const deliveredIds = (m.deliveredBy || []).map(String);
+          if (!deliveredIds.includes(selfIdStr)) {
+            m.deliveredBy.push(selfIdStr);
+            await m.save();
+            memberChanged.set(m._id.toString(), m);
+          }
         }
-      }
 
-      for (const [msgId, m] of memberChanged) {
-        const senderIdStr = String(m.from._id);
-        const otherMemberIds = groupMemberIds.filter(id => id !== senderIdStr);
-        const deliveredByIds = (m.deliveredBy || []).map(String);
-        const allDelivered = otherMemberIds.length > 0
-          ? otherMemberIds.every(id => deliveredByIds.includes(id))
-          : true;
-        if (allDelivered) {
-          emitToUser(senderIdStr, "groupMessageDelivered", {
-            groupId,
-            messageId: msgId,
-            _id: msgId,
-            allDelivered: true,
-          });
+        for (const [msgId, m] of memberChanged) {
+          const senderIdStr = String(m.from._id);
+          const otherMemberIds = groupMemberIds.filter(id => id !== senderIdStr);
+          const deliveredByIds = (m.deliveredBy || []).map(String);
+          const allDelivered = otherMemberIds.length > 0
+            ? otherMemberIds.every(id => deliveredByIds.includes(id))
+            : true;
+          if (allDelivered) {
+            emitToUser(senderIdStr, "groupMessageDelivered", {
+              groupId,
+              messageId: msgId,
+              _id: msgId,
+              allDelivered: true,
+            });
+          }
         }
       }
 
@@ -719,6 +730,8 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
           deliveredBy: deliveredByIds,
           allDelivered: otherMemberIds.length > 0 && otherMemberIds.every(id => deliveredByIds.includes(id)),
           isForwarded: !!m.isForwarded,
+          isSystem: !!m.isSystem,
+          systemType: m.systemType || null,
         };
       });
 
@@ -835,6 +848,207 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
       }
     } catch (err) {
       console.error("clearGroupChat error:", err.message);
+    }
+  });
+
+  // ✅ Admin-only: remove a member from a group.
+  //    - Only admins (creator or promoted admins) may remove members.
+  //    - The original creator is the root admin and can NEVER be removed.
+  //    - The removed member keeps the group in their chats and can still open
+  //      it to read existing history, but stops receiving every real-time
+  //      update (they leave group.members) and can no longer send messages.
+  //    - A system/history message is stored and shown to everyone.
+  socket.on("removeGroupMember", async (data) => {
+    const { groupId, memberId } = data || {};
+    if (!groupId || !memberId) return;
+    try {
+      const group = await Group.findById(groupId).exec();
+      if (!group) return;
+      const actorId = String(socket.userId);
+      const adminsStr = (group.admins || []).map(String);
+      const isActorAdmin = String(group.admin) === actorId || adminsStr.includes(actorId);
+      if (!isActorAdmin) return; // Only admins can remove members
+
+      const memberIdStr = String(memberId);
+      const membersStr = group.members.map(String);
+      if (!membersStr.includes(memberIdStr)) return;
+      if (String(group.admin) === memberIdStr) return; // Original creator is protected
+      // Only the creator may remove a promoted admin; regular admins may only
+      // remove regular members. (Matches the client-side menu rules.)
+      if (actorId !== String(group.admin) && adminsStr.includes(memberIdStr)) return;
+      if (actorId === memberIdStr) return; // Can't remove yourself
+
+      group.members = group.members.filter((id) => String(id) !== memberIdStr);
+      group.admins = (group.admins || []).filter((id) => String(id) !== memberIdStr);
+      group.removedMembers = group.removedMembers || [];
+      group.removedMembers.push({ user: memberId, removedBy: socket.userId, removedAt: new Date() });
+      await group.save();
+
+      const actor = await User.findById(socket.userId).select('name').lean().exec();
+      const target = await User.findById(memberId).select('name').lean().exec();
+      const actorName = actor?.name || 'Someone';
+      const targetName = target?.name || 'Member';
+
+      // Group-event/history entries so everyone (including the removed member,
+      // who can still view history) sees what happened.
+      const sysRemaining = await GroupMessage.create({
+        group: groupId,
+        from: socket.userId,
+        message: `${actorName} removed ${targetName}`,
+        isSystem: true,
+        systemType: 'memberRemoved',
+      });
+      const sysRemoved = await GroupMessage.create({
+        group: groupId,
+        from: socket.userId,
+        message: `${actorName} removed you`,
+        isSystem: true,
+        systemType: 'memberRemovedYou',
+      });
+
+      const populated = await Group.findById(group._id)
+        .populate('admin', 'name photo')
+        .populate('members', 'name photo')
+        .exec();
+
+      const groupPayload = {
+        _id: String(group._id),
+        name: group.name,
+        dp: group.dp,
+        admin: String(group.admin),
+        adminName: populated.admin?.name || null,
+        admins: (group.admins || []).map(String),
+        members: populated.members,
+        memberCount: populated.members.length,
+      };
+
+      const systemPayloadForMembers = {
+        _id: String(sysRemaining._id),
+        groupId,
+        from: String(socket.userId),
+        fromName: actorName,
+        message: `${actorName} removed ${targetName}`,
+        isSystem: true,
+        systemType: 'memberRemoved',
+        timestamp: sysRemaining.createdAt.getTime(),
+      };
+
+      group.members.forEach((m) => {
+        emitToUser(m, 'groupMemberRemoved', {
+          groupId,
+          by: actorId,
+          byName: actorName,
+          memberId: memberIdStr,
+          memberName: targetName,
+          systemMessage: systemPayloadForMembers,
+          group: groupPayload,
+        });
+      });
+
+      const systemPayloadForRemoved = {
+        _id: String(sysRemoved._id),
+        groupId,
+        from: String(socket.userId),
+        fromName: actorName,
+        message: `${actorName} removed you`,
+        isSystem: true,
+        systemType: 'memberRemovedYou',
+        timestamp: sysRemoved.createdAt.getTime(),
+      };
+      emitToUser(memberId, 'groupRemovedYou', {
+        groupId,
+        by: actorId,
+        byName: actorName,
+        systemMessage: systemPayloadForRemoved,
+        group: {
+          ...groupPayload,
+          removedAt: new Date().toISOString(),
+          removedBy: actorId,
+          removedByName: actorName,
+        },
+      });
+    } catch (err) {
+      console.error("removeGroupMember error:", err.message);
+    }
+  });
+
+  // ✅ Admin-only: promote a group member to admin. The original creator is
+  //    always the root admin and is never touched here.
+  socket.on("makeGroupAdmin", async (data) => {
+    const { groupId, memberId } = data || {};
+    if (!groupId || !memberId) return;
+    try {
+      const group = await Group.findById(groupId).exec();
+      if (!group) return;
+      const actorId = String(socket.userId);
+      const adminsStr = (group.admins || []).map(String);
+      const isActorAdmin = String(group.admin) === actorId || adminsStr.includes(actorId);
+      if (!isActorAdmin) return; // Only admins can promote members
+
+      const memberIdStr = String(memberId);
+      const membersStr = group.members.map(String);
+      if (!membersStr.includes(memberIdStr)) return;
+      if (String(group.admin) === memberIdStr) return; // creator already root admin
+      if (adminsStr.includes(memberIdStr)) return; // already an admin
+      if (actorId === memberIdStr) return; // can't promote yourself (you're not in the target set anyway)
+
+      group.admins = group.admins || [];
+      group.admins.push(memberId);
+      await group.save();
+
+      const actor = await User.findById(socket.userId).select('name').lean().exec();
+      const target = await User.findById(memberId).select('name').lean().exec();
+      const actorName = actor?.name || 'Someone';
+      const targetName = target?.name || 'Member';
+
+      const sys = await GroupMessage.create({
+        group: groupId,
+        from: socket.userId,
+        message: `${actorName} made ${targetName} admin`,
+        isSystem: true,
+        systemType: 'memberMadeAdmin',
+      });
+
+      const populated = await Group.findById(group._id)
+        .populate('admin', 'name photo')
+        .populate('members', 'name photo')
+        .exec();
+
+      const groupPayload = {
+        _id: String(group._id),
+        name: group.name,
+        dp: group.dp,
+        admin: String(group.admin),
+        adminName: populated.admin?.name || null,
+        admins: (group.admins || []).map(String),
+        members: populated.members,
+        memberCount: populated.members.length,
+      };
+
+      const systemPayload = {
+        _id: String(sys._id),
+        groupId,
+        from: String(socket.userId),
+        fromName: actorName,
+        message: `${actorName} made ${targetName} admin`,
+        isSystem: true,
+        systemType: 'memberMadeAdmin',
+        timestamp: sys.createdAt.getTime(),
+      };
+
+      group.members.forEach((m) => {
+        emitToUser(m, 'groupMemberMadeAdmin', {
+          groupId,
+          by: actorId,
+          byName: actorName,
+          memberId: memberIdStr,
+          memberName: targetName,
+          systemMessage: systemPayload,
+          group: groupPayload,
+        });
+      });
+    } catch (err) {
+      console.error("makeGroupAdmin error:", err.message);
     }
   });
 

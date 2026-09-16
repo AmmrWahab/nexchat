@@ -53,22 +53,39 @@ router.post('/groups/create', auth, async (req, res) => {
   }
 });
 
-// GET /api/groups — return all groups the current user is a member of
+// GET /api/groups — return all groups the current user is a member of (or was
+// a member of before being removed, so they can still open the group and read
+// the history). Removed groups are marked with removedAt/removedBy.
 router.get('/groups', auth, async (req, res) => {
   try {
-    const groups = await Group.find({ members: req.userId })
+    const groups = await Group.find({
+      $or: [{ members: req.userId }, { 'removedMembers.user': req.userId }],
+    })
       .populate('admin', 'name photo about')
       .populate('members', 'name photo about')
       .sort({ createdAt: -1 });
 
     // Attach the last message + time of each group so the list preview
     // updates immediately on refresh without depending on socket timing.
+    // For a removed member the preview stops at the moment they were removed.
     const withLast = await Promise.all(groups.map(async (group) => {
-      const last = await GroupMessage.findOne({ group: group._id })
+      const removedInfo = (group.removedMembers || []).find((r) => String(r.user) === String(req.userId));
+      const lastQuery = { group: group._id };
+      if (removedInfo) lastQuery.createdAt = { $lte: removedInfo.removedAt };
+      const last = await GroupMessage.findOne(lastQuery)
         .populate('from', 'name photo')
         .sort({ createdAt: -1 })
         .exec();
       const g = group.toObject();
+      g.admins = (g.admins || []).map(String);
+      if (removedInfo) {
+        g.removedAt = removedInfo.removedAt;
+        g.removedBy = String(removedInfo.removedBy?._id || removedInfo.removedBy || '');
+      } else {
+        delete g.removedAt;
+        delete g.removedBy;
+      }
+      delete g.removedMembers;
       if (last) {
         g.lastMessage = {
           text: last.message,

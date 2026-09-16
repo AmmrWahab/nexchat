@@ -18,6 +18,10 @@ const groupMessageSchema = new mongoose.Schema({
   // per-member delivery tick: a group message only turns ✓✓ once every other
   // member is listed here)
   deliveredBy: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
+  // System/history entries (e.g. "X removed Y", "X made Y admin"). Styled
+  // differently in the chat and never attributed to a real sender.
+  isSystem: { type: Boolean, default: false },
+  systemType: { type: String, default: null }, // e.g. 'memberRemoved', 'memberRemovedYou', 'memberMadeAdmin'
   createdAt: { type: Date, default: Date.now }
 });
 
