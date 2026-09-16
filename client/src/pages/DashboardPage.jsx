@@ -288,18 +288,6 @@ export default function DashboardPage() {
     setOpenMemberMenuId(null);
   };
 
-  // Clicking anywhere outside the member menu (or its dots button) closes it.
-  useEffect(() => {
-    if (!memberMenu) return;
-    const handler = (e) => {
-      if (e.target && e.target.closest && e.target.closest('.member-dropdown, .member-sheet-overlay, .member-dots')) return;
-      setMemberMenu(null);
-      setOpenMemberMenuId(null);
-    };
-    document.addEventListener('pointerdown', handler);
-    return () => document.removeEventListener('pointerdown', handler);
-  }, [memberMenu]);
-
   const emitRemoveGroupMember = (gid, memberIdStr) => {
     const s = socketRef.current || socket;
     if (s && gid && memberIdStr) s.emit('removeGroupMember', { groupId: gid, memberId: memberIdStr });
@@ -469,6 +457,22 @@ export default function DashboardPage() {
   // isAdmin, isSelf, isMobile, rect } — null when closed.
   const [memberMenu, setMemberMenu] = useState(null);
   const [openMemberMenuId, setOpenMemberMenuId] = useState(null);
+
+  // Clicking anywhere outside the member menu (or its dots button) closes it.
+  // Lives AFTER the memberMenu state on purpose: a hook reads its dependency
+  // array at render time, so referencing a later-declared const throws a
+  // ReferenceError (TDZ).
+  useEffect(() => {
+    if (!memberMenu) return;
+    const handler = (e) => {
+      if (e.target && e.target.closest && e.target.closest('.member-dropdown, .member-sheet-overlay, .member-dots')) return;
+      setMemberMenu(null);
+      setOpenMemberMenuId(null);
+    };
+    document.addEventListener('pointerdown', handler);
+    return () => document.removeEventListener('pointerdown', handler);
+  }, [memberMenu]);
+
   const [contactInfoProfile, setContactInfoProfile] = useState(null);
   const [showGroupInfo, setShowGroupInfo] = useState(false);
   const [showForwardModal, setShowForwardModal] = useState(false);
