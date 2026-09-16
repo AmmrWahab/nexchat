@@ -1477,6 +1477,23 @@
   cursor: not-allowed;
 }
 
+.modal-btn.danger {
+  background: #e53935;
+  color: white;
+  border: none;
+}
+
+.modal-btn.danger:hover {
+  background: #c62828;
+}
+
+.block-confirm-body {
+  color: #444;
+  font-size: 0.95rem;
+  line-height: 1.5;
+  margin: 0;
+}
+
 /* ============= MOBILE LAYOUT ============= */
 
 /* Hide mobile UI on desktop */

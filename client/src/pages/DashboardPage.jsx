@@ -204,11 +204,18 @@ export default function DashboardPage() {
     return photo || fallback || 'https://via.placeholder.com/50';
   };
   // Block / unblock the currently open DM from the Contact Info drawer.
-  const toggleBlockContact = async () => {
+  // First opens an in-app confirmation popup (mobile + desktop), then acts.
+  const askBlockToggle = () => {
     const chatId = selectedChat?.id;
     if (!chatId || selectedChat?.type === 'group') return;
-    const currentlyBlocked = blockedByMeSet.has(String(chatId));
-    if (!window.confirm(`${currentlyBlocked ? 'Unblock' : 'Block'} ${nameOf(chatId, 'this contact')}?`)) return;
+    setBlockConfirm({
+      chatId,
+      currentlyBlocked: blockedByMeSet.has(String(chatId)),
+      name: nameOf(chatId, 'this contact'),
+    });
+  };
+  const confirmBlockToggle = async (chatId, currentlyBlocked) => {
+    setBlockConfirm(null);
     try {
       // POST /block = block, DELETE /block = unblock (the route is the same).
       const res = await fetch(`${API_URL}/api/profile/${encodeURIComponent(chatId)}/block`, {
@@ -324,6 +331,8 @@ export default function DashboardPage() {
   // Block state: blockedByMeSet = users I blocked; blockedMeSet = users who blocked me.
   const [blockedByMeSet, setBlockedByMeSet] = useState(new Set());
   const [blockedMeSet, setBlockedMeSet] = useState(new Set());
+  // In-app confirmation popup for block/unblock: null or { chatId, currentlyBlocked, name }
+  const [blockConfirm, setBlockConfirm] = useState(null);
   const [contactInfoProfile, setContactInfoProfile] = useState(null);
   const [showGroupInfo, setShowGroupInfo] = useState(false);
   const [showForwardModal, setShowForwardModal] = useState(false);
@@ -8203,7 +8212,7 @@ onClick={() => {
 >
   {/* Block / Unblock */}
   <div
-    onClick={toggleBlockContact}
+    onClick={askBlockToggle}
     style={{
       display: 'flex',
       alignItems: 'center',
@@ -9620,6 +9629,43 @@ setContacts(prev => {
 )}
 {/* ✅ Add this line here */}
 <canvas ref={canvasRef} style={{ display: 'none' }} />
+
+{/* Block / Unblock confirmation popup (mobile + desktop) */}
+{blockConfirm && (
+  <div
+    className="new-contact-modal-overlay"
+    style={{ zIndex: 2100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+    onClick={() => setBlockConfirm(null)}
+  >
+    <div
+      className="new-contact-modal"
+      style={{ maxWidth: '380px', width: '90%' }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div className="modal-header">
+        <h3>{blockConfirm.currentlyBlocked ? 'Unblock' : 'Block'} {blockConfirm.name}?</h3>
+      </div>
+      <div className="modal-body">
+        <p className="block-confirm-body">
+          {blockConfirm.currentlyBlocked
+            ? `Unblock ${blockConfirm.name}? They will be able to message you and see your profile photo, About and last seen again.`
+            : `Block ${blockConfirm.name}? They won't be able to message you or see your profile photo, About and last seen.`}
+        </p>
+      </div>
+      <div className="modal-actions">
+        <button className="modal-btn cancel" onClick={() => setBlockConfirm(null)}>
+          Cancel
+        </button>
+        <button
+          className={`modal-btn ${blockConfirm.currentlyBlocked ? 'save' : 'danger'}`}
+          onClick={() => confirmBlockToggle(blockConfirm.chatId, blockConfirm.currentlyBlocked)}
+        >
+          {blockConfirm.currentlyBlocked ? 'Unblock' : 'Block'}
+        </button>
+      </div>
+    </div>
+  </div>
+)}
 
 {/* Forward Modal */}
 {showForwardModal && (
