@@ -10436,8 +10436,9 @@ setContacts(prev => {
     style={{
       position: 'fixed',
       top: 0,
-      left: 0,
-      width: '100vw',
+      left: isMobile ? 0 : 'auto',
+      right: isMobile ? 'auto' : 0,
+      width: isMobile ? '100vw' : 400,
       height: '100vh',
       background: 'rgba(0, 0, 0, 0.5)',
       display: 'flex',
