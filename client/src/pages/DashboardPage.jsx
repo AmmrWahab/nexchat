@@ -543,12 +543,15 @@ export default function DashboardPage() {
   const [chatCurrentResultIndex, setChatCurrentResultIndex] = useState(-1);
   const chatCurrentMatchRef = useRef(null);
   const groupDropdownRef = useRef(null);
+  const emailLookupTimerRef = useRef(null);
   const [groupDropdownPos, setGroupDropdownPos] = useState({ top: 0, right: 0, placement: 'bottom' });
   const [groupShowDropdown, setGroupShowDropdown] = useState(false);
   const [groupShowAttach, setGroupShowAttach] = useState(false);
   const [email, setEmail] = useState('');
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
+  const [emailLookupUser, setEmailLookupUser] = useState(null);
+  const [emailLookupStatus, setEmailLookupStatus] = useState(null);
   const [user, setUser] = useState({ name: 'You' }); // Update this to include id
 
   // Personalize a group event for the CURRENT viewer: the person who was
@@ -4664,6 +4667,43 @@ setGroupMessages(prev => {
             return null;
           }
         };
+
+        // Live email lookup (debounced): both the New Contact modal and the
+        // Add Contact drawer check whether the typed email belongs to an
+        // existing NexChat user as soon as it looks like a full address, so the
+        // UI can show the found user's real photo and block saving otherwise.
+        useEffect(() => {
+          if (emailLookupTimerRef.current) clearTimeout(emailLookupTimerRef.current);
+          const trimmed = email.trim();
+          if (!trimmed || !/\S+@\S+\.\S+/.test(trimmed)) {
+            setEmailLookupStatus(null);
+            setEmailLookupUser(null);
+            return;
+          }
+          setEmailLookupStatus('checking');
+          setEmailLookupUser(null);
+          let cancelled = false;
+          emailLookupTimerRef.current = setTimeout(async () => {
+            try {
+              const res = await fetch(`${API_URL}/api/auth/check-email?email=${encodeURIComponent(trimmed)}`);
+              if (cancelled) return;
+              if (res.ok) {
+                const data = await res.json();
+                setEmailLookupStatus('found');
+                setEmailLookupUser(data.user || null);
+              } else {
+                setEmailLookupStatus('not-found');
+                setEmailLookupUser(null);
+              }
+            } catch {
+              if (!cancelled) {
+                setEmailLookupStatus('not-found');
+                setEmailLookupUser(null);
+              }
+            }
+          }, 600);
+          return () => { cancelled = true; clearTimeout(emailLookupTimerRef.current); };
+        }, [email]);
   
   
 
@@ -9225,8 +9265,16 @@ You are no longer a participant of this group
       </div>
 
       {/* Profile Picture Placeholder */}
-      <div className="profile-placeholder">
-        {email ? email[0].toUpperCase() : '?'}
+      <div className="profile-placeholder" style={{ overflow: 'hidden' }}>
+        {emailLookupUser?.photo ? (
+          <img
+            src={emailLookupUser.photo}
+            alt=""
+            style={{ width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover' }}
+          />
+        ) : (
+          (email ? email[0].toUpperCase() : '?')
+        )}
       </div>
 
       {/* Form */}
@@ -9238,6 +9286,19 @@ You are no longer a participant of this group
           onChange={(e) => setEmail(e.target.value)}
           className="modal-input"
         />
+        {email.trim() && /\S+@\S+\.\S+/.test(email.trim()) && (
+          <div
+            style={{
+              fontSize: '13px',
+              marginTop: '-8px',
+              color: emailLookupStatus === 'found' ? '#22c55e' : emailLookupStatus === 'not-found' ? '#e53935' : '#666',
+            }}
+          >
+            {emailLookupStatus === 'checking' && 'Checking…'}
+            {emailLookupStatus === 'found' && (emailLookupUser?.name ? `✓ ${emailLookupUser.name} (${emailLookupUser.email})` : '✓ NexChat user found')}
+            {emailLookupStatus === 'not-found' && '✗ No NexChat user with this email'}
+          </div>
+        )}
         <input
           type="text"
           placeholder="First name"
@@ -9264,7 +9325,7 @@ You are no longer a participant of this group
         </button>
         <button
   className="modal-btn save"
-  disabled={!email}
+  disabled={!email || emailLookupStatus !== 'found'}
   onClick={async () => {
   const foundUser = await findUserByEmail(email);
   if (!foundUser) {
@@ -10201,6 +10262,7 @@ setContacts(prev => {
         <h3>New Contact</h3>
         <button
           className="drawer-btn done"
+          disabled={!email.trim() || emailLookupStatus !== 'found'}
           onClick={async () => {
             if (!email.trim()) {
               alert('Please enter an email address.');
@@ -10293,6 +10355,32 @@ setContacts(prev => {
           value={email}
           onChange={(e) => setEmail(e.target.value)}
         />
+        {emailLookupUser?.photo && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px 0 4px' }}>
+            <img
+              src={emailLookupUser.photo}
+              alt=""
+              style={{ width: '56px', height: '56px', borderRadius: '50%', objectFit: 'cover', border: '2px solid #ddd' }}
+            />
+            <div>
+              <div style={{ fontSize: '15px', fontWeight: '600', color: '#111' }}>{emailLookupUser.name}</div>
+              <div style={{ fontSize: '13px', color: '#666' }}>{emailLookupUser.email}</div>
+            </div>
+          </div>
+        )}
+        {email.trim() && /\S+@\S+\.\S+/.test(email.trim()) && (
+          <div
+            style={{
+              fontSize: '13px',
+              marginTop: '-4px',
+              color: emailLookupStatus === 'found' ? '#22c55e' : emailLookupStatus === 'not-found' ? '#e53935' : '#666',
+            }}
+          >
+            {emailLookupStatus === 'checking' && 'Checking…'}
+            {emailLookupStatus === 'found' && '✓ NexChat user found'}
+            {emailLookupStatus === 'not-found' && '✗ No NexChat user with this email'}
+          </div>
+        )}
       </div>
     </div>
   </div>

@@ -2341,6 +2341,11 @@
   font-weight: 600;
 }
 
+.drawer-btn.done:disabled {
+  color: #aaa;
+  cursor: not-allowed;
+}
+
 /* Body */
 .drawer-body {
   flex: 1;
