@@ -1494,6 +1494,30 @@
   margin: 0;
 }
 
+/* Report dialog */
+.report-modal {
+  max-width: 480px;
+  width: 92%;
+}
+
+.report-textarea {
+  width: 100%;
+  min-height: 120px;
+  padding: 14px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  font-family: inherit;
+  outline: none;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.report-textarea:focus {
+  border-color: #075e54;
+  background: #f8f9fa;
+}
+
 /* ============= MOBILE LAYOUT ============= */
 
 /* Hide mobile UI on desktop */

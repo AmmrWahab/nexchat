@@ -20,6 +20,8 @@ import groupRoutes from './routes/groupRoutes.js'; // ✅ Group routes
 import statusRoutes, { getStatusViewerIds } from './routes/statusRoutes.js'; // ✅ Status routes
 import callRoutes from './routes/callRoutes.js'; // ✅ Call routes
 import Call from './models/Call.js'; // ✅ Call model
+import reportRoutes from './routes/reportRoutes.js'; // ✅ Report routes
+import reportModel from './models/Report.js'; // ✅ Report model (register schema)
 import { promisify } from 'util';
 const verifyAsync = promisify(jwt.verify);
 
@@ -83,6 +85,7 @@ app.use('/api', authRoutes);
 app.use('/api', groupRoutes);
 app.use('/api', statusRoutes);
 app.use('/api', callRoutes);
+app.use('/api', reportRoutes); // ✅ Report routes
 app.use('/api/profile', createProfileRouter(io));
 
 // Google Auth Routes

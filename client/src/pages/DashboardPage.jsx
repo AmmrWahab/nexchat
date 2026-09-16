@@ -241,6 +241,42 @@ export default function DashboardPage() {
       console.error('Block toggle error', err);
     }
   };
+
+  // Submit a user report. Stored server-side (reporter, reported, reason, timestamp)
+  // for later admin review.
+  const submitReport = async () => {
+    const chatId = selectedChat?.id;
+    if (!chatId || selectedChat?.type === 'group') return;
+    const reason = reportReason.trim();
+    if (!reason) {
+      alert('Please enter a reason for the report.');
+      return;
+    }
+    setReportBusy(true);
+    try {
+      const res = await fetch(`${API_URL}/api/reports`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${localStorage.getItem('token')}`,
+        },
+        body: JSON.stringify({ reportedId: chatId, reason }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data?.message || 'Could not submit report.');
+        return;
+      }
+      setShowReportModal(false);
+      setReportReason('');
+      alert('Thanks! Your report has been submitted.');
+    } catch (err) {
+      console.error('Report submit error', err);
+      alert('Could not submit report.');
+    } finally {
+      setReportBusy(false);
+    }
+  };
   const isChatBlocked = (chatId) => {
     return selectedChat?.type !== 'group' && blockedByMeSet.has(String(chatId ?? ''));
   };
@@ -333,6 +369,10 @@ export default function DashboardPage() {
   const [blockedMeSet, setBlockedMeSet] = useState(new Set());
   // In-app confirmation popup for block/unblock: null or { chatId, currentlyBlocked, name }
   const [blockConfirm, setBlockConfirm] = useState(null);
+  // Report User popup
+  const [showReportModal, setShowReportModal] = useState(false);
+  const [reportReason, setReportReason] = useState('');
+  const [reportBusy, setReportBusy] = useState(false);
   const [contactInfoProfile, setContactInfoProfile] = useState(null);
   const [showGroupInfo, setShowGroupInfo] = useState(false);
   const [showForwardModal, setShowForwardModal] = useState(false);
@@ -8252,7 +8292,12 @@ onClick={() => {
       color: 'red',
       cursor: 'pointer',
     }}
-    onClick={() => alert(`Report ${nameOf(selectedChat?.id, selectedChat?.name)}`)}
+    onClick={() => {
+      if (selectedChat?.type !== 'group') {
+        setReportReason('');
+        setShowReportModal(true);
+      }
+    }}
   >
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
       <path d="M10 8H14M10 12H14M10 16H14M8 21H16C17.1046 21 18 20.1046 18 19V5C18 3.89543 17.1046 3 16 3H8C6.89543 3 6 3.89543 6 5V19C6 20.1046 6.89543 21 8 21Z" stroke="red" strokeWidth="2" strokeLinecap="round" />
@@ -9661,6 +9706,53 @@ setContacts(prev => {
           onClick={() => confirmBlockToggle(blockConfirm.chatId, blockConfirm.currentlyBlocked)}
         >
           {blockConfirm.currentlyBlocked ? 'Unblock' : 'Block'}
+        </button>
+      </div>
+    </div>
+  </div>
+)}
+
+{/* Report User popup (mobile + desktop) */}
+{showReportModal && (
+  <div
+    className="new-contact-modal-overlay"
+    style={{ zIndex: 2100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+    onClick={() => { if (!reportBusy) setShowReportModal(false); }}
+  >
+    <div
+      className="new-contact-modal report-modal"
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div className="modal-header">
+        <h3>Report {nameOf(selectedChat?.id, selectedChat?.name)}</h3>
+      </div>
+      <div className="modal-body">
+        <p className="block-confirm-body">
+          Help us understand what happened. Your report is private and will be reviewed by our team.
+        </p>
+        <textarea
+          className="report-textarea"
+          placeholder="Describe why you're reporting this user..."
+          rows={5}
+          maxLength={1000}
+          value={reportReason}
+          onChange={(e) => setReportReason(e.target.value)}
+        />
+      </div>
+      <div className="modal-actions">
+        <button
+          className="modal-btn cancel"
+          disabled={reportBusy}
+          onClick={() => setShowReportModal(false)}
+        >
+          Cancel
+        </button>
+        <button
+          className="modal-btn danger"
+          disabled={reportBusy || !reportReason.trim()}
+          onClick={submitReport}
+        >
+          {reportBusy ? 'Sending…' : 'Submit'}
         </button>
       </div>
     </div>
