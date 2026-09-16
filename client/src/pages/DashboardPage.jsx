@@ -8047,7 +8047,9 @@ You are no longer a participant of this group
 
     {/* Message Input */}
     {!isSelectionMode && (
-      isMobile ? (
+      chatBlockedEitherWay ? (
+        <div className="group-compose-locked">Please unblock to send messages</div>
+      ) : isMobile ? (
         <div className="mobile-compose">
           {!showMobileAttach && (
           <>
@@ -8057,15 +8059,13 @@ You are no longer a participant of this group
                 ref={messageInputRef}
                 rows={1}
                 enterKeyHint="enter"
-                value={chatIsBlocked ? 'Please unblock first' : desktopDraft}
-                readOnly={chatIsBlocked}
+                value={desktopDraft}
                 onChange={(e) => {
-                  if (chatIsBlocked) return;
                   setDesktopDraft(e.target.value);
                   e.target.style.height = 'auto';
                   e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px';
                 }}
-                placeholder={chatIsBlocked ? 'Please unblock first' : (replyTo ? 'Reply to message...' : 'Message')}
+                placeholder={replyTo ? 'Reply to message...' : 'Message'}
                 aria-label="Message"
               />
               <button
@@ -8213,13 +8213,11 @@ You are no longer a participant of this group
             <input
               ref={messageInputRef}
               type="text"
-              value={chatIsBlocked ? 'Please unblock first' : desktopDraft}
+              value={desktopDraft}
               onChange={(e) => {
-                if (chatIsBlocked) return;
                 setDesktopDraft(e.target.value);
               }}
-              placeholder={chatIsBlocked ? 'Please unblock first' : (replyTo ? 'Reply to message...' : 'Type a message')}
-              readOnly={chatIsBlocked}
+              placeholder={replyTo ? 'Reply to message...' : 'Type a message'}
               required
             />
 
