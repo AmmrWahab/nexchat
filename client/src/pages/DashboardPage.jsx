@@ -2290,6 +2290,27 @@ const summarizeChatMedia = (src) => {
     : 'No media yet';
 };
 
+// Tear down every media element that was playing call audio/video. iOS in
+// particular keeps the WebRTC "call" audio session (and thus the microphone)
+// alive while an <audio>/<video> still references a call stream — the OS only
+// releases it once the elements are paused and unbound. Detaching them while a
+// live MediaStream is still attached makes the phone keep showing "on a call".
+const releaseCallMediaElements = () => {
+  [peerAudioRef.current, groupAudioRef.current, peerVideoRef.current, ownVideoRef.current].forEach((el) => {
+    if (!el) return;
+    try {
+      el.pause();
+      if (el.srcObject) el.srcObject = null;
+      if (el.hasAttribute('src')) { el.removeAttribute('src'); el.load(); }
+    } catch { return; }
+  });
+  peerAudioRef.current = null;
+  groupAudioRef.current = null;
+  peerVideoRef.current = null;
+  ownVideoRef.current = null;
+  audioElsRef.current.clear();
+};
+
 const cleanupCall = (soft) => {
   if (callTimerRef.current) { clearInterval(callTimerRef.current); callTimerRef.current = null; }
   if (peekReminderRef.current) { clearTimeout(peekReminderRef.current); peekReminderRef.current = null; }
@@ -2316,6 +2337,7 @@ const cleanupCall = (soft) => {
   if (callNoticeRef.current) { clearTimeout(callNoticeRef.current); callNoticeRef.current = null; }
   setCallNotice('');
   clearGroupCallState();
+  releaseCallMediaElements();
   if (!soft) setActiveCall(null);
 };
 useEffect(() => () => cleanupCall(true), []);
@@ -2489,6 +2511,22 @@ const addLocalTracks = (pc, stream) => {
   stream.getTracks().forEach((t) => pc.addTrack(t, stream));
 };
 
+// Assign a freshly-acquired media stream to the live call, or stop it if the
+// call already ended while getUserMedia() was in flight. Without this guard a
+// stream resolved AFTER a hangup would be stored in localStreamRef and never
+// stopped — a dead call would keep the microphone held (the device keeps
+// showing "you are still on a call"). Returns the stream when adopted, else
+// null (the caller should abandon whatever it was about to do).
+const adoptLocalStream = (stream, expectedCallId) => {
+  if (!stream) return null;
+  if (!expectedCallId || String(callIdRef.current) !== String(expectedCallId)) {
+    try { stream.getTracks().forEach((t) => t.stop()); } catch { return null; }
+    return null;
+  }
+  localStreamRef.current = stream;
+  return stream;
+};
+
 // -------- Audio-output detection + routing (voice & video) --------
 // Track every live media element that plays remote audio so a single helper
 // can reroute them all.
@@ -2518,11 +2556,15 @@ const applyAudioOutput = (id, kind) => {
   applyCallMicForOutput(kind, id);
 };
 const bindStreamToEl = (el, stream) => {
-  if (!el || !stream) {
-    if (el) registerAudioEl(el);
+  if (!el) return;
+  registerAudioEl(el);
+  if (!stream) {
+    try {
+      if (el.srcObject) { el.pause(); el.srcObject = null; }
+      if (el.hasAttribute('src')) { el.removeAttribute('src'); el.load(); }
+    } catch { return; }
     return;
   }
-  registerAudioEl(el);
   if (el.srcObject !== stream) {
     el.srcObject = stream;
     el.play().catch(() => {});
@@ -2763,7 +2805,7 @@ const startCall = async (type, chat) => {
   // Start media + peer connection immediately (like WhatsApp).
   try {
     const stream = await getMediaStream(type === 'video');
-    localStreamRef.current = stream;
+    if (!adoptLocalStream(stream, callId)) return;
     pcRef.current = createPeer();
     addLocalTracks(pcRef.current, stream);
     if (type === 'video') initLocalVideo();
@@ -2808,7 +2850,7 @@ const startGroupCall = async (type, group) => {
   callPeerIdRef.current = null;
   try {
     const stream = await getMediaStream(type === 'video');
-    localStreamRef.current = stream;
+    if (!adoptLocalStream(stream, callId)) return;
     if (type === 'video') initLocalVideo();
   } catch (err) {
     alert('Microphone/camera not available to start the call.');
@@ -2856,7 +2898,7 @@ const acceptCall = async () => {
     callStartAtRef.current = Date.now();
     try {
       const stream = localStreamRef.current || (await getMediaStream(call.type === 'video'));
-      localStreamRef.current = stream;
+      if (!adoptLocalStream(stream, call.callId)) { cleanupCall(false); return; }
       if (call.type === 'video') initLocalVideo();
     } catch (err) {
       alert('Media could not be started (allow camera/microphone).');
@@ -2875,7 +2917,7 @@ const acceptCall = async () => {
   socket.emit('call:accept', { to: peerId, callId: call.callId, type: call.type });
   try {
     const stream = localStreamRef.current || (await getMediaStream(call.type === 'video'));
-    localStreamRef.current = stream;
+    if (!adoptLocalStream(stream, call.callId)) { cleanupCall(false); return; }
     pcRef.current = createPeer();
     addLocalTracks(pcRef.current, stream);
     if (call.type === 'video') initLocalVideo();
@@ -3024,6 +3066,7 @@ const promoteToVideo = async () => {
   if (stream.getVideoTracks().length > 0) return; // already video -> idempotent
   try {
     const cam = await getMediaStream(true);
+    if (!pcRef.current || !callIdRef.current) { cam.getTracks().forEach((t) => t.stop()); return; }
     const vTrack = cam.getVideoTracks()[0];
     if (!vTrack) {
       cam.getTracks().forEach((t) => t.stop());
@@ -3080,8 +3123,9 @@ useEffect(() => {
     callIdRef.current = data.callId;
     // Pre-block microphone so the accepted call starts cleanly.
     getMediaStream(data.type === 'video').then((stream) => {
-      localStreamRef.current = stream;
-      if (data.type === 'video') initLocalVideo();
+      if (adoptLocalStream(stream, data.callId)) {
+        if (data.type === 'video') initLocalVideo();
+      }
     }).catch(() => {});
     signalingRoleRef.current = 'answerer';
     setActiveCall({
@@ -3126,7 +3170,8 @@ useEffect(() => {
       let pc = groupPeersRef.current[data.from];
       if (!pc) {
         if (!localStreamRef.current) {
-          localStreamRef.current = await getMediaStream(activeCallRef.current?.type === 'video').catch(() => null);
+          const s = await getMediaStream(activeCallRef.current?.type === 'video').catch(() => null);
+          if (!adoptLocalStream(s, data.callId)) return;
         }
         if (!localStreamRef.current) return;
         pc = createGroupPeer(data.from);
@@ -3146,7 +3191,8 @@ useEffect(() => {
     }
     if (!pcRef.current) {
       if (!localStreamRef.current) {
-        localStreamRef.current = await getMediaStream(activeCallRef.current?.type === 'video').catch(() => null);
+        const s = await getMediaStream(activeCallRef.current?.type === 'video').catch(() => null);
+        if (!adoptLocalStream(s, data.callId)) return;
       }
       if (!localStreamRef.current) return;
       pcRef.current = createPeer();
@@ -3186,8 +3232,7 @@ useEffect(() => {
     }
     callIdRef.current = data.callId;
     getMediaStream(data.type === 'video').then((stream) => {
-      if (String(callIdRef.current) === String(data.callId)) {
-        localStreamRef.current = stream;
+      if (adoptLocalStream(stream, data.callId)) {
         if (data.type === 'video') initLocalVideo();
       }
     }).catch(() => {});

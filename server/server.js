@@ -203,6 +203,20 @@ io.on('connection', (socket) => {
           lastSeen: new Date().toISOString()
         });
       }
+
+      // A user who disconnected mid-call (closed the tab, dropped the
+      // connection, backgrounded the app) never had the chance to emit
+      // call:memberLeft / call:groupEnd. Purge them from every live group call
+      // and end any call they were the sole remaining active member of, so the
+      // server never keeps stale "in an active call" state behind them.
+      for (const [callId, ca] of groupCalls) {
+        if (!ca.members.delete(String(socket.userId))) continue;
+        [...ca.members].forEach((mid) => emitToUser(mid, 'call:memberLeft', { callId, userId: String(socket.userId), type: ca.type }));
+        if (ca.members.size <= 1) {
+          [...ca.members].forEach((mid) => emitToUser(mid, 'call:ended', { callId }));
+          groupCalls.delete(callId);
+        }
+      }
     } catch (err) {
       console.error('Disconnect error:', err.message);
     }
