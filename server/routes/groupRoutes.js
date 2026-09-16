@@ -74,6 +74,7 @@ router.get('/groups', auth, async (req, res) => {
       if (removedInfo) lastQuery.createdAt = { $lte: removedInfo.removedAt };
       const last = await GroupMessage.findOne(lastQuery)
         .populate('from', 'name photo')
+        .populate('target', 'name photo')
         .sort({ createdAt: -1 })
         .exec();
       const g = group.toObject();
@@ -95,6 +96,10 @@ router.get('/groups', auth, async (req, res) => {
           from: String(last.from?._id || last.from),
           fromName: last.from?.name || 'Unknown',
           fromPhoto: last.from?.photo,
+          isSystem: !!last.isSystem,
+          systemType: last.systemType || null,
+          target: last.target ? String(last.target._id || last.target) : null,
+          targetName: last.target?.name || last.targetName || '',
           timestamp: new Date(last.createdAt).getTime(),
         };
       }

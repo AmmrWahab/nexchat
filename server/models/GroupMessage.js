@@ -21,9 +21,13 @@ const groupMessageSchema = new mongoose.Schema({
   // System/history entries (e.g. "X removed Y", "X made Y admin"). Styled
   // differently in the chat and never attributed to a real sender.
   isSystem: { type: Boolean, default: false },
-  systemType: { type: String, default: null }, // e.g. 'memberRemoved', 'memberRemovedYou', 'memberMadeAdmin'
-  // Personal system notice (e.g. "X removed you"): only delivered to this user.
-  // null/absent means the message is visible to every member (history included).
+  systemType: { type: String, default: null }, // e.g. 'memberRemoved', 'memberDemoted', 'memberMadeAdmin'
+  // The affected user of a system event (e.g. the member who was removed) so
+  // each viewer can be shown the right wording ("X removed you" / "You removed
+  // X" / "X removed Y"). null for ordinary messages.
+  target: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+  // Personal system notice (e.g. legacy "X removed you"): only delivered to
+  // this user. null/absent means the message is visible to every member.
   visibleTo: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
   createdAt: { type: Date, default: Date.now }
 });

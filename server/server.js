@@ -670,6 +670,7 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
 
       const history = await GroupMessage.find(query)
         .populate('from', 'name photo')
+        .populate('target', 'name photo')
         .sort({ createdAt: 1 })
         .limit(200)
         .exec();
@@ -741,6 +742,8 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
           isForwarded: !!m.isForwarded,
           isSystem: !!m.isSystem,
           systemType: m.systemType || null,
+          target: m.target ? String(m.target._id || m.target) : null,
+          targetName: m.target?.name || m.targetName || '',
         };
       });
 
@@ -898,23 +901,25 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
       const actorName = actor?.name || 'Someone';
       const targetName = target?.name || 'Member';
 
-      // Group-event/history entries so everyone (including the removed member,
-      // who can still view history) sees what happened.
-      const sysRemaining = await GroupMessage.create({
+      // Group-event/history entry for what happened. Every member reads the same
+      // message but the client PERSONALIZES the wording per viewer:
+      //   removed member -> "X removed you", the admin who acted -> "You removed
+      //   X", everyone else -> "X removed Y".
+      const sysEvent = await GroupMessage.create({
         group: groupId,
         from: socket.userId,
         message: `${actorName} removed ${targetName}`,
         isSystem: true,
         systemType: 'memberRemoved',
+        target: memberId,
       });
-      const sysRemoved = await GroupMessage.create({
-        group: groupId,
-        from: socket.userId,
-        message: `${actorName} removed you`,
-        isSystem: true,
-        systemType: 'memberRemovedYou',
-        visibleTo: memberId, // personal notice — never shown in other members' history
-      });
+      // Align the removal timestamp to the event so the removed member's own
+      // history cutoff (createdAt <= removedAt) still includes this message.
+      const removedEntryInGroup = group.removedMembers.find((r) => String(r.user) === memberIdStr);
+      if (removedEntryInGroup) {
+        removedEntryInGroup.removedAt = sysEvent.createdAt;
+        await group.save();
+      }
 
       const populated = await Group.findById(group._id)
         .populate('admin', 'name photo')
@@ -933,14 +938,16 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
       };
 
       const systemPayloadForMembers = {
-        _id: String(sysRemaining._id),
+        _id: String(sysEvent._id),
         groupId,
         from: String(socket.userId),
         fromName: actorName,
+        target: memberIdStr,
+        targetName,
         message: `${actorName} removed ${targetName}`,
         isSystem: true,
         systemType: 'memberRemoved',
-        timestamp: sysRemaining.createdAt.getTime(),
+        timestamp: sysEvent.createdAt.getTime(),
       };
 
       group.members.forEach((m) => {
@@ -955,21 +962,13 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
         });
       });
 
-      const systemPayloadForRemoved = {
-        _id: String(sysRemoved._id),
-        groupId,
-        from: String(socket.userId),
-        fromName: actorName,
-        message: `${actorName} removed you`,
-        isSystem: true,
-        systemType: 'memberRemovedYou',
-        timestamp: sysRemoved.createdAt.getTime(),
-      };
+      // Same single event for the removed member (their client shows the
+      // "X removed you" wording) plus removal markers to lock the group UI.
       emitToUser(memberId, 'groupRemovedYou', {
         groupId,
         by: actorId,
         byName: actorName,
-        systemMessage: systemPayloadForRemoved,
+        systemMessage: systemPayloadForMembers,
         group: {
           ...groupPayload,
           removedAt: new Date().toISOString(),
@@ -1088,22 +1087,16 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
       const actorName = actor?.name || 'Someone';
       const targetName = target?.name || 'Member';
 
-      // Public event for everyone (including the demoted member's history) …
-      const sysPublic = await GroupMessage.create({
+      // Single group-event entry for everyone; the client personalizes the wording
+      // per viewer (demoted member -> "X removed you as admin", the creator ->
+      // "You removed X as admin", everyone else -> "X removed Y as admin").
+      const sysEvent = await GroupMessage.create({
         group: groupId,
         from: socket.userId,
         message: `${actorName} removed ${targetName} as admin`,
         isSystem: true,
         systemType: 'memberDemoted',
-      });
-      // … and a personal notice for the demoted member only.
-      const sysPersonal = await GroupMessage.create({
-        group: groupId,
-        from: socket.userId,
-        message: `${actorName} removed you as admin`,
-        isSystem: true,
-        systemType: 'memberDemotedYou',
-        visibleTo: memberId,
+        target: memberId,
       });
 
       const populated = await Group.findById(group._id)
@@ -1122,45 +1115,31 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
         memberCount: populated.members.length,
       };
 
-      const publicPayload = {
+      const systemPayload = {
+        _id: String(sysEvent._id),
         groupId,
-        by: actorId,
-        byName: actorName,
-        memberId: memberIdStr,
-        memberName: targetName,
-        systemMessage: {
-          _id: String(sysPublic._id),
-          groupId,
-          from: String(socket.userId),
-          fromName: actorName,
-          message: `${actorName} removed ${targetName} as admin`,
-          isSystem: true,
-          systemType: 'memberDemoted',
-          timestamp: sysPublic.createdAt.getTime(),
-        },
-        group: groupPayload,
+        from: String(socket.userId),
+        fromName: actorName,
+        target: memberIdStr,
+        targetName,
+        message: `${actorName} removed ${targetName} as admin`,
+        isSystem: true,
+        systemType: 'memberDemoted',
+        timestamp: sysEvent.createdAt.getTime(),
       };
 
+      // Every member receives the same event (the demoted member included —
+      // their client renders the "removed you" wording).
       group.members.forEach((m) => {
-        if (String(m) === memberIdStr) return; // target gets their personal notice instead
-        emitToUser(m, 'groupMemberDemoted', publicPayload);
-      });
-
-      emitToUser(memberId, 'groupYouWereDemoted', {
-        groupId,
-        by: actorId,
-        byName: actorName,
-        systemMessage: {
-          _id: String(sysPersonal._id),
+        emitToUser(m, 'groupMemberDemoted', {
           groupId,
-          from: String(socket.userId),
-          fromName: actorName,
-          message: `${actorName} removed you as admin`,
-          isSystem: true,
-          systemType: 'memberDemotedYou',
-          timestamp: sysPersonal.createdAt.getTime(),
-        },
-        group: groupPayload,
+          by: actorId,
+          byName: actorName,
+          memberId: memberIdStr,
+          memberName: targetName,
+          systemMessage: systemPayload,
+          group: groupPayload,
+        });
       });
     } catch (err) {
       console.error("demoteGroupAdmin error:", err.message);

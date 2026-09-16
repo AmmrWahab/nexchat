@@ -342,6 +342,8 @@ export default function DashboardPage() {
           timestamp: sys.timestamp || Date.now(),
           isSystem: true,
           systemType: sys.systemType || 'groupEvent',
+          target: sys.target ? String(sys.target) : null,
+          targetName: sys.targetName || '',
         }],
       };
     });
@@ -383,6 +385,23 @@ export default function DashboardPage() {
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [user, setUser] = useState({ name: 'You' }); // Update this to include id
+
+  // Personalize a group event for the CURRENT viewer: the person who was
+  // removed/demoted sees "X removed you", the admin who did it sees "You
+  // removed X", and everyone else sees "X removed Y". Falls back to the raw
+  // server text when there is no target info (e.g. legacy messages).
+  const groupEventLabel = useCallback((sys) => {
+    if (!sys) return '';
+    const kind = sys.systemType === 'memberDemoted' ? ' as admin' : '';
+    const targetId = sys.target ? String(sys.target) : null;
+    if (targetId && targetId === String(user.id)) {
+      return `${sys.fromName || 'Someone'} removed you${kind}`;
+    }
+    if (sys.targetName && String(sys.from) === String(user.id)) {
+      return `You removed ${sys.targetName}${kind}`;
+    }
+    return sys.message || '';
+  }, [user.id]);
   const [profileRoute, setProfileRoute] = useState('page'); // 'page' | 'name' | 'about'; desktop opens directly on 'page'
   const [profilePhotoMenu, setProfilePhotoMenu] = useState(false);
   const [profileNameDraft, setProfileNameDraft] = useState('');
@@ -3832,14 +3851,15 @@ newSocket.on("receiveMessage", (data) => {
         upsertGroup(group);
       });
 
-      // A member was removed by an admin. Received by the REMAINING members.
+      // A member was removed by an admin. Received by the REMAINING members
+      // (including the admin who removed them — each sees their own wording).
       newSocket.on('groupMemberRemoved', (data) => {
         const gid = String(data.groupId);
         appendGroupSystemMsg(gid, data.systemMessage);
         applyGroupSnapshot(gid, data.group);
         setGroupsList(prev => prev.map(g =>
           String(g.id) === gid
-            ? { ...g, lastMsg: data.systemMessage?.message, lastTime: data.systemMessage?.timestamp || Date.now() }
+            ? { ...g, lastMsg: groupEventLabel(data.systemMessage), lastTime: data.systemMessage?.timestamp || Date.now() }
             : g
         ));
         // If that member's profile drawer is open, close it.
@@ -3848,7 +3868,7 @@ newSocket.on("receiveMessage", (data) => {
 
       // Received by the member who was just removed: keep the group openable
       // (they can still read history) but lock it down — no new updates, no
-      // sending. The input area shows a hardcoded "You are not a member".
+      // sending. The input area shows a hardcoded lock message.
       newSocket.on('groupRemovedYou', (data) => {
         const gid = String(data.groupId);
         const removedFlag = {
@@ -3858,7 +3878,7 @@ newSocket.on("receiveMessage", (data) => {
         };
         setGroupsList(prev => prev.map(g =>
           String(g.id) === gid
-            ? { ...g, ...removedFlag, admins: data.group?.admins || g.admins || [] }
+            ? { ...g, ...removedFlag, admins: data.group?.admins || g.admins || [], lastMsg: groupEventLabel(data.systemMessage), lastTime: data.systemMessage?.timestamp || Date.now() }
             : g
         ));
         setSelectedGroup(prev => {
@@ -3877,31 +3897,20 @@ newSocket.on("receiveMessage", (data) => {
         applyGroupSnapshot(gid, data.group);
         setGroupsList(prev => prev.map(g =>
           String(g.id) === gid
-            ? { ...g, lastMsg: data.systemMessage?.message, lastTime: data.systemMessage?.timestamp || Date.now() }
+            ? { ...g, lastMsg: groupEventLabel(data.systemMessage), lastTime: data.systemMessage?.timestamp || Date.now() }
             : g
         ));
       });
 
-      // An admin was demoted by the creator. Received by every OTHER member.
+      // An admin was demoted by the creator. Received by every member (the
+      // demoted member individually gets the "removed you" wording).
       newSocket.on('groupMemberDemoted', (data) => {
         const gid = String(data.groupId);
         appendGroupSystemMsg(gid, data.systemMessage);
         applyGroupSnapshot(gid, data.group);
         setGroupsList(prev => prev.map(g =>
           String(g.id) === gid
-            ? { ...g, lastMsg: data.systemMessage?.message, lastTime: data.systemMessage?.timestamp || Date.now() }
-            : g
-        ));
-      });
-
-      // Received by the demoted member themselves — their personal notice.
-      newSocket.on('groupYouWereDemoted', (data) => {
-        const gid = String(data.groupId);
-        appendGroupSystemMsg(gid, data.systemMessage);
-        applyGroupSnapshot(gid, data.group);
-        setGroupsList(prev => prev.map(g =>
-          String(g.id) === gid
-            ? { ...g, lastMsg: data.systemMessage?.message, lastTime: data.systemMessage?.timestamp || Date.now() }
+            ? { ...g, lastMsg: groupEventLabel(data.systemMessage), lastTime: data.systemMessage?.timestamp || Date.now() }
             : g
         ));
       });
@@ -4047,6 +4056,8 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
             isForwarded: !!m.isForwarded,
             isSystem: !!m.isSystem,
             systemType: m.systemType || null,
+            target: m.target ? String(m.target) : null,
+            targetName: m.targetName || '',
           }))];
           // Dedupe by id/messageId so reopening a group replaces rather than
           // duplicates the ticking message. Last occurrence wins so the server's
@@ -4125,7 +4136,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
     return () => {
     newSocket.disconnect();
    };
-    }, [user.id, navigate]);   
+    }, [user.id, navigate, groupEventLabel]);   
   
   
   
@@ -4150,12 +4161,21 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
                     dp: g.dp,
                     memberCount: (g.members?.length || 0),
                     lastMsg: g.lastMessage
-                      ? (String(g.lastMessage.from) === String(user.id)
-                          ? 'You: '
-                          : (nameOf(g.lastMessage.from, g.lastMessage.fromName) + ': ')) +
-                          (g.lastMessage.file
-                            ? (g.lastMessage.fileType?.startsWith('image/') ? '[Photo]' : g.lastMessage.fileType?.startsWith('audio/') ? '🎤 Voice message' : '[File]')
-                            : (g.lastMessage.text || ''))
+                      ? (g.lastMessage.isSystem
+                          ? groupEventLabel({
+                              from: String(g.lastMessage.from),
+                              fromName: g.lastMessage.fromName,
+                              target: g.lastMessage.target ? String(g.lastMessage.target) : null,
+                              targetName: g.lastMessage.targetName || '',
+                              systemType: g.lastMessage.systemType || '',
+                              message: g.lastMessage.text || '',
+                            })
+                          : (String(g.lastMessage.from) === String(user.id)
+                              ? 'You: '
+                              : (nameOf(g.lastMessage.from, g.lastMessage.fromName) + ': ')) +
+                              (g.lastMessage.file
+                                ? (g.lastMessage.fileType?.startsWith('image/') ? '[Photo]' : g.lastMessage.fileType?.startsWith('audio/') ? '🎤 Voice message' : '[File]')
+                                : (g.lastMessage.text || '')))
                       : `${g.members?.length || 0} members`,
                     lastTime: g.lastMessage?.timestamp || null,
                     lastMessage: g.lastMessage || null,
@@ -4173,7 +4193,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
               console.error('Failed to fetch groups', err);
             }
           })();
-        }, [user.id, profileRefreshTick]);
+        }, [user.id, profileRefreshTick, groupEventLabel]);
 
         // ✅ Load this user's private address book from the server (per-account)
         useEffect(() => {
@@ -6413,11 +6433,22 @@ onClick={() => {
                     groupIsMobileHit && msg.id === groupMobileSearchResults[groupMobileSearchIndex];
                   const groupIsMsgSelected = isSelectionMode && selectedMessages.has(msg.id);
 
-                  // System/history entry (e.g. "X removed Y") — centered notice.
+                  // System/history entry (e.g. "X removed Y") — centered notice. The wording
+                  // is personalized per viewer: the affected person sees "X
+                  // removed you", the admin who acted sees "You removed X".
                   if (msg.isSystem) {
+                    const sysType = msg.systemType;
+                    const isTarget = msg.target && String(msg.target) === String(user.id);
+                    const isActor = String(msg.senderId) === String(user.id);
+                    let label = msg.text;
+                    if (sysType === 'memberRemoved' || sysType === 'memberDemoted') {
+                      const kind = sysType === 'memberDemoted' ? ' as admin' : '';
+                      if (isTarget) label = `${msg.sender || 'Someone'} removed you${kind}`;
+                      else if (isActor && msg.targetName) label = `You removed ${msg.targetName}${kind}`;
+                    }
                     return (
                       <div key={msg.id} className="group-system-msg">
-                        <span>{msg.text}</span>
+                        <span>{label}</span>
                       </div>
                     );
                   }
