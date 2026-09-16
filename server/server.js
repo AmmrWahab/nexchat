@@ -1488,9 +1488,51 @@ app.get('/api/files/:filename', (req, res) => {
   });
 });
 
+// One-time data repair: legacy "X removed you" system messages were stored
+// without a visibility target, so they leaked into EVERY member's history.
+// Re-run on boot and match each one to the member whose removal happened at
+// that exact moment, then make it personal (visible only to them).
+// Idempotent: old messages get visibleTo set once; later boots find nothing.
+async function backfillRemovedYouVisibility() {
+  try {
+    const msgs = await GroupMessage.find({ systemType: 'memberRemovedYou', visibleTo: { $exists: false } })
+      .select('group createdAt')
+      .lean()
+      .exec();
+    if (!msgs.length) return;
+    const groupIds = [...new Set(msgs.map((m) => String(m.group)))];
+    const groups = await Group.find({ _id: { $in: groupIds } })
+      .select('removedMembers')
+      .lean()
+      .exec();
+    const groupById = new Map(groups.map((g) => [String(g._id), g]));
+    let updated = 0;
+    for (const m of msgs) {
+      const g = groupById.get(String(m.group));
+      if (!g) continue;
+      const t = new Date(m.createdAt).getTime();
+      // The removal row is written in the SAME handler as the message, so only
+      // a member removed within a few seconds of it is the intended audience.
+      const candidates = (g.removedMembers || []).filter(
+        (r) => Math.abs(new Date(r.removedAt).getTime() - t) <= 10000
+      );
+      if (candidates.length === 1) {
+        await GroupMessage.updateOne({ _id: m._id }, { $set: { visibleTo: candidates[0].user } });
+        updated++;
+      }
+    }
+    if (updated) console.log(`🔒 backfilled visibleTo on ${updated} 'removed you' message(s)`);
+  } catch (err) {
+    console.error('backfillRemovedYouVisibility error:', err.message);
+  }
+}
+
 // Connect to MongoDB
 mongoose.connect(process.env.MONGO_URI)
-  .then(() => console.log('✅ MongoDB Connected'))
+  .then(() => {
+    console.log('✅ MongoDB Connected');
+    backfillRemovedYouVisibility();
+  })
   .catch(err => console.log('❌ DB Error:', err));
 
 // Start Server
