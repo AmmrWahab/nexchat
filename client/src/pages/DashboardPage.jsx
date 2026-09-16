@@ -4600,10 +4600,39 @@ setGroupMessages(prev => {
           };
         }, [isMobile]);
 
-        // Save whenever chat changes
+        // Save whenever chat changes. Persist a PRUNED copy (only the fields a
+        // restore needs) and swallow quota errors: the message cache fills
+        // localStorage on busy accounts, and an uncaught QuotaExceededError
+        // from this write shows the "Error in DashboardPage" screen when a
+        // specific chat is opened.
         useEffect(() => {
-          if (selectedChat?.id) {
-            localStorage.setItem(accountScopedKey('selectedChat'), JSON.stringify(selectedChat));
+          if (!selectedChat?.id) return;
+          try {
+            localStorage.setItem(
+              accountScopedKey('selectedChat'),
+              JSON.stringify({
+                id: selectedChat.id,
+                type: selectedChat.type || 'dm',
+                name: selectedChat.name,
+                email: selectedChat.email,
+                about: typeof selectedChat.about === 'string' && selectedChat.about.length > 500
+                  ? selectedChat.about.slice(0, 500)
+                  : selectedChat.about,
+                photo: (typeof selectedChat.photo === 'string' && selectedChat.photo.startsWith('data:'))
+                  ? null
+                  : selectedChat.photo,
+                firstName: selectedChat.firstName,
+                lastName: selectedChat.lastName,
+                lastMsg: typeof selectedChat.lastMsg === 'string' && selectedChat.lastMsg.length > 200
+                  ? selectedChat.lastMsg.slice(0, 200)
+                  : (selectedChat.lastMsg || ''),
+                time: selectedChat.time,
+                online: !!selectedChat.online,
+                lastSeen: selectedChat.lastSeen,
+              })
+            );
+          } catch (err) {
+            console.warn('Failed to persist selectedChat', err);
           }
         }, [selectedChat]);
 
@@ -4857,7 +4886,7 @@ setGroupMessages(prev => {
           const token = params.get('token');
 
           if (token) {
-            localStorage.setItem('token', token);
+            try { localStorage.setItem('token', token); } catch (err) { console.warn('Failed to persist token', err); }
             // Remove token from URL
             window.history.replaceState({}, document.title, '/dashboard');
           }
