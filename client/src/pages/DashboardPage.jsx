@@ -242,6 +242,65 @@ export default function DashboardPage() {
     }
   };
 
+  // Open the "Profile Edit" nested screen from the Contact Info drawer (the
+  // pencil button). Prefills the field with the current effective name (the
+  // viewer's custom saved name when present, otherwise the real account name).
+  const openContactEdit = () => {
+    if (!selectedChat || selectedChat.type === 'group') return;
+    const id = String(selectedChat.id);
+    const realName = contactInfoProfile?.name || selectedChat?.name || '';
+    const customName = (contactsRef.current || []).find((c) => c && String(c.id) === id)?.name || '';
+    setContactEditName(customName || realName);
+    setContactEditOpen(true);
+  };
+
+  // Save the edited contact name. This only touches the CURRENT viewer's own
+  // per-user custom name (me.contactNames on the server): every surface that
+  // resolves names through nameOf (chat list, chat headers, contact list,
+  // groups, status, calls) picks up the new name immediately, while other
+  // users keep the custom names THEY saved for this person.
+  const saveContactName = async () => {
+    const id = String(selectedChat?.id || '');
+    if (!id || selectedChat?.type === 'group') return;
+    const clean = String(contactEditName || '').trim();
+    if (clean.length > 25) return alert('Name must be 25 characters or fewer');
+    const tk = localStorage.getItem('token');
+    if (!tk) return;
+    setContactEditBusy(true);
+    try {
+      const realName = contactInfoProfile?.name || selectedChat?.name || 'Contact';
+      const cur = contactsRef.current || [];
+      const entry = {
+        id,
+        name: clean || realName,
+        firstName: clean || '',
+        lastName: '',
+        email: selectedChat?.email || '',
+        photo: selectedChat?.photo || 'https://via.placeholder.com/50',
+        blockedByMe: (cur.find((c) => c && String(c.id) === id))?.blockedByMe || false,
+      };
+      const next = cur.some((c) => c && String(c.id) === id)
+        ? cur.map((c) => (String(c.id) === id ? { ...c, ...entry } : c))
+        : [entry, ...cur];
+      contactsRef.current = next;
+      setContacts(next);
+
+      // Persist to this viewer's address book (adds the link if missing and
+      // stores the custom name). An empty name clears the custom entry so the
+      // real account name is used again.
+      await fetch(`${API_URL}/api/contacts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tk}` },
+        body: JSON.stringify({ userId: id, name: clean }),
+      });
+    } catch (err) {
+      console.error('Save contact name error', err);
+    } finally {
+      setContactEditBusy(false);
+      setContactEditOpen(false);
+    }
+  };
+
   // Submit a user report. Stored server-side (reporter, reported, reason, timestamp)
   // for later admin review.
   const submitReport = async () => {
@@ -500,6 +559,10 @@ export default function DashboardPage() {
   }, [memberMenu]);
 
   const [contactInfoProfile, setContactInfoProfile] = useState(null);
+  // Contact-Info edit panel: true = the "Profile Edit" nested screen is open.
+  const [contactEditOpen, setContactEditOpen] = useState(false);
+  const [contactEditName, setContactEditName] = useState('');
+  const [contactEditBusy, setContactEditBusy] = useState(false);
   const [showGroupInfo, setShowGroupInfo] = useState(false);
   const [showForwardModal, setShowForwardModal] = useState(false);
   const [forwardSearchQuery, setForwardSearchQuery] = useState('');
@@ -4711,6 +4774,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
             groupFlowOnRef.current = false;
           } else if (showContactInfo) {
             setShowContactInfo(false);
+            setContactEditOpen(false);
             contactInfoOnRef.current = false;
           } else if (showGroupInfo) {
             setShowGroupInfo(false);
@@ -4758,6 +4822,7 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
               break;
             case 'contactinfo':
               setShowContactInfo(false);
+              setContactEditOpen(false);
               contactInfoOnRef.current = false;
               break;
             case 'groupinfo':
@@ -7282,7 +7347,7 @@ You are no longer a participant of this group
         <div
           className="header-left"
           style={{ cursor: 'pointer' }}
-          onClick={() => setShowContactInfo(true)}
+          onClick={() => { setContactEditOpen(false); setShowContactInfo(true); }}
         >
           {isMobile && (
             <button
@@ -7474,6 +7539,7 @@ You are no longer a participant of this group
                 <button
                   className="dropdown-item"
                   onClick={() => {
+                    setContactEditOpen(false);
                     setShowContactInfo(true);
                     setShowDropdown(false);
                   }}
@@ -7521,6 +7587,7 @@ You are no longer a participant of this group
             <button
               className="dropdown-item"
               onClick={() => {
+                setContactEditOpen(false);
                 setShowContactInfo(true);
                 setShowDropdown(false);
               }}
@@ -8308,16 +8375,28 @@ You are no longer a participant of this group
           position: 'fixed',
           top: 0,
           right: 0,
-          width: isMobile ? '100%' : '400px',
+          width: isMobile ? '100%' : (contactEditOpen ? '800px' : '400px'),
           height: '100%',
           background: 'white',
           boxShadow: '-4px 0 12px rgba(0,0,0,0.15)',
           zIndex: 999,
           transform: 'translateX(0)',
-          transition: 'transform 0.3s ease-out',
-          overflowY: 'auto',
+          transition: 'width 0.3s ease-out, transform 0.3s ease-out',
+          overflow: 'hidden',
+          display: 'flex',
+          flexDirection: 'row',
         }}
       >
+        <div
+          style={{
+            width: isMobile ? (contactEditOpen ? '0%' : '100%') : '400px',
+            minWidth: isMobile ? 0 : '400px',
+            height: '100%',
+            overflowY: 'auto',
+            flexShrink: 0,
+            display: (isMobile && contactEditOpen) ? 'none' : 'block',
+          }}
+        >
         <div
           className="drawer-header"
           style={{
@@ -8357,7 +8436,7 @@ You are no longer a participant of this group
             Contact Info
           </div>
           <button
-            onClick={() => alert('Edit contact')}
+            onClick={openContactEdit}
             style={{
               background: 'none',
               border: 'none',
@@ -8582,6 +8661,46 @@ You are no longer a participant of this group
     border-radius: 6px;
   }
 `}</style>
+        </div>
+        {contactEditOpen && (
+          <div
+            style={{
+              width: isMobile ? '100%' : '400px',
+              minWidth: isMobile ? '100%' : '400px',
+              height: '100%',
+              display: 'flex',
+              flexDirection: 'column',
+              background: '#f5f7f9',
+              borderLeft: isMobile ? 'none' : '1px solid #eee',
+              overflow: 'hidden',
+            }}
+          >
+            <div className="profile-topbar">
+              <button type="button" className="profile-back" onClick={() => setContactEditOpen(false)} aria-label="Back">
+                <ArrowLeft size={22} strokeWidth={1.8} />
+              </button>
+              <h2>Profile Info</h2>
+              <span className="profile-topbar-spacer" />
+            </div>
+            <div className="profile-body">
+              <div className="profile-edit-wrap">
+                <input
+                  className="profile-edit-input"
+                  value={contactEditName}
+                  onChange={(e) => setContactEditName(e.target.value)}
+                  maxLength={25}
+                  placeholder="Enter contact name"
+                />
+                <p className="profile-hint">Maximum length is 25 characters. Letters, numbers and special characters allowed — {contactEditName.length}/25.</p>
+              </div>
+              <div className="profile-save-row">
+                <button type="button" className="profile-save-btn" onClick={saveContactName} disabled={contactEditBusy}>
+                  <Check size={20} strokeWidth={2.2} /> Save
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </>
   )}

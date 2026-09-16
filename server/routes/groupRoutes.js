@@ -182,6 +182,11 @@ router.post('/contacts', auth, async (req, res) => {
       const idx = me.contactNames.findIndex((n) => n && String(n.user) === String(userId));
       if (idx > -1) me.contactNames[idx].name = customName;
       else me.contactNames.push({ user: userId, name: customName });
+    } else {
+      // Empty name => remove this viewer's own saved custom name (the contact
+      // link itself stays) so the real account name is displayed again. Only
+      // the current user's per-viewer entry is touched, never another user's.
+      me.contactNames = me.contactNames.filter((n) => n && String(n.user) !== String(userId));
     }
     await me.save();
     res.status(201).json({
