@@ -24,9 +24,11 @@ async function auth(req, res, next) {
 
 // POST /api/groups/create — create a group and add members
 router.post('/groups/create', auth, async (req, res) => {
-  const { name, dp, members } = req.body;
+  const { name, dp, members, addMembers, sendMessages } = req.body;
   if (!name || !name.trim()) return res.status(400).json({ message: 'Group name required' });
   const memberIds = Array.isArray(members) && members.length ? members : [];
+  const groupAddMembers = addMembers === 'admins' ? 'admins' : 'everyone';
+  const groupSendMessages = sendMessages === 'admins' ? 'admins' : 'everyone';
 
   try {
     const admin = req.userId;
@@ -39,7 +41,9 @@ router.post('/groups/create', auth, async (req, res) => {
       name: name.trim(),
       dp: dp || null,
       admin,
-      members: finalMembers
+      members: finalMembers,
+      addMembers: groupAddMembers,
+      sendMessages: groupSendMessages,
     });
 
     const populated = await Group.findById(group._id)
@@ -103,6 +107,8 @@ router.get('/groups', auth, async (req, res) => {
       const { removedInfo } = bounds[i];
       const g = group.toObject();
       g.admins = (g.admins || []).map(String);
+      g.addMembers = g.addMembers || 'everyone';
+      g.sendMessages = g.sendMessages || 'everyone';
       if (removedInfo) {
         g.removedAt = removedInfo.removedAt;
         g.removedBy = String(removedInfo.removedBy?._id || removedInfo.removedBy || '');

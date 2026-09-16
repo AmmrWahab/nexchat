@@ -251,6 +251,28 @@ export default function DashboardPage() {
   const [selectedGroup, setSelectedGroup] = useState(null);
   const [memberProfile, setMemberProfile] = useState(null);
   const [groupMessages, setGroupMessages] = useState({});
+  // Permission preferences chosen while creating a group (stage 3).
+  const [groupAddPref, setGroupAddPref] = useState('everyone'); // 'everyone' | 'admins'
+  const [groupSendPref, setGroupSendPref] = useState('everyone'); // 'everyone' | 'admins'
+  // Group Info -> nested "Group Settings" screen (photo + permissions).
+  const [groupSettingsOpen, setGroupSettingsOpen] = useState(false);
+  // Group Info -> "Add members" screen state.
+  const [addMembersOpen, setAddMembersOpen] = useState(false);
+  const [addMembersQuery, setAddMembersQuery] = useState('');
+  const [addMembersSelected, setAddMembersSelected] = useState(new Set());
+  // Leave-group confirmation: null or { groupId, name }.
+  const [confirmLeave, setConfirmLeave] = useState(null);
+  // Per-user "cleared at" timestamps for group chats, persisted in localStorage
+  // so a "Clear chat" survives a refresh. Messages older than the stamp stay
+  // hidden; anything received after clearing shows normally.
+  const groupClearedRef = useRef((() => {
+    try { return JSON.parse(localStorage.getItem(accountScopedKey('groupCleared')) || '{}') || {}; } catch { return {}; }
+  })());
+  const groupClearedAt = (gid) => groupClearedRef.current[String(gid ?? '')] || 0;
+  const persistGroupCleared = (gid, ts) => {
+    groupClearedRef.current = { ...(groupClearedRef.current || {}), [String(gid ?? '')]: ts };
+    try { localStorage.setItem(accountScopedKey('groupCleared'), JSON.stringify(groupClearedRef.current)); } catch { /* ignore quota errors */ }
+  };
   const selectedGroupRef = useRef(null);
   const prefetchedGroupHistoryRef = useRef(new Set());
   const prefetchedHistoryRef = useRef(new Set());
@@ -505,6 +527,10 @@ export default function DashboardPage() {
   const appendGroupSystemMsg = (gid, sys) => {
     if (!sys || !sys._id) return;
     const sysId = String(sys._id);
+    // Respect a per-user cleared chat: history/events older than the clearing
+    // point are not resurrected (persisted "Clear chat" behavior).
+    const clearedTs = groupClearedAt(gid);
+    if (clearedTs && (sys.timestamp || 0) <= clearedTs) return;
     setGroupMessages(prev => {
       const list = prev[gid] || [];
       if (list.some(m => m.id === sysId)) return prev;
@@ -536,6 +562,10 @@ export default function DashboardPage() {
       admins: snap.admins || g.admins || [],
       admin: snap.admin || g.admin,
       adminName: snap.adminName ?? g.adminName,
+      dp: snap.dp ?? g.dp,
+      name: snap.name ?? g.name,
+      addMembers: snap.addMembers ?? g.addMembers,
+      sendMessages: snap.sendMessages ?? g.sendMessages,
     });
     const gidStr = String(gid);
     setGroupsList(prev => prev.map(g => String(g.id) === gidStr ? merge(g) : g));
@@ -571,12 +601,24 @@ export default function DashboardPage() {
   // server text when there is no target info (e.g. legacy messages).
   const groupEventLabel = useCallback((sys) => {
     if (!sys) return '';
-    const kind = sys.systemType === 'memberDemoted' ? ' as admin' : '';
     const targetId = sys.target ? String(sys.target) : null;
+    const fromIsSelf = String(sys.from || '') === String(user.id);
+    // "X left" — the leaver personally sees "You left the group".
+    if (sys.systemType === 'memberLeft') {
+      if (targetId && targetId === String(user.id)) return 'You left the group';
+      return `${fromIsSelf ? 'You' : (sys.fromName || 'Someone')} left`;
+    }
+    // "X added Y" — personalized: "You added Y" / "X added you" / "X added Y".
+    if (sys.systemType === 'memberAdded') {
+      if (targetId && targetId === String(user.id)) return `${sys.fromName || 'Someone'} added you`;
+      if (fromIsSelf) return `You added ${sys.targetName || 'a member'}`;
+      return `${sys.fromName || 'Someone'} added ${sys.targetName || 'a member'}`;
+    }
+    const kind = sys.systemType === 'memberDemoted' ? ' as admin' : '';
     if (targetId && targetId === String(user.id)) {
       return `${sys.fromName || 'Someone'} removed you${kind}`;
     }
-    if (sys.targetName && String(sys.from) === String(user.id)) {
+    if (sys.targetName && fromIsSelf) {
       return `You removed ${sys.targetName}${kind}`;
     }
     return sys.message || '';
@@ -1438,6 +1480,9 @@ export default function DashboardPage() {
     if (!t) return;
     if (t.chatType === 'group') {
       socketRef.current?.emit('clearGroupChat', { groupId: t.chatId, forEveryone: false });
+      // Remember this user's clearing point so a refresh doesn't restore the
+      // older history (server keeps the messages for other members).
+      persistGroupCleared(t.chatId, Date.now());
       setGroupMessages(prev => ({ ...prev, [String(t.chatId)]: [] }));
     } else {
       socketRef.current?.emit('clearChat', { to: t.chatId, forEveryone: false });
@@ -4060,6 +4105,8 @@ newSocket.on("receiveMessage", (data) => {
             members: group.members || [],
             admins: (group.admins || []).map(String),
             admin: group.admin?._id || group.admin,
+            addMembers: group.addMembers || 'everyone',
+            sendMessages: group.sendMessages || 'everyone',
           };
           const existing = exists ? prev.map(g => String(g.id) === String(group._id) ? base : g) : [base, ...prev];
           // remove temp placeholder
@@ -4142,6 +4189,85 @@ newSocket.on("receiveMessage", (data) => {
         ));
       });
 
+      // New members were added. Received by every existing member: the fresh
+      // snapshot (list + permissions) and one "X added Y" entry per person.
+      newSocket.on('groupMemberAdded', (data) => {
+        const gid = String(data.groupId);
+        (data.systemMessages || []).forEach((sys) => appendGroupSystemMsg(gid, sys));
+        applyGroupSnapshot(gid, data.group);
+        setGroupsList(prev => prev.map(g =>
+          String(g.id) === gid
+            ? { ...g, lastMsg: groupEventLabel((data.systemMessages || [])[0] || data.systemMessage), lastTime: (data.systemMessages || [])[0]?.timestamp || Date.now() }
+            : g
+        ));
+      });
+
+      // A member left. Remaining members see the updated snapshot and a
+      // "X left" history entry.
+      newSocket.on('groupMemberLeft', (data) => {
+        const gid = String(data.groupId);
+        appendGroupSystemMsg(gid, data.systemMessage);
+        applyGroupSnapshot(gid, data.group);
+        setGroupsList(prev => prev.map(g =>
+          String(g.id) === gid
+            ? { ...g, lastMsg: groupEventLabel(data.systemMessage), lastTime: data.systemMessage?.timestamp || Date.now() }
+            : g
+        ));
+      });
+
+      // A member left of their own accord (received by that same member). Same
+      // treatment as an admin removal: keep the group openable but locked, no
+      // further updates or sending.
+      newSocket.on('groupLeftYou', (data) => {
+        const gid = String(data.groupId);
+        const leftFlag = {
+          removedAt: Date.now(),
+          removedBy: String(data.by || ''),
+          removedByName: data.byName || '',
+        };
+        setGroupsList(prev => prev.map(g =>
+          String(g.id) === gid
+            ? { ...g, ...leftFlag, admins: data.group?.admins || g.admins || [], lastMsg: groupEventLabel(data.systemMessage), lastTime: data.systemMessage?.timestamp || Date.now() }
+            : g
+        ));
+        setSelectedGroup(prev => {
+          if (!prev || String(prev.id) !== gid) return prev;
+          return { ...prev, ...leftFlag, admins: data.group?.admins || prev.admins || [] };
+        });
+        appendGroupSystemMsg(gid, data.systemMessage);
+        setShowGroupInfo(false);
+        setAddMembersOpen(false);
+        setGroupSettingsOpen(false);
+        closeMemberMenu();
+      });
+
+      // Group permissions/photo changed by an admin (every member receives the
+      // updated snapshot + a "changed the group info" history entry).
+      newSocket.on('groupInfoUpdated', (data) => {
+        const gid = String(data.groupId);
+        appendGroupSystemMsg(gid, data.systemMessage);
+        applyGroupSnapshot(gid, data.group);
+        setGroupsList(prev => prev.map(g =>
+          String(g.id) === gid
+            ? { ...g, lastMsg: groupEventLabel(data.systemMessage), lastTime: data.systemMessage?.timestamp || Date.now() }
+            : g
+        ));
+      });
+
+      // The server rejected a message/action attempt (non-member after being
+      // removed, or the "admins only" setting changed mid-session). Surface the
+      // server-provided reason.
+      newSocket.on('groupSendRestricted', (data) => {
+        const reason =
+          data && (data.message
+            || (data.reason === 'admins_only'
+              ? 'Only admins can send messages in this group'
+              : data.reason === 'not_member'
+                ? 'You are no longer a participant of this group'
+                : null));
+        if (reason) alert(reason);
+      });
+
       // ✅ Receive a group message
       newSocket.on('receiveGroupMessage', (data) => {
         const gid = String(data.groupId);
@@ -4159,6 +4285,10 @@ newSocket.on("receiveMessage", (data) => {
           const list = prev[gid] || [];
           // dedupe by messageId
           if (data.messageId && list.some(m => m.id === data.messageId)) return prev;
+          // A message older than this user's clearing point (persisted "Clear
+          // chat") must not resurrect itself into the cleared conversation.
+          const clearedTs = groupClearedAt(gid);
+          if (clearedTs && (data.timestamp || 0) <= clearedTs) return prev;
           return {
             ...prev,
             [gid]: [...list, {
@@ -4264,9 +4394,9 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
         const gid = String(groupId);
         if (!Array.isArray(messages)) return;
 setGroupMessages(prev => {
-        const existing = prev[gid] || [];
+        let existing = prev[gid] || [];
         healReplyTo(existing);
-        const fresh = messages.map(m => ({
+        let fresh = messages.map(m => ({
           id: m._id?.toString() || m.messageId || `g-${Date.now()}-${Math.random()}`,
           text: m.message,
           sender: String(m.from) === user.id ? 'You' : m.fromName || 'Someone',
@@ -4293,6 +4423,14 @@ setGroupMessages(prev => {
           targetName: m.targetName || '',
         }));
         healReplyTo(fresh);
+        // Respect this user's persisted "Clear chat" point: history older than
+        // it never comes back on a refresh (the server keeps the messages for
+        // other members, so new ones received after clearing still appear).
+        const clearedTs = groupClearedAt(gid);
+        if (clearedTs) {
+          if (existing.length) existing = existing.filter(m => (m.timestamp || 0) > clearedTs);
+          if (fresh.length) fresh = fresh.filter(m => (m.timestamp || 0) > clearedTs);
+        }
         const merged = [...existing, ...fresh];
         // Dedupe by id/messageId so reopening a group replaces rather than
         // duplicates the ticking message. Last occurrence wins so the server's
@@ -4360,6 +4498,9 @@ setGroupMessages(prev => {
       // ✅ group chat cleared
       newSocket.on('groupChatCleared', ({ groupId, forMe }) => {
         const gid = String(groupId);
+        // Record the clearing point for THIS user so a refresh doesn't restore
+        // the older history (only their own view is affected).
+        if (forMe === true) persistGroupCleared(gid, Date.now());
         setGroupMessages(prev => ({ ...prev, [gid]: [] }));
       });
 
@@ -4417,6 +4558,8 @@ setGroupMessages(prev => {
                     members: g.members || [],
                     admins: (g.admins || []).map(String),
                     admin: g.admin?._id || g.admin,
+                    addMembers: g.addMembers || 'everyone',
+                    sendMessages: g.sendMessages || 'everyone',
                     removedAt: g.removedAt || null,
                     removedBy: g.removedBy || null,
                     removedByName: g.removedByName || '',
@@ -5264,6 +5407,8 @@ setGroupMessages(prev => {
         setGroupSearchQuery('');
         setGroupName('');
         setGroupDp(null);
+        setGroupAddPref('everyone');
+        setGroupSendPref('everyone');
         setSlideClass('slide-in-forward');
       };
 
@@ -5273,12 +5418,12 @@ setGroupMessages(prev => {
 
       const advanceGroupStep = () => {
         setSlideClass('slide-in-forward');
-        setGroupStep(2);
+        setGroupStep(s => Math.min(s + 1, 3));
       };
 
       const backGroupStep = () => {
         setSlideClass('slide-in-backward');
-        setGroupStep(1);
+        setGroupStep(s => Math.max(s - 1, 1));
       };
 
       const toggleGroupContact = (contact) => {
@@ -5297,6 +5442,126 @@ setGroupMessages(prev => {
         reader.readAsDataURL(file);
       };
 
+      // Contacts that can still be added to the currently open group (in the
+      // address book, not already a member, and not the viewer themselves).
+      const groupMembersForAdd = (() => {
+        if (!selectedGroup) return [];
+        const memberIds = new Set(
+          (selectedGroup.members || []).map(m => String(m?._id || m?.id || m))
+        );
+        const q = addMembersQuery.trim().toLowerCase();
+        return (contacts || []).filter(c => {
+          if (!c || !c.id) return false;
+          const cid = String(c.id);
+          if (memberIds.has(cid) || cid === String(user.id)) return false;
+          if (q && !String(c.name || '').toLowerCase().includes(q)) return false;
+          return true;
+        });
+      })();
+
+      // Add the selected contacts to the group (server re-validates the
+      // addMembers permission; the setting gates who sees the Add button).
+      const submitAddMembers = () => {
+        const s = socketRef.current || socket;
+        if (!s || !selectedGroup || addMembersSelected.size === 0) return;
+        s.emit('group:addMembers', {
+          groupId: String(selectedGroup.id || selectedGroup._id),
+          memberIds: [...addMembersSelected],
+        });
+        setAddMembersOpen(false);
+        setAddMembersSelected(new Set());
+        setAddMembersQuery('');
+        closeMemberMenu();
+      };
+
+      const openAddMembers = () => {
+        setAddMembersQuery('');
+        setAddMembersSelected(new Set());
+        setAddMembersOpen(true);
+      };
+
+      const updateGroupSetting = (key, value) => {
+        if (!selectedGroup || selectedGroup.removedAt) return;
+        if (!viewerIsGroupAdmin(selectedGroup)) return; // admins only
+        const s = socketRef.current || socket;
+        if (!s) return;
+        s.emit('group:updateSettings', {
+          groupId: String(selectedGroup.id || selectedGroup._id),
+          [key]: value,
+        });
+      };
+
+      // Group profile picture: change (dataURL) or remove (null).
+      const handleGroupInfoDpChange = (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+          const s = socketRef.current || socket;
+          if (!s || !selectedGroup) return;
+          s.emit('group:updateSettings', {
+            groupId: String(selectedGroup.id || selectedGroup._id),
+            dp: reader.result,
+          });
+        };
+        reader.readAsDataURL(file);
+        if (e.target) e.target.value = null;
+      };
+
+      const removeGroupDp = () => {
+        const s = socketRef.current || socket;
+        if (!s || !selectedGroup) return;
+        s.emit('group:updateSettings', {
+          groupId: String(selectedGroup.id || selectedGroup._id),
+          dp: null,
+        });
+      };
+
+      // Leave group: confirmed in-app, then delegated to the server (which
+      // removes the viewer, writes the "X left" history entry and keeps the
+      // group in their chats locked). The groupLeftYou event finalizes the UI.
+      const confirmLeaveGroup = () => {
+        if (!confirmLeave) return;
+        const s = socketRef.current || socket;
+        if (s) s.emit('group:leave', { groupId: confirmLeave.groupId });
+        setConfirmLeave(null);
+        setShowGroupInfo(false);
+        setSelectedGroup(null);
+        selectedGroupRef.current = null;
+      };
+
+      // "Chat privately" from a member profile: opens a DM with that member
+      // (upserted into the user's local chat list without touching their
+      // server address book).
+      const chatPrivatelyWithMember = () => {
+        if (!memberProfile) return;
+        const mid = String(memberProfile.id);
+        const entry = {
+          id: mid,
+          name: nameOf(mid, memberProfile.name || 'Someone'),
+          photo: memberProfile.photo || 'https://via.placeholder.com/50',
+          firstName: String(memberProfile.name || '').split(' ')[0] || '',
+          lastName: '',
+          email: memberProfile.email || '',
+        };
+        const exists = (contactsRef.current || []).some(c => c && String(c.id) === mid);
+        const nextContacts = exists
+          ? (contactsRef.current || []).map(c => String(c.id) === mid ? { ...c, ...entry } : c)
+          : [entry, ...(contactsRef.current || [])];
+        contactsRef.current = nextContacts;
+        setContacts(nextContacts);
+        setMemberProfile(null);
+        setShowGroupInfo(false);
+        setGroupSettingsOpen(false);
+        setAddMembersOpen(false);
+        setSelectedChat(entry);
+        selectedChatRef.current = entry;
+        setSelectedGroup(null);
+        selectedGroupRef.current = null;
+        setMobileChatOpen(true);
+        setActiveTab('chats');
+      };
+
       const createGroup = () => {
         const name = groupName.trim();
         if (!name || groupSelectedContacts.length === 0) return;
@@ -5313,6 +5578,8 @@ setGroupMessages(prev => {
           members: groupSelectedContacts,
           admins: [],
           admin: user.id,
+          addMembers: groupAddPref,
+          sendMessages: groupSendPref,
           temp: true,
         };
 
@@ -5326,6 +5593,8 @@ setGroupMessages(prev => {
             name,
             dp: groupDp,
             members: memberIds,
+            addMembers: groupAddPref,
+            sendMessages: groupSendPref,
           });
         }
 
@@ -5436,7 +5705,7 @@ setGroupMessages(prev => {
                   </button>
                 </div>
               </div>
-            ) : (
+            ) : groupStep === 2 ? (
               <div className="group-screen">
                 <div className="group-header">
                   <button
@@ -5491,6 +5760,115 @@ setGroupMessages(prev => {
                   <p className="group-member-count">
                     {selCount} member{selCount === 1 ? '' : 's'}
                   </p>
+                </div>
+
+                <div className="group-bottom-bar">
+                  <button
+                    type="button"
+                    className="group-forward-btn"
+                    disabled={!groupName.trim() || selCount === 0}
+                    onClick={advanceGroupStep}
+                    aria-label="Next"
+                  >
+                    <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true">
+                      <path fill="currentColor" d="M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8z"/>
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="group-screen">
+                <div className="group-header">
+                  <button
+                    type="button"
+                    className="group-back-btn"
+                    onClick={backGroupStep}
+                    aria-label="Back"
+                  >
+                    <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true">
+                      <path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/>
+                    </svg>
+                  </button>
+                  <div className="group-header-text">
+                    <span className="group-header-title">Group Settings</span>
+                  </div>
+                </div>
+
+                <div className="group-details">
+                  <label className="group-dp-picker" style={{ cursor: 'pointer' }}>
+                    {groupDp ? (
+                      <img className="group-dp-preview" src={groupDp} alt="Group DP" />
+                    ) : (
+                      <span className="group-dp-placeholder">{groupInitial}</span>
+                    )}
+                    <span className="group-dp-edit">
+                      <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                        <path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/>
+                      </svg>
+                    </span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={handleGroupDpChange}
+                      hidden
+                    />
+                  </label>
+
+                  {groupDp && (
+                    <button
+                      type="button"
+                      className="group-remove-dp-btn"
+                      onClick={() => setGroupDp(null)}
+                    >
+                      Remove photo
+                    </button>
+                  )}
+
+                  <div className="group-settings-row">
+                    <div className="group-settings-row-label">
+                      <span className="group-settings-row-title">Send messages</span>
+                      <span className="group-settings-row-sub">Who can send messages in this group</span>
+                    </div>
+                    <div className="group-perm-toggle">
+                      <button
+                        type="button"
+                        className={groupSendPref === 'everyone' ? 'active' : ''}
+                        onClick={() => setGroupSendPref('everyone')}
+                      >
+                        Everyone
+                      </button>
+                      <button
+                        type="button"
+                        className={groupSendPref === 'admins' ? 'active' : ''}
+                        onClick={() => setGroupSendPref('admins')}
+                      >
+                        Admins
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="group-settings-row">
+                    <div className="group-settings-row-label">
+                      <span className="group-settings-row-title">Add members</span>
+                      <span className="group-settings-row-sub">Who can add new members to this group</span>
+                    </div>
+                    <div className="group-perm-toggle">
+                      <button
+                        type="button"
+                        className={groupAddPref === 'everyone' ? 'active' : ''}
+                        onClick={() => setGroupAddPref('everyone')}
+                      >
+                        Everyone
+                      </button>
+                      <button
+                        type="button"
+                        className={groupAddPref === 'admins' ? 'active' : ''}
+                        onClick={() => setGroupAddPref('admins')}
+                      >
+                        Admins
+                      </button>
+                    </div>
+                  </div>
                 </div>
 
                 <div className="group-bottom-bar">
@@ -5773,6 +6151,8 @@ setGroupMessages(prev => {
                         admins: Array.isArray(group.admins) ? group.admins.map(String) : [],
                         admin: group.admin,
                         adminName: group.adminName || null,
+                        addMembers: group.addMembers || 'everyone',
+                        sendMessages: group.sendMessages || 'everyone',
                         removedAt: group.removedAt || null,
                         removedBy: group.removedBy || null,
                         removedByName: group.removedByName || '',
@@ -5930,6 +6310,9 @@ setGroupMessages(prev => {
       const handleSendGroupMessage = (e) => {
         e.preventDefault();
         if (!selectedGroup || selectedGroup.removedAt) return;
+        // Admin-only messaging: non-admins are rejected client-side too (the
+        // server enforces the same rule regardless).
+        if (selectedGroup.sendMessages === 'admins' && !viewerIsGroupAdmin(selectedGroup)) return;
         const input = messageInputRef.current;
         if (!input?.value.trim()) return;
         const text = input.value.trim();
@@ -6003,6 +6386,7 @@ setGroupMessages(prev => {
         const file = e.target.files[0];
         if (!file || !selectedGroup || !socket) return;
         if (selectedGroup.removedAt) return;
+        if (selectedGroup.sendMessages === 'admins' && !viewerIsGroupAdmin(selectedGroup)) return;
 
         // Guard large uploads (see handleFileChange). Skip with a clear message
         // instead of letting the socket/DB silently drop them.
@@ -6278,6 +6662,11 @@ setGroupMessages(prev => {
         const groupMemberCount = Array.isArray(selectedGroup.members)
           ? selectedGroup.members.length
           : (selectedGroup.memberCount || 0);
+
+        // A member who can actually type/send in this group right now: still an
+        // active participant AND (no admin-only restriction OR an admin).
+        const viewerCanSendGroup = !!(selectedGroup && !selectedGroup.removedAt) &&
+          (!selectedGroup.sendMessages || selectedGroup.sendMessages === 'everyone' || viewerIsGroupAdmin(selectedGroup));
 
         const groupSearchMatches = chatSearchQuery
           ? groupMsgs.filter((m) => m.text?.toLowerCase().includes(chatSearchQuery.toLowerCase()))
@@ -7092,9 +7481,13 @@ onClick={() => {
                 <div ref={messagesEndRef} />
               </div>
 
-              {selectedGroup?.removedAt ? (
+{selectedGroup?.removedAt ? (
                 <div className="group-compose-locked" style={isMobile ? { display: 'none' } : undefined}>
 You are no longer a participant of this group
+                </div>
+              ) : !viewerCanSendGroup ? (
+                <div className="group-compose-locked" style={isMobile ? { display: 'none' } : undefined}>
+Only admins can send messages in this group
                 </div>
               ) : (
               <div className="message-input" style={{ display: isMobile ? 'none' : 'flex' }}>
@@ -7201,6 +7594,8 @@ You are no longer a participant of this group
 
               {isMobile && (selectedGroup?.removedAt ? (
                 <div className="mobile-compose-locked">You are no longer a participant of this group</div>
+              ) : !viewerCanSendGroup ? (
+                <div className="mobile-compose-locked">Only admins can send messages in this group</div>
               ) : (
                 <div className="mobile-compose">
                   {!showMobileAttach && (
@@ -9506,7 +9901,11 @@ setContacts(prev => {
   <>
     <div
       className="drawer-overlay"
-      onClick={goBackPage}
+      onClick={() => {
+        if (addMembersOpen) setAddMembersOpen(false);
+        else if (groupSettingsOpen) setGroupSettingsOpen(false);
+        else goBackPage();
+      }}
       style={{
         position: 'fixed',
         top: 0,
@@ -9549,7 +9948,11 @@ setContacts(prev => {
         }}
       >
         <button
-          onClick={goBackPage}
+          onClick={() => {
+            if (addMembersOpen) setAddMembersOpen(false);
+            else if (groupSettingsOpen) setGroupSettingsOpen(false);
+            else goBackPage();
+          }}
           style={{
             background: 'none',
             border: 'none',
@@ -9571,10 +9974,160 @@ setContacts(prev => {
             textAlign: 'left',
           }}
         >
-          Group Info
+          {addMembersOpen ? 'Add members' : (groupSettingsOpen ? 'Group Settings' : 'Group Info')}
         </div>
       </div>
 
+      {addMembersOpen ? (
+        <div style={{ padding: '16px' }}>
+          <div
+            className="group-search"
+            style={{ marginBottom: '12px' }}
+          >
+            <svg className="group-search-icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+              <path fill="currentColor" d="M15.5 14h-.79l-.28-.27a6.5 6.5 0 1 0-.7.7l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0A4.5 4.5 0 1 1 14 9.5 4.5 4.5 0 0 1 9.5 14z"/>
+            </svg>
+            <input
+              type="text"
+              placeholder="Search contacts"
+              value={addMembersQuery}
+              onChange={(e) => setAddMembersQuery(e.target.value)}
+            />
+          </div>
+          <div>
+            {groupMembersForAdd.map((contact) => {
+              const isTicked = addMembersSelected.has(String(contact.id));
+              return (
+                <div
+                  key={contact.id}
+                  className={`add-members-contact ${isTicked ? 'ticked' : ''}`}
+                  onClick={() => {
+                    setAddMembersSelected(prev => {
+                      const next = new Set(prev);
+                      if (isTicked) next.delete(String(contact.id));
+                      else next.add(String(contact.id));
+                      return next;
+                    });
+                  }}
+                >
+                  <span className="add-members-check">
+                    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                      <path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
+                    </svg>
+                  </span>
+                  {contact.photo ? (
+                    <img className="add-members-avatar" src={contact.photo} alt={contact.name} />
+                  ) : (
+                    <span className="add-members-avatar">{(contact.name || '?').charAt(0).toUpperCase()}</span>
+                  )}
+                  <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{contact.name}</span>
+                </div>
+              );
+            })}
+            {groupMembersForAdd.length === 0 && (
+              <div style={{ padding: '16px 4px', color: '#8a8f99', fontSize: '0.9rem' }}>
+                No contacts to add
+              </div>
+            )}
+          </div>
+          <button
+            type="button"
+            className="group-create-btn"
+            style={{ marginTop: '16px', width: '58px', height: '58px', borderRadius: '50%', border: 'none', background: '#25d366', color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 3px 10px rgba(37,211,102,0.35)' }}
+            disabled={addMembersSelected.size === 0}
+            onClick={submitAddMembers}
+            aria-label="Add members"
+          >
+            <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true">
+              <path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
+            </svg>
+          </button>
+        </div>
+      ) : groupSettingsOpen ? (
+        <div style={{ padding: '16px 20px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px' }}>
+          <label className="group-dp-picker" style={{ cursor: 'pointer' }}>
+            {selectedGroup.dp ? (
+              <img className="group-dp-preview" src={selectedGroup.dp} alt="Group DP" />
+            ) : (
+              <span className="group-dp-placeholder">{(selectedGroup.name || 'G').charAt(0).toUpperCase()}</span>
+            )}
+            <span className="group-dp-edit">
+              <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                <path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/>
+              </svg>
+            </span>
+            <input
+              type="file"
+              accept="image/*"
+              onChange={handleGroupInfoDpChange}
+              hidden
+            />
+          </label>
+
+          {selectedGroup.dp && (
+            <button
+              type="button"
+              className="group-remove-dp-btn"
+              onClick={removeGroupDp}
+            >
+              Remove photo
+            </button>
+          )}
+
+          <div className="group-settings-row" style={{ width: '100%' }}>
+            <div className="group-settings-row-label">
+              <span className="group-settings-row-title">Send messages</span>
+              <span className="group-settings-row-sub">Who can send messages in this group</span>
+            </div>
+            <div className="group-perm-toggle">
+              <button
+                type="button"
+                className={selectedGroup.sendMessages === 'everyone' ? 'active' : ''}
+                onClick={() => updateGroupSetting('sendMessages', 'everyone')}
+              >
+                Everyone
+              </button>
+              <button
+                type="button"
+                className={selectedGroup.sendMessages === 'admins' ? 'active' : ''}
+                onClick={() => updateGroupSetting('sendMessages', 'admins')}
+              >
+                Admins
+              </button>
+            </div>
+          </div>
+
+          <div className="group-settings-row" style={{ width: '100%' }}>
+            <div className="group-settings-row-label">
+              <span className="group-settings-row-title">Add members</span>
+              <span className="group-settings-row-sub">Who can add new members to this group</span>
+            </div>
+            <div className="group-perm-toggle">
+              <button
+                type="button"
+                className={selectedGroup.addMembers === 'everyone' ? 'active' : ''}
+                onClick={() => updateGroupSetting('addMembers', 'everyone')}
+              >
+                Everyone
+              </button>
+              <button
+                type="button"
+                className={selectedGroup.addMembers === 'admins' ? 'active' : ''}
+                onClick={() => updateGroupSetting('addMembers', 'admins')}
+              >
+                Admins
+              </button>
+            </div>
+          </div>
+
+          {!viewerIsGroupAdmin(selectedGroup) && (
+            <div style={{ fontSize: '0.85rem', color: '#8a8f99', textAlign: 'center' }}>
+              Only admins can change these settings.
+            </div>
+          )}
+        </div>
+      ) : (
+      <>
       <div
         className="profile-section"
         style={{
@@ -9680,6 +10233,8 @@ setContacts(prev => {
                   suppressClickRef.current = false;
                   return;
                 }
+                // The viewer's own row is not openable (no profile/menu).
+                if (isSelf) return;
                 setMemberProfile({ id: memberId, name: memberName, photo: memberPhoto, isAdmin });
               }}
               onPointerDown={() => {
@@ -9702,21 +10257,24 @@ setContacts(prev => {
                 }
               }}
             >
-              <img
-                src={memberPhoto}
-                alt={memberName}
-                style={{
-                  width: '40px',
-                  height: '40px',
-                  borderRadius: '50%',
-                  objectFit: 'cover',
-                  border: '2px solid #ddd',
-                }}
-              />
+              <div className="group-member-avatar-wrap" style={{ width: '40px', height: '40px', minWidth: '40px' }}>
+                  <img
+                    src={memberPhoto}
+                    alt={memberName}
+                    style={{
+                      width: '40px',
+                      height: '40px',
+                      borderRadius: '50%',
+                      objectFit: 'cover',
+                      border: '2px solid #ddd',
+                    }}
+                  />
+                </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: '15px', color: '#111', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                   {memberName}
                 </div>
+                {isSelf && <span className="group-you-tag">You</span>}
                 {isAdmin && <span className="group-admin-badge">Admin</span>}
               </div>
               {!isMobile && canManage && (
@@ -9752,6 +10310,49 @@ setContacts(prev => {
       </div>
 
       <div className="section" style={{ padding: '16px', borderTop: '1px solid #eee' }}>
+        {/* Group Settings */}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '12px',
+            padding: '12px 0',
+            fontSize: '16px',
+            color: '#333',
+            cursor: 'pointer',
+          }}
+          onClick={() => {
+            if (selectedGroup) setGroupSettingsOpen(true);
+          }}
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M12 15.5A2.5 2.5 0 1 0 12 10.5 2.5 2.5 0 0 0 12 15.5zm7.5-2.08c0-.49 0-.93-.08-1.34L21 10.58l-2-3.46-2.19.9a7.6 7.6 0 0 0-2.3-1.34L14.27 4h-4.54l-.24 2.68a7.6 7.6 0 0 0-2.3 1.34L5 7.12 3 10.58l1.58 1.5a7.6 7.6 0 0 0 0 2.68L3 16.26l2 3.46 2.19-.9a7.6 7.6 0 0 0 2.3 1.34l.24 2.68h4.54l.24-2.68a7.6 7.6 0 0 0 2.3-1.34l2.19.9 2-3.46-1.58-1.5c.08-.41.08-.85.08-1.34z" stroke="#333" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+          <span>Group Settings</span>
+        </div>
+
+        {/* Add members */}
+        {!selectedGroup.removedAt && (viewerIsGroupAdmin(selectedGroup) || selectedGroup.addMembers !== 'admins') && (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '12px',
+              padding: '12px 0',
+              fontSize: '16px',
+              color: '#333',
+              cursor: 'pointer',
+              borderTop: '1px solid #eee',
+            }}
+            onClick={openAddMembers}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M16 11c1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3 1.34 3 3 3zm-8 0c1.66 0 3-1.34 3-3S9.66 5 8 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5C15 14.17 10.33 13 8 13zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z" stroke="#333" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            <span>Add members</span>
+          </div>
+        )}
+
         {/* Clear Chat */}
         <div
           style={{
@@ -9762,6 +10363,7 @@ setContacts(prev => {
             fontSize: '16px',
             color: 'red',
             cursor: 'pointer',
+            borderTop: '1px solid #eee',
           }}
           onClick={() => {
             if (selectedGroup) {
@@ -9790,17 +10392,9 @@ setContacts(prev => {
             borderTop: '1px solid #eee',
           }}
           onClick={() => {
-            if (selectedGroup && window.confirm('Exit this group?')) {
+            if (selectedGroup) {
               const gid = String(selectedGroup.id || selectedGroup._id);
-              setGroupsList((prev) => prev.filter((g) => String(g.id) !== gid));
-              setGroupMessages((prev) => {
-                const next = { ...prev };
-                delete next[gid];
-                return next;
-              });
-              setShowGroupInfo(false);
-              setSelectedGroup(null);
-              selectedGroupRef.current = null;
+              setConfirmLeave({ groupId: gid, name: selectedGroup.name });
             }
           }}
         >
@@ -9810,6 +10404,8 @@ setContacts(prev => {
           <span>Exit group</span>
         </div>
       </div>
+      </>
+      )}
     </div>
   </>
 )}
@@ -9897,7 +10493,31 @@ setContacts(prev => {
           alt={nameOf(memberProfile.id, memberProfile.name || 'Someone')}
           style={{ width: '80px', height: '80px', borderRadius: '50%', objectFit: 'cover', border: '2px solid #ddd' }}
         />
-        <div style={{ fontSize: '17px', fontWeight: '600', color: '#111' }}>{nameOf(memberProfile.id, memberProfile.name || 'Someone')}</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <div style={{ fontSize: '17px', fontWeight: '600', color: '#111' }}>{nameOf(memberProfile.id, memberProfile.name || 'Someone')}</div>
+          {String(memberProfile.id) === String(user.id) && <span className="group-you-tag">You</span>}
+        </div>
+        {/* Chat privately: opens a 1:1 conversation with this member. Hidden for
+            the viewer's own row (marked "You", not openable). */}
+        {String(memberProfile.id) !== String(user.id) && (
+          <button
+            type="button"
+            onClick={chatPrivatelyWithMember}
+            style={{
+              marginTop: '4px',
+              padding: '10px 22px',
+              background: '#075e54',
+              color: 'white',
+              border: 'none',
+              borderRadius: '24px',
+              fontSize: '0.95rem',
+              fontWeight: 600,
+              cursor: 'pointer',
+            }}
+          >
+            Chat privately
+          </button>
+        )}
       </div>
 
       <div className="section" style={{ padding: '16px', borderTop: '1px solid #eee' }}>
@@ -10013,6 +10633,41 @@ setContacts(prev => {
           style={{ padding: '10px 16px', background: '#075e54', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 600 }}
         >
           Clear
+        </button>
+      </div>
+    </div>
+  </div>
+)}
+
+{/* Leave Group Confirmation Modal */}
+{confirmLeave && (
+  <div
+    style={{
+      position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh',
+      background: 'rgba(0, 0, 0, 0.5)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 20000,
+    }}
+    onClick={() => setConfirmLeave(null)}
+  >
+    <div
+      style={{ background: 'white', padding: '24px', borderRadius: '12px', width: '90%', maxWidth: '400px', boxShadow: '0 4px 20px rgba(0,0,0,0.2)' }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <h3 style={{ marginBottom: '12px', color: '#333' }}>Leave group</h3>
+      <p style={{ color: '#555', lineHeight: '1.5' }}>
+        Are you sure you want to leave <strong>{confirmLeave.name || 'this group'}</strong>? You will only see messages until you left, and you can ask an admin to add you back.
+      </p>
+      <div style={{ display: 'flex', gap: '12px', marginTop: '24px', justifyContent: 'flex-end' }}>
+        <button
+          onClick={() => setConfirmLeave(null)}
+          style={{ padding: '10px 16px', background: '#f0f0f0', border: '1px solid #ddd', borderRadius: '6px', color: '#333', cursor: 'pointer', fontWeight: 500 }}
+        >
+          Cancel
+        </button>
+        <button
+          onClick={confirmLeaveGroup}
+          style={{ padding: '10px 16px', background: '#e02f5b', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 600 }}
+        >
+          Leave
         </button>
       </div>
     </div>

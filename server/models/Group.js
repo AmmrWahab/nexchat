@@ -8,6 +8,12 @@ const groupSchema = new mongoose.Schema({
   // Additional admins promoted by the creator/other admins. The original
   // creator (the `admin` field) is the root admin and can never be removed.
   admins: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
+  // Permissions for the group. `sendMessages`: 'everyone' (default) lets any
+  // member send, 'admins' restricts sending to admins only. `addMembers`:
+  // 'everyone' (default) lets any member add new members, 'admins' restricts
+  // the Add-members action to admins only. Both are enforced server-side.
+  sendMessages: { type: String, enum: ['everyone', 'admins'], default: 'everyone' },
+  addMembers: { type: String, enum: ['everyone', 'admins'], default: 'everyone' },
   // Members who were removed by an admin. Kept so a removed member can still
   // open the group and read the history they had access to, while receiving
   // no further real-time updates.
