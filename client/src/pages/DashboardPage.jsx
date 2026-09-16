@@ -10460,16 +10460,16 @@ setContacts(prev => {
       }}
       onClick={(e) => e.stopPropagation()}
     >
-      <label className="group-dp-menu-row">
+      <label className="group-dp-menu-row" style={{ display: 'flex', alignItems: 'center', width: '100%', padding: '13px 20px', border: 'none', background: 'none', color: '#1f2933', fontSize: '0.95rem', cursor: 'pointer', boxSizing: 'border-box' }}>
         {selectedGroup.dp ? 'Change profile picture' : 'Add profile picture'}
         <input type="file" accept="image/*" onChange={handleGroupInfoDpChange} hidden />
       </label>
       {selectedGroup.dp && (
-        <button type="button" className="group-dp-menu-row group-dp-menu-remove" onClick={removeGroupDp}>
+        <button type="button" className="group-dp-menu-row group-dp-menu-remove" style={{ display: 'flex', alignItems: 'center', width: '100%', padding: '13px 20px', border: 'none', background: 'none', color: '#e02f5b', fontSize: '0.95rem', cursor: 'pointer', boxSizing: 'border-box' }} onClick={removeGroupDp}>
           Remove profile picture
         </button>
       )}
-      <button type="button" className="group-dp-menu-row" onClick={() => setGroupDpMenuOpen(false)}>
+      <button type="button" className="group-dp-menu-row" style={{ display: 'flex', alignItems: 'center', width: '100%', padding: '13px 20px', border: 'none', background: 'none', color: '#1f2933', fontSize: '0.95rem', cursor: 'pointer', boxSizing: 'border-box' }} onClick={() => setGroupDpMenuOpen(false)}>
         Cancel
       </button>
     </div>
