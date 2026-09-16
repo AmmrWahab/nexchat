@@ -1062,6 +1062,111 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
     }
   });
 
+  // ✅ Creator-only: demote a promoted admin back to a regular member. The
+  //    original creator can never be demoted (they're the root admin). Mirrors
+  //    the member-removal messaging: everyone sees "X demoted Y", while the
+  //    demoted member personally sees "X demoted you".
+  socket.on("demoteGroupAdmin", async (data) => {
+    const { groupId, memberId } = data || {};
+    if (!groupId || !memberId) return;
+    try {
+      const group = await Group.findById(groupId).exec();
+      if (!group) return;
+      const actorId = String(socket.userId);
+      if (actorId !== String(group.admin)) return; // only the creator can demote
+
+      const memberIdStr = String(memberId);
+      const adminsStr = (group.admins || []).map(String);
+      if (!adminsStr.includes(memberIdStr)) return; // target must be a promoted admin
+      if (actorId === memberIdStr) return; // can't demote yourself
+
+      group.admins = (group.admins || []).filter((id) => String(id) !== memberIdStr);
+      await group.save();
+
+      const actor = await User.findById(socket.userId).select('name').lean().exec();
+      const target = await User.findById(memberId).select('name').lean().exec();
+      const actorName = actor?.name || 'Someone';
+      const targetName = target?.name || 'Member';
+
+      // Public event for everyone (including the demoted member's history) …
+      const sysPublic = await GroupMessage.create({
+        group: groupId,
+        from: socket.userId,
+        message: `${actorName} removed ${targetName} as admin`,
+        isSystem: true,
+        systemType: 'memberDemoted',
+      });
+      // … and a personal notice for the demoted member only.
+      const sysPersonal = await GroupMessage.create({
+        group: groupId,
+        from: socket.userId,
+        message: `${actorName} removed you as admin`,
+        isSystem: true,
+        systemType: 'memberDemotedYou',
+        visibleTo: memberId,
+      });
+
+      const populated = await Group.findById(group._id)
+        .populate('admin', 'name photo')
+        .populate('members', 'name photo')
+        .exec();
+
+      const groupPayload = {
+        _id: String(group._id),
+        name: group.name,
+        dp: group.dp,
+        admin: String(group.admin),
+        adminName: populated.admin?.name || null,
+        admins: (group.admins || []).map(String),
+        members: populated.members,
+        memberCount: populated.members.length,
+      };
+
+      const publicPayload = {
+        groupId,
+        by: actorId,
+        byName: actorName,
+        memberId: memberIdStr,
+        memberName: targetName,
+        systemMessage: {
+          _id: String(sysPublic._id),
+          groupId,
+          from: String(socket.userId),
+          fromName: actorName,
+          message: `${actorName} removed ${targetName} as admin`,
+          isSystem: true,
+          systemType: 'memberDemoted',
+          timestamp: sysPublic.createdAt.getTime(),
+        },
+        group: groupPayload,
+      };
+
+      group.members.forEach((m) => {
+        if (String(m) === memberIdStr) return; // target gets their personal notice instead
+        emitToUser(m, 'groupMemberDemoted', publicPayload);
+      });
+
+      emitToUser(memberId, 'groupYouWereDemoted', {
+        groupId,
+        by: actorId,
+        byName: actorName,
+        systemMessage: {
+          _id: String(sysPersonal._id),
+          groupId,
+          from: String(socket.userId),
+          fromName: actorName,
+          message: `${actorName} removed you as admin`,
+          isSystem: true,
+          systemType: 'memberDemotedYou',
+          timestamp: sysPersonal.createdAt.getTime(),
+        },
+        group: groupPayload,
+      });
+    } catch (err) {
+      console.error("demoteGroupAdmin error:", err.message);
+    }
+  });
+
   // ✅ Post a WhatsApp-style status. Only the poster's contacts (people they
   //    chat with) receive the realtime `statusPosted` event; the feed itself
   //    also enforces the same visibility rule.

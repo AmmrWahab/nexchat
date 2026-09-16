@@ -298,6 +298,11 @@ export default function DashboardPage() {
     if (s && gid && memberIdStr) s.emit('makeGroupAdmin', { groupId: gid, memberId: memberIdStr });
     closeMemberMenu();
   };
+  const emitDemoteAdmin = (gid, memberIdStr) => {
+    const s = socketRef.current || socket;
+    if (s && gid && memberIdStr) s.emit('demoteGroupAdmin', { groupId: gid, memberId: memberIdStr });
+    closeMemberMenu();
+  };
 
   // Compute which management options are allowed for the given member under the
   // current viewer (who opened the menu, so always an admin).
@@ -314,8 +319,10 @@ export default function DashboardPage() {
       ? !targetIsCreator && !targetIsSelf
       : !targetIsCreator && !targetIsSelf && !targetIsAdmin;
     const canMakeAdmin = !targetIsCreator && !targetIsAdmin && !targetIsSelf;
+    // Only the creator can demote a promoted admin back to a regular member.
+    const canDemote = viewerIsCreator && targetIsAdmin && !targetIsCreator && !targetIsSelf;
     const roleLabel = targetIsCreator ? 'Owner' : targetIsAdmin ? 'Admin' : 'Member';
-    return { canRemove, canMakeAdmin, roleLabel };
+    return { canRemove, canMakeAdmin, canDemote, roleLabel };
   };
 
   // Append a group system/history entry (e.g. "X removed Y") to the open chat.
@@ -3875,6 +3882,30 @@ newSocket.on("receiveMessage", (data) => {
         ));
       });
 
+      // An admin was demoted by the creator. Received by every OTHER member.
+      newSocket.on('groupMemberDemoted', (data) => {
+        const gid = String(data.groupId);
+        appendGroupSystemMsg(gid, data.systemMessage);
+        applyGroupSnapshot(gid, data.group);
+        setGroupsList(prev => prev.map(g =>
+          String(g.id) === gid
+            ? { ...g, lastMsg: data.systemMessage?.message, lastTime: data.systemMessage?.timestamp || Date.now() }
+            : g
+        ));
+      });
+
+      // Received by the demoted member themselves — their personal notice.
+      newSocket.on('groupYouWereDemoted', (data) => {
+        const gid = String(data.groupId);
+        appendGroupSystemMsg(gid, data.systemMessage);
+        applyGroupSnapshot(gid, data.group);
+        setGroupsList(prev => prev.map(g =>
+          String(g.id) === gid
+            ? { ...g, lastMsg: data.systemMessage?.message, lastTime: data.systemMessage?.timestamp || Date.now() }
+            : g
+        ));
+      });
+
       // ✅ Receive a group message
       newSocket.on('receiveGroupMessage', (data) => {
         const gid = String(data.groupId);
@@ -6716,7 +6747,7 @@ onClick={() => {
 
               {selectedGroup?.removedAt ? (
                 <div className="group-compose-locked" style={isMobile ? { display: 'none' } : undefined}>
-                  You are not a member of this group
+You are no longer a participant of this group
                 </div>
               ) : (
               <div className="message-input" style={{ display: isMobile ? 'none' : 'flex' }}>
@@ -6822,7 +6853,7 @@ onClick={() => {
               )}
 
               {isMobile && (selectedGroup?.removedAt ? (
-                <div className="mobile-compose-locked">You are not a member of this group</div>
+                <div className="mobile-compose-locked">You are no longer a participant of this group</div>
               ) : (
                 <div className="mobile-compose">
                   {!showMobileAttach && (
@@ -10040,6 +10071,11 @@ setContacts(prev => {
           Make admin
         </button>
       )}
+      {actions.canDemote && (
+        <button className="member-action-btn" onClick={() => emitDemoteAdmin(gid, memberMenu.memberId)}>
+          Demote
+        </button>
+      )}
       {actions.canRemove && (
         <button
           className="member-action-btn danger"
@@ -10054,7 +10090,7 @@ setContacts(prev => {
           Remove member
         </button>
       )}
-      {!actions.canMakeAdmin && !actions.canRemove && (
+      {!actions.canMakeAdmin && !actions.canRemove && !actions.canDemote && (
         <div className="member-action-note">
           {memberMenu.isCreator ? 'This is the original group creator and cannot be removed.' : 'No available actions for this member.'}
         </div>
