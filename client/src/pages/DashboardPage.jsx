@@ -184,6 +184,29 @@ export default function DashboardPage() {
   const prefetchedGroupHistoryRef = useRef(new Set());
   const prefetchedHistoryRef = useRef(new Set());
   const contactsRef = useRef([]);
+  // Viewer-local map of user id -> custom contact name the CURRENT viewer has
+  // deliberately saved (mirror of the server's per-viewer contactNames). Kept
+  // separate from the contacts refetch merge so a backend rename can never
+  // clobber the name the viewer chose; nameOf resolves it first and falls back
+  // to the live account name when no custom name has been saved.
+  const savedNamesRef = useRef((() => {
+    try {
+      return JSON.parse(localStorage.getItem('nexchatSavedNames') || '{}') || {};
+    } catch {
+      return {};
+    }
+  })());
+  const persistSavedName = (who, name) => {
+    const key = String(who ?? '');
+    const trimmed = String(name || '').trim();
+    const next = { ...(savedNamesRef.current || {}) };
+    if (key) {
+      if (trimmed) next[key] = trimmed;
+      else delete next[key];
+    }
+    savedNamesRef.current = next;
+    try { localStorage.setItem('nexchatSavedNames', JSON.stringify(next)); } catch { /* ignore quota/private-mode errors */ }
+  };
   // Central name resolver: returns the contact's effective name (the viewer's
   // saved custom name, or the account's real name) when an id matches the
   // address book, otherwise the given fallback. Reads contactsRef so every
@@ -194,6 +217,8 @@ export default function DashboardPage() {
       ? String(who.id ?? who._id ?? who.userId ?? who.senderId ?? who.from ?? '')
       : String(who ?? '');
     if (!id) return fallback || 'Unknown';
+    const saved = (savedNamesRef.current || {})[id];
+    if (saved && String(saved).trim()) return String(saved).trim();
     const hit = (contactsRef.current || []).find((c) => c && String(c.id) === id);
     return hit && hit.name && String(hit.name).trim() ? hit.name : (fallback || 'Unknown');
   };
@@ -249,7 +274,10 @@ export default function DashboardPage() {
     if (!selectedChat || selectedChat.type === 'group') return;
     const id = String(selectedChat.id);
     const realName = contactInfoProfile?.name || selectedChat?.name || '';
-    const customName = (contactsRef.current || []).find((c) => c && String(c.id) === id)?.name || '';
+    const customName =
+      (savedNamesRef.current || {})[id] ||
+      (contactsRef.current || []).find((c) => c && String(c.id) === id)?.name ||
+      '';
     setContactEditName(customName || realName);
     setContactEditOpen(true);
   };
@@ -284,15 +312,22 @@ export default function DashboardPage() {
         : [entry, ...cur];
       contactsRef.current = next;
       setContacts(next);
+      persistSavedName(id, clean);
 
       // Persist to this viewer's address book (adds the link if missing and
       // stores the custom name). An empty name clears the custom entry so the
       // real account name is used again.
-      await fetch(`${API_URL}/api/contacts`, {
+      const res = await fetch(`${API_URL}/api/contacts`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tk}` },
         body: JSON.stringify({ userId: id, name: clean }),
       });
+      const data = await res.json().catch(() => ({}));
+      // Adopt the server's stored custom name when reported (authoritative),
+      // otherwise the value just submitted stays local.
+      if (data && data.contact && typeof data.contact.customName === 'string') {
+        persistSavedName(id, data.contact.customName);
+      }
     } catch (err) {
       console.error('Save contact name error', err);
     } finally {
@@ -4299,6 +4334,15 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
                       online: false,
                       lastSeen: c.lastSeen || Date.now(),
                     });
+                  });
+                  // Adopt any server-stored custom names (the viewer's own
+                  // per-user contactNames) so they survive restarts and stay in
+                  // sync across devices. Absent customName is NOT a deletion —
+                  // a locally saved name wins until the viewer clears it.
+                  data.contacts.forEach(c => {
+                    if (c && c.customName && String(c.customName).trim()) {
+                      persistSavedName(c._id, c.customName);
+                    }
                   });
                   return [...map.values()];
                 });
@@ -8375,26 +8419,23 @@ You are no longer a participant of this group
           position: 'fixed',
           top: 0,
           right: 0,
-          width: isMobile ? '100%' : (contactEditOpen ? '800px' : '400px'),
+          width: isMobile ? '100%' : '400px',
           height: '100%',
           background: 'white',
           boxShadow: '-4px 0 12px rgba(0,0,0,0.15)',
           zIndex: 999,
           transform: 'translateX(0)',
-          transition: 'width 0.3s ease-out, transform 0.3s ease-out',
+          transition: 'transform 0.3s ease-out',
           overflow: 'hidden',
-          display: 'flex',
-          flexDirection: 'row',
         }}
       >
         <div
           style={{
-            width: isMobile ? (contactEditOpen ? '0%' : '100%') : '400px',
-            minWidth: isMobile ? 0 : '400px',
+            width: '100%',
+            minWidth: '100%',
             height: '100%',
             overflowY: 'auto',
             flexShrink: 0,
-            display: (isMobile && contactEditOpen) ? 'none' : 'block',
           }}
         >
         <div
@@ -8665,14 +8706,17 @@ You are no longer a participant of this group
         {contactEditOpen && (
           <div
             style={{
-              width: isMobile ? '100%' : '400px',
-              minWidth: isMobile ? '100%' : '400px',
-              height: '100%',
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              zIndex: 20,
               display: 'flex',
               flexDirection: 'column',
               background: '#f5f7f9',
-              borderLeft: isMobile ? 'none' : '1px solid #eee',
-              overflow: 'hidden',
+              boxShadow: '-2px 0 8px rgba(0,0,0,0.1)',
+              overflowY: 'auto',
             }}
           >
             <div className="profile-topbar">
