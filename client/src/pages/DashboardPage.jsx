@@ -298,6 +298,18 @@ export default function DashboardPage() {
   const prefetchedGroupHistoryRef = useRef(new Set());
   const prefetchedHistoryRef = useRef(new Set());
   const contactsRef = useRef([]);
+  // Deleted-chat ids for THIS viewer/account. When a chat is deleted on any of
+  // the user's devices, the server drops it from this account's address book.
+  // The id is remembered here so a later address-book re-fetch can never
+  // resurrect the chat mid-session, and this device can detect deletions made
+  // on another device even if it missed the realtime event.
+  const deletedChatsRef = useRef((() => {
+    try { return new Set(JSON.parse(localStorage.getItem(accountScopedKey('deletedChats')) || '[]') || []); } catch { return new Set(); }
+  })());
+  // Ids the server listed in the most recent /api/contacts response. Any id
+  // that was listed before but is missing now means the chat was deleted on
+  // another device -> pull it off this device's list too.
+  const serverContactsSeenRef = useRef(new Set());
   // Viewer-local map of user id -> custom contact name the CURRENT viewer has
   // deliberately saved (mirror of the server's per-viewer contactNames). Kept
   // separate from the contacts refetch merge so a backend rename can never
@@ -1524,6 +1536,106 @@ export default function DashboardPage() {
 
 
   const [contacts, setContacts] = useState([]);
+
+  // Remove a deleted 1:1 chat from EVERY surface + cache on this device and
+  // close it if open. Invoked from the realtime 'chatDeleted' event, from the
+  // address-book fetch (self-heal when another device deleted it), and from
+  // the Delete-chat menu action.
+  const applyChatDeleted = useCallback((rawId) => {
+    const id = String(rawId || '');
+    if (!id) return;
+    deletedChatsRef.current.add(id);
+    try { localStorage.setItem(accountScopedKey('deletedChats'), JSON.stringify([...deletedChatsRef.current])); } catch { /* ignore quota errors */ }
+    setContacts((prev) => prev.filter((c) => c && String(c.id) !== id));
+    setMessages((prev) => {
+      if (!prev[id]) return prev;
+      const next = { ...prev };
+      delete next[id];
+      safeSetItem('chatMessages', next);
+      return next;
+    });
+    // Close the chat if this device currently has it open, and drop the
+    // persisted "chat was open" markers so a reload can't reopen it.
+    if (selectedChatRef.current && String(selectedChatRef.current.id) === id) {
+      setSelectedChat(null);
+      selectedChatRef.current = null;
+      setMobileChatOpen(false);
+      setShowContactInfo(false);
+      setContactEditOpen(false);
+    }
+    try {
+      localStorage.removeItem(accountScopedKey('selectedChat'));
+      localStorage.removeItem(accountScopedKey('selectedGroup'));
+      localStorage.setItem(accountScopedKey('dashboardChatOpen'), 'false');
+    } catch { /* ignore */ }
+  }, []);
+
+  // Pull this user's private address book from the server. Merge-based so
+  // runtime-only chats (a sender who just messaged you) stay visible, with
+  // self-heal: contacts listed on a previous fetch but missing now were
+  // deleted on another device, so they're removed here even if this device
+  // never received the realtime event.
+  const fetchContacts = useCallback(async () => {
+    const token = localStorage.getItem('token');
+    if (!token || !user.id) return;
+    try {
+      const res = await fetch(`${API_URL}/api/contacts`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (!data || !Array.isArray(data.contacts)) return;
+      const serverIds = new Set(data.contacts.map((c) => String(c._id)));
+      [...serverContactsSeenRef.current].forEach((id) => {
+        if (!serverIds.has(id)) applyChatDeleted(id);
+      });
+      serverContactsSeenRef.current = serverIds;
+      // Reconcile block state from the server (authoritative).
+      setBlockedByMeSet(prev => {
+        const next = new Set(prev);
+        data.contacts.forEach(c => (c.blockedByMe ? next.add(String(c._id)) : next.delete(String(c._id))));
+        return next;
+      });
+      setBlockedMeSet(prev => {
+        const next = new Set(prev);
+        data.contacts.forEach(c => (c.blockedMe ? next.add(String(c._id)) : next.delete(String(c._id))));
+        return next;
+      });
+      // Merge server contacts into state WITHOUT wiping contacts that were
+      // added at runtime (e.g. a sender who just messaged you), so the
+      // fresh chat stays visible.
+      setContacts(prev => {
+        const map = new Map(prev.map(c => [String(c.id), c]));
+        data.contacts.forEach(c => {
+          map.set(String(c._id), {
+            id: c._id,
+            name: c.name,
+            about: c.about || '',
+            firstName: c.firstName || '',
+            lastName: c.lastName || '',
+            email: c.email,
+            photo: c.photo || 'https://via.placeholder.com/50',
+            lastMsg: '',
+            time: '',
+            online: false,
+            lastSeen: c.lastSeen || Date.now(),
+          });
+        });
+        // Adopt any server-stored custom names (the viewer's own per-user
+        // contactNames) so they survive restarts and stay in sync across
+        // devices. Absent customName is NOT a deletion — a locally saved name
+        // wins until the viewer clears it.
+        data.contacts.forEach(c => {
+          if (c && c.customName && String(c.customName).trim()) {
+            persistSavedName(c._id, c.customName);
+          }
+        });
+        return [...map.values()];
+      });
+      setDataReady(true);
+    } catch (err) {
+      console.error('Failed to fetch contacts', err);
+    }
+  }, [user.id, applyChatDeleted]);
 
 
 
@@ -4524,27 +4636,18 @@ setGroupMessages(prev => {
           }
           return prev;
         });
+        // Remember the clearing point on THIS device too (even for a remote
+        // clear-for-everyone) so the chats-list row drops its old preview/date
+        // instead of showing the last pre-clear message + timestamp.
+        if (to !== undefined && to !== null) persistDmCleared(String(to), Date.now());
       });
 
       // ✅ 1:1 chat deleted on ANY of this user's devices: drop the contact
-      //    from the chat list and its cached messages everywhere, and close
-      //    the chat if it's currently open on this device.
+      //    from the chat list + caches, close it if open, then self-heal with
+      //    a refreshed address book (also covers deletions made while offline).
       newSocket.on('chatDeleted', ({ to }) => {
-        const id = String(to || '');
-        if (!id) return;
-        setContacts(prev => prev.filter(c => c && String(c.id) !== id));
-        setMessages(prev => {
-          if (!prev[id]) return prev;
-          const next = { ...prev };
-          delete next[id];
-          safeSetItem('chatMessages', next);
-          return next;
-        });
-        if (selectedChatRef.current && String(selectedChatRef.current.id) === id) {
-          setSelectedChat(null);
-          selectedChatRef.current = null;
-          setMobileChatOpen(false);
-        }
+        applyChatDeleted(to);
+        fetchContacts();
       });
 
       // ✅ group message deleted-for-everyone
@@ -4574,7 +4677,7 @@ setGroupMessages(prev => {
     return () => {
     newSocket.disconnect();
    };
-    }, [user.id, navigate, groupEventLabel]);   
+    }, [user.id, navigate, groupEventLabel, applyChatDeleted, fetchContacts]);   
   
   
   
@@ -4635,66 +4738,23 @@ setGroupMessages(prev => {
           })();
         }, [user.id, profileRefreshTick, groupEventLabel]);
 
-        // ✅ Load this user's private address book from the server (per-account)
+        // ✅ Load/sync this user's private address book from the server
+        //    (per-account). Refetches on mount and whenever a profile update
+        //    bumps profileRefreshTick, self-healing chats deleted on other
+        //    devices (contacts that dropped off the server list).
         useEffect(() => {
-          const token = localStorage.getItem('token');
-          if (!token || !user.id) return;
-          (async () => {
-            try {
-              const res = await fetch(`${API_URL}/api/contacts`, {
-                headers: { Authorization: `Bearer ${token}` },
-              });
-              const data = await res.json();
-              if (data && Array.isArray(data.contacts)) {
-                // Reconcile block state from the server (authoritative).
-                setBlockedByMeSet(prev => {
-                  const next = new Set(prev);
-                  data.contacts.forEach(c => (c.blockedByMe ? next.add(String(c._id)) : next.delete(String(c._id))));
-                  return next;
-                });
-                setBlockedMeSet(prev => {
-                  const next = new Set(prev);
-                  data.contacts.forEach(c => (c.blockedMe ? next.add(String(c._id)) : next.delete(String(c._id))));
-                  return next;
-                });
-                // Merge server contacts into state WITHOUT wiping contacts that were
-                // added at runtime (e.g. a sender who just messaged you), so the
-                // fresh chat stays visible.
-                setContacts(prev => {
-                  const map = new Map(prev.map(c => [String(c.id), c]));
-                  data.contacts.forEach(c => {
-                    map.set(String(c._id), {
-                      id: c._id,
-                      name: c.name,
-                      about: c.about || '',
-                      firstName: c.firstName || '',
-                      lastName: c.lastName || '',
-                      email: c.email,
-                      photo: c.photo || 'https://via.placeholder.com/50',
-                      lastMsg: '',
-                      time: '',
-                      online: false,
-                      lastSeen: c.lastSeen || Date.now(),
-                    });
-                  });
-                  // Adopt any server-stored custom names (the viewer's own
-                  // per-user contactNames) so they survive restarts and stay in
-                  // sync across devices. Absent customName is NOT a deletion —
-                  // a locally saved name wins until the viewer clears it.
-                  data.contacts.forEach(c => {
-                    if (c && c.customName && String(c.customName).trim()) {
-                      persistSavedName(c._id, c.customName);
-                    }
-                  });
-                  return [...map.values()];
-                });
-                setDataReady(true);
-              }
-            } catch (err) {
-              console.error('Failed to fetch contacts', err);
-            }
-          })();
-        }, [user.id, profileRefreshTick]);
+          fetchContacts();
+        }, [fetchContacts, profileRefreshTick]);
+
+        // On (re)connect, re-pull the address book so deletions that happened
+        // while this device was offline get applied here too.
+        useEffect(() => {
+          if (!socket) return;
+          const onConnect = () => fetchContacts();
+          socket.on('connect', onConnect);
+          if (socket.connected) fetchContacts();
+          return () => socket.off('connect', onConnect);
+        }, [socket, fetchContacts]);
 
         // When the Contact Info panel opens, pull the target user's latest
         // profile (name/photo/about) from the database so the About line is
@@ -6275,24 +6335,32 @@ setGroupMessages(prev => {
           {activeTab === 'chats' && [...contacts, ...chats]
             .sort((a, b) => {
               const latestActivity = (chat) => {
-                const msgs = messages[chat.id] || [];
+                // A "Clear chat" removes the row's preview/date: activity older
+                // than this user's cleared point no longer counts for sorting.
+                const clearedTs = dmClearedAt(chat.id);
+                const active = (ts) => !clearedTs || (Number(ts) || 0) > clearedTs;
+                const msgs = (messages[chat.id] || []).filter(m => active(m.timestamp));
                 const last = msgs[msgs.length - 1];
                 const msgTime = last ? Number(last.timestamp) || 0 : 0;
-                const ct = calls.filter(c => !c.groupId && String(c.userId) === String(chat.id));
+                const ct = calls.filter(c => !c.groupId && String(c.userId) === String(chat.id) && active(c.time));
                 const callTime = ct.length ? Number(ct.reduce((x, y) => (Number(y.time) || 0) > (Number(x.time) || 0) ? y : x).time) || 0 : 0;
                 return Math.max(msgTime, callTime);
               };
               return latestActivity(b) - latestActivity(a);
             })
             .map(chat => {
-            const chatMsgs = messages[chat.id] || [];
+            // Same cleared-point gate for the visible row so a cleared chat
+            // shows no stale last-message preview or old date.
+            const clearedTs = dmClearedAt(chat.id);
+            const active = (ts) => !clearedTs || (Number(ts) || 0) > clearedTs;
+            const chatMsgs = (messages[chat.id] || []).filter(m => active(m.timestamp));
             const last = chatMsgs[chatMsgs.length - 1];
             const unreadMsgs = chatMsgs.filter(m => m.sender !== 'You' && !m.read);
             // Calls participate in the same latest-activity/unread machinery:
             // unread missed calls from this contact add to the SAME green badge,
             // and the newest call can win the preview slot against the newest
             // message (whichever happened later).
-            const chatCalls = calls.filter(c => !c.groupId && String(c.userId) === String(chat.id));
+            const chatCalls = calls.filter(c => !c.groupId && String(c.userId) === String(chat.id) && active(c.time));
             const unreadMissed = chatCalls.filter(c => c.missedCallUnread).length;
             const unreadCount = unreadMsgs.length + unreadMissed;
             const hasUnread = unreadCount > 0;
@@ -6309,7 +6377,7 @@ setGroupMessages(prev => {
             const msgTime = previewMsg ? previewMsg.timestamp : (chat.time || null);
             const useCall = !!latestCall && (msgTime == null || (latestCall.time || 0) > msgTime);
             let preview = '';
-            let timeToShow = chat.timestamp;
+            let timeToShow = (clearedTs ? '' : chat.timestamp);
             if (useCall) {
               const missedShow = latestCall.direction === 'missed' && !latestCall.iCalled && !latestCall.rejected;
               preview = `${latestCall.video ? '📹' : '📞'} ${missedShow ? 'Missed ' : ''}${latestCall.video ? (missedShow ? 'video' : 'Video') : (missedShow ? 'voice' : 'Voice')} call`;
@@ -6327,7 +6395,7 @@ setGroupMessages(prev => {
                 ? (formatTime(previewMsg.timestamp) || chat.timestamp)
                 : chat.timestamp;
             } else {
-              preview = truncate(chat.lastMsg || '');
+              preview = (clearedTs ? '' : truncate(chat.lastMsg || ''));
             }
             return (
       <div
@@ -6361,7 +6429,11 @@ setGroupMessages(prev => {
             );
           })}
                 {activeTab === 'groups' && groupsList.map(group => {
-                  const groupMsgs = groupMessages[group._id || group.id] || [];
+                  // Respect this viewer's "Clear chat" point: older activity and
+                  // the stale last-message/date fallbacks stay hidden after clear.
+                  const clearedTs = groupClearedAt(group._id || group.id);
+                  const groupMsgs = (groupMessages[group._id || group.id] || [])
+                    .filter(m => !clearedTs || (Number(m.timestamp) || 0) > clearedTs);
                   const last = groupMsgs[groupMsgs.length - 1];
                   const unreadMsgs = groupMsgs.filter(m => m.sender !== 'You' && !m.read);
                   const unreadCount = unreadMsgs.length;
@@ -6385,11 +6457,11 @@ setGroupMessages(prev => {
                       preview = `${senderName}: ${preview}`;
                     }
                   } else {
-                    preview = truncate(group.lastMsg || 'No messages yet');
+                    preview = (clearedTs ? '' : truncate(group.lastMsg || 'No messages yet'));
                   }
                   const timeToShow = previewMsg
                     ? (formatTime(previewMsg.timestamp) || group.lastTime)
-                    : group.lastTime;
+                    : (clearedTs ? '' : group.lastTime);
                   return (
                   <div
                     key={group._id || group.id}
@@ -8567,14 +8639,7 @@ const renderRightPanel = () => {
                       headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
                     }).catch(() => {});
                   }
-                  setContacts((prev) => prev.filter((c) => c.id !== selectedChat.id));
-                  setMessages((prev) => {
-                    const newMsgs = { ...prev };
-                    delete newMsgs[selectedChat.id];
-                    safeSetItem('chatMessages', newMsgs);
-                    return newMsgs;
-                  });
-                  setSelectedChat(null);
+                  applyChatDeleted(selectedChat.id);
                 }
                 setShowDropdown(false);
               }}
