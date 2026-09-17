@@ -4865,6 +4865,36 @@ setGroupMessages(prev => {
           }
         }, [selectedChat]);
 
+        // Mirror of the DM persistence above, but for an open group so a refresh
+        // inside a group restores the SAME group (same approach private chats
+        // already use). Stores a pruned copy of the normalized group object.
+        useEffect(() => {
+          if (!selectedGroup?.id) return;
+          try {
+            localStorage.setItem(
+              accountScopedKey('selectedGroup'),
+              JSON.stringify({
+                id: selectedGroup.id,
+                name: selectedGroup.name,
+                dp: (typeof selectedGroup.dp === 'string' && selectedGroup.dp.startsWith('data:'))
+                  ? null
+                  : selectedGroup.dp,
+                memberCount: selectedGroup.memberCount || (selectedGroup.members?.length || 0),
+                admins: Array.isArray(selectedGroup.admins) ? selectedGroup.admins.map(String) : [],
+                admin: selectedGroup.admin,
+                adminName: selectedGroup.adminName || null,
+                addMembers: selectedGroup.addMembers || 'everyone',
+                sendMessages: selectedGroup.sendMessages || 'everyone',
+                removedAt: selectedGroup.removedAt || null,
+                removedBy: selectedGroup.removedBy || null,
+                removedByName: selectedGroup.removedByName || '',
+              })
+            );
+          } catch (err) {
+            console.warn('Failed to persist selectedGroup', err);
+          }
+        }, [selectedGroup]);
+
         // Track whether a chat is ACTUALLY open (set) vs the user sitting on the
         // Chats list. Only a genuinely open chat should be restored on refresh —
         // closing a chat (or navigating to another section) must NOT make it come
@@ -4883,39 +4913,84 @@ setGroupMessages(prev => {
         }, [selectedChat?.id, selectedGroup?.id]);
 
         // Restore the previous chat ONLY if, at page load, a chat was genuinely
-        // open (dashboardChatOpen 'true'), the user was on the Chats section
-        // (activeTab 'chats' on desktop / view 'chats' on mobile), AND that
-        // person/group still exists in this account's contact list or groups
-        // (prevents ghost chats after a refresh). If the user was on Status,
-        // Calls, etc., or just browsing the Chats list, do NOT reopen a chat.
-        // The section was already restored from localStorage by the useState
-        // initializers, so this reads the saved section directly and only ever
-        // runs once.
+        // open (dashboardChatOpen 'true'), the user was on the Chats or Groups
+        // section (activeTab 'chats'/'groups' on desktop, view 'chats'/'groups'
+        // on mobile), AND that person/group still exists in this account's
+        // contact list or groups (prevents ghost chats after a refresh). Both
+        // private chats AND groups are restored this way (groups used to be
+        // lost on refresh). If the user was on Status, Calls, etc., or just
+        // browsing the list, do NOT reopen a chat. The section was already
+        // restored from localStorage by the useState initializers, so this reads
+        // the saved section directly and only ever runs once.
         const restoredChatOnceRef = useRef(false);
+        const [pendingRestore, setPendingRestore] = useState(true);
         useEffect(() => {
           if (!dataReady || restoredChatOnceRef.current) return;
           restoredChatOnceRef.current = true;
-          const saved = localStorage.getItem(accountScopedKey('selectedChat'));
-          const parsed = saved ? JSON.parse(saved) : null;
-          if (!parsed?.id) return;
           let savedSection;
           try { savedSection = isMobile ? localStorage.getItem('dashboardView') : localStorage.getItem('dashboardActiveTab'); } catch { savedSection = null; }
-          if ((savedSection || '') !== 'chats') return;
           let chatWasOpen;
           try { chatWasOpen = localStorage.getItem(accountScopedKey('dashboardChatOpen')) === 'true'; } catch { chatWasOpen = false; }
-          if (!chatWasOpen) return;
-          const stillExists =
-            contacts.some(c => String(c.id) === String(parsed.id)) ||
-            groupsList.some(g => String(g.id) === String(parsed.id));
-          if (stillExists) {
-            setSelectedChat(parsed);
-            selectedChatRef.current = parsed;
-            if (isMobile) setMobileChatOpen(true);
-          } else {
-            localStorage.removeItem('selectedChat');
-            setSelectedChat(prev => (prev && String(prev.id) === String(parsed.id) ? null : prev));
+          if (!chatWasOpen || ((savedSection || '') !== 'chats' && (savedSection || '') !== 'groups')) {
+            setPendingRestore(false);
+            return;
           }
-        }, [dataReady, groupsList, isMobile]);
+          let savedDm = null;
+          let savedGrp = null;
+          try {
+            const dmRaw = localStorage.getItem(accountScopedKey('selectedChat'));
+            savedDm = dmRaw ? JSON.parse(dmRaw) : null;
+            const grpRaw = localStorage.getItem(accountScopedKey('selectedGroup'));
+            savedGrp = grpRaw ? JSON.parse(grpRaw) : null;
+          } catch { savedDm = null; savedGrp = null; }
+          let restored = false;
+          // Private chat first (only from the Chats section like before).
+          if (savedDm?.id && (savedSection || '') === 'chats' && !restored) {
+            const stillExists =
+              contacts.some(c => String(c.id) === String(savedDm.id)) ||
+              groupsList.some(g => String(g.id) === String(savedDm.id));
+            if (stillExists) {
+              setSelectedChat(savedDm);
+              selectedChatRef.current = savedDm;
+              if (isMobile) setMobileChatOpen(true);
+              restored = true;
+            } else {
+              localStorage.removeItem('selectedChat');
+              setSelectedChat(prev => (prev && String(prev.id) === String(savedDm.id) ? null : prev));
+            }
+          }
+          // Open group restore (refreshing inside a group keeps that group).
+          if (!restored && savedGrp?.id) {
+            const stillExists = groupsList.some(g => String(g.id) === String(savedGrp.id));
+            if (stillExists) {
+              const normalized = {
+                id: savedGrp.id,
+                name: savedGrp.name,
+                dp: savedGrp.dp || null,
+                memberCount: savedGrp.memberCount,
+                admins: Array.isArray(savedGrp.admins) ? savedGrp.admins.map(String) : [],
+                admin: savedGrp.admin,
+                adminName: savedGrp.adminName || null,
+                addMembers: savedGrp.addMembers || 'everyone',
+                sendMessages: savedGrp.sendMessages || 'everyone',
+                removedAt: savedGrp.removedAt || null,
+                removedBy: savedGrp.removedBy || null,
+                removedByName: savedGrp.removedByName || '',
+              };
+              selectedGroupRef.current = normalized;
+              setSelectedGroup(normalized);
+              setSelectedChat(null);
+              selectedChatRef.current = null;
+              if (isMobile) setMobileChatOpen(true);
+              groupOpenAtRef.current = Date.now();
+              if (socket) socket.emit('fetchGroupMessages', { groupId: normalized.id });
+              restored = true;
+            } else {
+              localStorage.removeItem('selectedGroup');
+            }
+          }
+          setPendingRestore(false);
+        }, [dataReady, groupsList, isMobile, socket]);
 
         // NOTE: no auto "mark as read" on mount for a restored chat — a direct
         // message must only become a read (green) tick when the receiving user
@@ -5136,6 +5211,9 @@ setGroupMessages(prev => {
         // history stack stays perfectly balanced.
         const navStackRef = useRef([]);            // [{ screen, saved? }]
         const prevNavRef = useRef({ view, activeTab });
+        const lastNavKeyRef = useRef(null);        // last on-screen descriptor
+        const lastNavFlagsRef = useRef(null);      // nav snapshot of last render
+        const firstNavRunRef = useRef(true);       // first descriptor run = baseline
         const chatOnRef = useRef(false);
         const contactInfoOnRef = useRef(false);
         const groupInfoOnRef = useRef(false);
@@ -5235,97 +5313,157 @@ setGroupMessages(prev => {
           }
         };
 
+        // -------- Mobile screen stack: snapshot-based tracking --------
+        // Every stack entry stores, in `saved`, a snapshot of ALL nav-affecting
+        // flags from the render BEFORE the transition that created it. Pop-ping
+        // an entry (system/on-screen back) hydrates that snapshot, so Back
+        // rebuilds the EXACT previous screen (drawers re-open, the same chat is
+        // re-selected, overlapping sub-views return) instead of just closing the
+        // current page while hoping the underlying flags survived. This is what
+        // lets "Group Info -> Member Info -> Chat privately -> Chat -> Back"
+        // land back on Member Info instead of a stale/empty screen.
+
+        // Single "what is on screen right now" descriptor. Uses the SAME
+        // precedence as closeTopLive() (top-most first) so the stack records a
+        // real transition whenever it changes — including identity swaps that
+        // never flip a Boolean (group chat -> DM chat via "Chat privately").
+        const composeNavKey = (f) => {
+          if (f.statusCapture) return 'statuscapture';
+          if (f.statusCameraOpen) return 'statuscamera';
+          if (f.statusComposerOpen) return 'statuscomposer';
+          if (f.statusViewer) return 'statusviewer';
+          if (f.previewImage) return 'preview';
+          if (f.mediaViewer) return 'media';
+          if (f.statusAddSheet) return 'statusadd';
+          if (f.showClearChatConfirm) return 'clearconfirm';
+          if (f.memberProfile) return 'memberprofile';
+          if (f.showCameraModal) return 'camera';
+          if (f.showGroupFlow) return 'groupflow';
+          if (f.showContactInfo) return f.contactEditOpen ? 'contactinfo-edit' : 'contactinfo';
+          if (f.showGroupInfo) {
+            if (f.groupSettingsOpen) return 'groupinfo-settings';
+            if (f.addMembersOpen) return 'groupinfo-addmembers';
+            return 'groupinfo';
+          }
+          if (f.showNewContactModal) return 'newcontact';
+          if (f.showAddContact) return 'addcontact';
+          if (f.showForwardModal) return 'forward';
+          if (f.selectedChat?.id) return `chat:dm:${f.selectedChat.id}`;
+          if (f.selectedGroup?.id) return `chat:grp:${f.selectedGroup.id}`;
+          if (f.activeTab === 'profile' && f.profileRoute !== 'page') return `profile:${f.profileRoute}`;
+          return `${f.view}:${f.activeTab}`;
+        };
+
+        // Layer order: higher = visually above the layers below (mirrors the
+        // closeTopLive() fallback chain). Used to tell a FORWARD transition
+        // (push a new history entry) from an in-app CLOSE (replace the current
+        // entry so history stays balanced and Back never reopens a closed page).
+        const rankOfNavKey = (k) => {
+          if (!k) return 0;
+          if (k.startsWith('chat:')) return 2;
+          if (k === 'profile:name' || k === 'profile:about') return 1.5;
+          switch (k) {
+            case 'preview': return 17;
+            case 'statusviewer': return 16;
+            case 'statuscamera': return 15;
+            case 'statuscomposer': return 14;
+            case 'statuscapture': return 13;
+            case 'media': return 12;
+            case 'statusadd': return 11;
+            case 'clearconfirm': return 10;
+            case 'memberprofile': return 9;
+            case 'camera': return 8;
+            case 'groupflow': return 7;
+            case 'contactinfo-edit': return 6.5;
+            case 'contactinfo': return 6;
+            case 'groupinfo-settings':
+            case 'groupinfo-addmembers': return 5.5;
+            case 'groupinfo': return 5;
+            case 'newcontact': return 4.5;
+            case 'addcontact': return 4;
+            case 'forward': return 3;
+            default: return 1;
+          }
+        };
+
+        // Apply a saved snapshot (rebuild the previous screen). Runs whatever
+        // cleanup a closing top layer needs, then replays every nav flag and
+        // keeps the tracking refs in sync so the descriptor effect sees the
+        // restored screen as its new baseline and doesn't re-push.
+        const hydrateNav = (saved) => {
+          if (!saved) return;
+          if (cameraOnRef.current && !saved.showCameraModal) {
+            try { stopCameraStream(); } catch (e) { console.warn(e); }
+            videoRef.current = null;
+            setCapturedPhoto(null);
+            setCaption('');
+          }
+          if (statusCameraOnRef.current && !saved.statusCameraOpen) {
+            try { closeStatusCamera(); } catch (e) { console.warn(e); }
+          }
+          if (groupFlowOnRef.current && !saved.showGroupFlow) setSlideClass('');
+          if (forwardOnRef.current && !saved.showForwardModal) {
+            setSelectedForwardChats(new Set());
+            setSelectedForwardGroups(new Set());
+            setForwardSearchQuery('');
+          }
+          setView(saved.view);
+          setActiveTab(saved.activeTab);
+          setProfileRoute(saved.profileRoute || 'page');
+          setSelectedChat(saved.selectedChat || null);
+          selectedChatRef.current = saved.selectedChat || null;
+          setSelectedGroup(saved.selectedGroup || null);
+          selectedGroupRef.current = saved.selectedGroup || null;
+          setMobileChatOpen(!!saved.mobileChatOpen);
+          mobileChatOpenRef.current = !!saved.mobileChatOpen;
+          setMemberProfile(saved.memberProfile || null);
+          setShowContactInfo(!!saved.showContactInfo);
+          setContactEditOpen(!!saved.contactEditOpen);
+          setShowGroupInfo(!!saved.showGroupInfo);
+          setGroupSettingsOpen(!!saved.groupSettingsOpen);
+          setAddMembersOpen(!!saved.addMembersOpen);
+          setShowAddContact(!!saved.showAddContact);
+          setShowNewContactModal(!!saved.showNewContactModal);
+          setShowForwardModal(!!saved.showForwardModal);
+          setShowGroupFlow(!!saved.showGroupFlow);
+          setShowCameraModal(!!saved.showCameraModal);
+          setMediaViewer(saved.mediaViewer || null);
+          setPreviewImage(saved.previewImage || null);
+          setStatusViewer(saved.statusViewer || null);
+          setStatusAddSheet(!!saved.statusAddSheet);
+          setStatusComposerOpen(!!saved.statusComposerOpen);
+          setStatusCameraOpen(!!saved.statusCameraOpen);
+          setStatusCapture(saved.statusCapture || null);
+          setShowClearChatConfirm(!!saved.showClearChatConfirm);
+          chatOnRef.current = !!(saved.selectedChat?.id || saved.selectedGroup?.id);
+          contactInfoOnRef.current = !!saved.showContactInfo;
+          groupInfoOnRef.current = !!saved.showGroupInfo;
+          memberProfileOnRef.current = !!saved.memberProfile;
+          addContactOnRef.current = !!saved.showAddContact;
+          newContactOnRef.current = !!saved.showNewContactModal;
+          forwardOnRef.current = !!saved.showForwardModal;
+          groupFlowOnRef.current = !!saved.showGroupFlow;
+          cameraOnRef.current = !!saved.showCameraModal;
+          mediaOnRef.current = !!saved.mediaViewer;
+          previewOnRef.current = !!saved.previewImage;
+          statusViewerOnRef.current = !!saved.statusViewer;
+          statusAddOnRef.current = !!saved.statusAddSheet;
+          statusComposerOnRef.current = !!saved.statusComposerOpen;
+          statusCameraOnRef.current = !!saved.statusCameraOpen;
+          statusCaptureOnRef.current = !!saved.statusCapture;
+          clearConfirmOnRef.current = !!saved.showClearChatConfirm;
+          prevNavRef.current = { view: saved.view, activeTab: saved.activeTab };
+          lastNavKeyRef.current = composeNavKey(saved);
+          lastNavFlagsRef.current = saved;
+          setShowDropdown(false);
+          setGroupShowDropdown(false);
+        };
+
         const closeScreen = (entry) => {
-          switch (entry.screen) {
-            case 'tab':
-              setView(entry.saved.view);
-              setActiveTab(entry.saved.activeTab);
-              prevNavRef.current = entry.saved;
-              break;
-            case 'chat':
-              setSelectedChat(null);
-              setSelectedGroup(null);
-              selectedGroupRef.current = null;
-              setMobileChatOpen(false);
-              setShowDropdown(false);
-              setGroupShowDropdown(false);
-              chatOnRef.current = false;
-              break;
-            case 'contactinfo':
-              setShowContactInfo(false);
-              setContactEditOpen(false);
-              contactInfoOnRef.current = false;
-              break;
-            case 'groupinfo':
-              setShowGroupInfo(false);
-              groupInfoOnRef.current = false;
-              break;
-            case 'addcontact':
-              setShowAddContact(false);
-              addContactOnRef.current = false;
-              break;
-            case 'forward':
-              setShowForwardModal(false);
-              setSelectedForwardChats(new Set());
-              setSelectedForwardGroups(new Set());
-              setForwardSearchQuery('');
-              forwardOnRef.current = false;
-              break;
-            case 'groupflow':
-              setShowGroupFlow(false);
-              setSlideClass('');
-              groupFlowOnRef.current = false;
-              break;
-            case 'camera':
-              stopCameraStream();
-              videoRef.current = null;
-              setShowCameraModal(false);
-              setCapturedPhoto(null);
-              setCaption('');
-              cameraOnRef.current = false;
-              break;
-            case 'media':
-              setMediaViewer(null);
-              mediaOnRef.current = false;
-              break;
-            case 'preview':
-              setPreviewImage(null);
-              previewOnRef.current = false;
-              break;
-            case 'statusviewer':
-              setStatusViewer(null);
-              statusViewerOnRef.current = false;
-              break;
-            case 'statusadd':
-              setStatusAddSheet(false);
-              statusAddOnRef.current = false;
-              break;
-            case 'statuscomposer':
-              setStatusComposerOpen(false);
-              statusComposerOnRef.current = false;
-              break;
-            case 'statuscamera':
-              closeStatusCamera();
-              statusCameraOnRef.current = false;
-              break;
-            case 'statuscapture':
-              setStatusCapture(null);
-              statusCaptureOnRef.current = false;
-              break;
-            case 'clearconfirm':
-              setShowClearChatConfirm(false);
-              clearConfirmOnRef.current = false;
-              break;
-            case 'newcontact':
-              setShowNewContactModal(false);
-              newContactOnRef.current = false;
-              break;
-            case 'memberprofile':
-              setMemberProfile(null);
-              memberProfileOnRef.current = false;
-              break;
-            default:
-              break;
+          if (entry?.saved) {
+            hydrateNav(entry.saved);
+          } else if (entry) {
+            closeTopLive();
           }
         };
 
@@ -5348,59 +5486,103 @@ setGroupMessages(prev => {
           }
         }, [isMobile]);
 
-        // Bottom-nav page / tab changes
+        // Mobile screen tracking: whenever the on-screen descriptor changes —
+        // a page opens (rank UP), sub-views toggle, or the chat content swaps
+        // while the chat itself stays open (group -> DM via "Chat privately"):
+        //  - FORWARD transitions push a history entry carrying the previous
+        //    render's full nav snapshot, so Back can rebuild that exact screen.
+        //  - In-app CLOSES (rank DOWN, done directly with setState) replace the
+        //    top history entry with the restored key so the stack stays balanced
+        //    and Back never reopens a page the user just closed.
+        // The first run only records the baseline; nothing is pushed on mount.
         useEffect(() => {
-          if (!isMobile) return;
-          if (view !== prevNavRef.current.view || activeTab !== prevNavRef.current.activeTab) {
-            pushPage('tab', prevNavRef.current);
-            prevNavRef.current = { view, activeTab };
-          }
-        }, [view, activeTab, isMobile]);
-
-        // Watch every tracked page opening (false -> true) and push history.
-        // If the page on top of the stack is closing in the same render that a
-        // new page opens (e.g. status action sheet -> camera/composer/capture,
-        // status camera -> photo capture, status viewer -> reply chat), REPLACE
-        // that history entry so the stack records the transition instead of a
-        // stale intermediate page.
-        useEffect(() => {
-          if (!isMobile) return;
-          const pages = [
-            { on: !!(selectedChat?.id || selectedGroup?.id), ref: chatOnRef, key: 'chat' },
-            { on: showContactInfo, ref: contactInfoOnRef, key: 'contactinfo' },
-            { on: showGroupInfo, ref: groupInfoOnRef, key: 'groupinfo' },
-            { on: !!memberProfile, ref: memberProfileOnRef, key: 'memberprofile' },
-            { on: showAddContact, ref: addContactOnRef, key: 'addcontact' },
-            { on: showNewContactModal, ref: newContactOnRef, key: 'newcontact' },
-            { on: showForwardModal, ref: forwardOnRef, key: 'forward' },
-            { on: showGroupFlow, ref: groupFlowOnRef, key: 'groupflow' },
-            { on: showCameraModal, ref: cameraOnRef, key: 'camera' },
-            { on: !!mediaViewer, ref: mediaOnRef, key: 'media' },
-            { on: !!previewImage, ref: previewOnRef, key: 'preview' },
-            { on: !!statusViewer, ref: statusViewerOnRef, key: 'statusviewer' },
-            { on: statusAddSheet, ref: statusAddOnRef, key: 'statusadd' },
-            { on: statusComposerOpen, ref: statusComposerOnRef, key: 'statuscomposer' },
-            { on: statusCameraOpen, ref: statusCameraOnRef, key: 'statuscamera' },
-            { on: !!statusCapture, ref: statusCaptureOnRef, key: 'statuscapture' },
-            { on: showClearChatConfirm, ref: clearConfirmOnRef, key: 'clearconfirm' },
-          ];
-          const closing = [];
-          const opening = [];
-          pages.forEach((p) => {
-            if (p.on && !p.ref.current) opening.push(p.key);
-            if (!p.on && p.ref.current) closing.push(p.key);
-            p.ref.current = !!p.on;
-          });
-          const topEntry = navStackRef.current[navStackRef.current.length - 1];
-          opening.forEach((key) => {
-            if (topEntry && closing.includes(topEntry.screen)) {
-              window.history.replaceState({ appNav: true }, '');
-              navStackRef.current[navStackRef.current.length - 1] = { screen: key };
-            } else {
-              pushPage(key);
+            if (!isMobile) return;
+            const flags = {
+              view,
+              activeTab,
+              profileRoute,
+              selectedChat,
+              selectedGroup,
+              mobileChatOpen,
+              memberProfile,
+              showContactInfo,
+              contactEditOpen,
+              showGroupInfo,
+              groupSettingsOpen,
+              addMembersOpen,
+              showAddContact,
+              showNewContactModal,
+              showForwardModal,
+              showGroupFlow,
+              showCameraModal,
+              mediaViewer,
+              previewImage,
+              statusViewer,
+              statusAddSheet,
+              statusComposerOpen,
+              statusCameraOpen,
+              statusCapture,
+              showClearChatConfirm,
+            };
+            const key = composeNavKey(flags);
+            // Keep the page on/off refs truthful for closeTopLive/hydrate cleanup.
+            chatOnRef.current = !!(selectedChat?.id || selectedGroup?.id);
+            contactInfoOnRef.current = !!showContactInfo;
+            groupInfoOnRef.current = !!showGroupInfo;
+            memberProfileOnRef.current = !!memberProfile;
+            addContactOnRef.current = !!showAddContact;
+            newContactOnRef.current = !!showNewContactModal;
+            forwardOnRef.current = !!showForwardModal;
+            groupFlowOnRef.current = !!showGroupFlow;
+            cameraOnRef.current = !!showCameraModal;
+            mediaOnRef.current = !!mediaViewer;
+            previewOnRef.current = !!previewImage;
+            statusViewerOnRef.current = !!statusViewer;
+            statusAddOnRef.current = !!statusAddSheet;
+            statusComposerOnRef.current = !!statusComposerOpen;
+            statusCameraOnRef.current = !!statusCameraOpen;
+            statusCaptureOnRef.current = !!statusCapture;
+            clearConfirmOnRef.current = !!showClearChatConfirm;
+            if (firstNavRunRef.current) {
+              firstNavRunRef.current = false;
+              lastNavKeyRef.current = key;
+              lastNavFlagsRef.current = flags;
+              return;
             }
-          });
-        }, [isMobile, selectedChat?.id, selectedGroup?.id, showContactInfo, showGroupInfo, memberProfile, showAddContact, showNewContactModal, showForwardModal, showGroupFlow, showCameraModal, mediaViewer, previewImage, statusViewer, statusAddSheet, statusComposerOpen, statusCameraOpen, statusCapture, showClearChatConfirm]);
+            if (key !== lastNavKeyRef.current) {
+              const prevKey = lastNavKeyRef.current;
+              // A chat -> chat swap (same layer, different conversation) is a
+              // forward navigation, as is "Chat privately" from a member profile
+              // that sits ABOVE a chat: both must PUSH so Back can rebuild the
+              // previous overlay chain instead of replacing/stale-pop-ping it.
+              const chatSwap =
+                key.startsWith('chat:') &&
+                (prevKey.startsWith('chat:') ||
+                  prevKey === 'memberprofile' ||
+                  prevKey.startsWith('groupinfo') ||
+                  prevKey.startsWith('contactinfo'));
+              if (chatSwap || rankOfNavKey(key) >= rankOfNavKey(prevKey)) {
+                pushPage(key, lastNavFlagsRef.current);
+              } else {
+                // In-app close (rank DOWN, done with a direct setState): swap
+                // the top entry for the closed page's own snapshot — that's the
+                // state that WAS on screen before the closed page opened, i.e.
+                // exactly what the current screen should look like now — so the
+                // browser history stays balanced and Back never reopens a page
+                // the user just closed.
+                const idx = navStackRef.current.length - 1;
+                if (idx >= 0) {
+                  window.history.replaceState({ appNav: true }, '');
+                  navStackRef.current[idx] = {
+                    screen: key,
+                    saved: navStackRef.current[idx].saved || lastNavFlagsRef.current,
+                  };
+                }
+              }
+              lastNavKeyRef.current = key;
+            }
+            lastNavFlagsRef.current = flags;
+          }, [isMobile, view, activeTab, profileRoute, selectedChat, selectedGroup, mobileChatOpen, memberProfile, showContactInfo, contactEditOpen, showGroupInfo, groupSettingsOpen, addMembersOpen, showAddContact, showNewContactModal, showForwardModal, showGroupFlow, showCameraModal, mediaViewer, previewImage, statusViewer, statusAddSheet, statusComposerOpen, statusCameraOpen, statusCapture, showClearChatConfirm]);
 
         // Handle the system/hardware back button
         useEffect(() => {
@@ -7775,8 +7957,15 @@ Only admins can send messages
         );
       };
 
-      const renderRightPanel = () => {
+const renderRightPanel = () => {
       if (!selectedChat) {
+        if (pendingRestore) {
+          return (
+            <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#8a8f99', fontSize: '0.95rem' }}>
+              Loading…
+            </div>
+          );
+        }
         return emptyState(
           'Select a chat',
           'Choose a conversation from the list to start messaging.',
@@ -9934,9 +10123,15 @@ setContacts(prev => {
   {activeTab === 'chats' ? renderRightPanel() : (
     activeTab === 'groups' ? (
       selectedGroup ? renderGroupChat() : (
-        groupsList.length
-          ? emptyState('Select a group', 'Choose a group from the list to start chatting.', groupEmptyIcon)
-          : emptyState('No groups yet', 'Create a group from the 📝 menu to start chatting.', groupEmptyIcon)
+        pendingRestore ? (
+          <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#8a8f99', fontSize: '0.95rem' }}>
+            Loading…
+          </div>
+        ) : (
+          groupsList.length
+            ? emptyState('Select a group', 'Choose a group from the list to start chatting.', groupEmptyIcon)
+            : emptyState('No groups yet', 'Create a group from the 📝 menu to start chatting.', groupEmptyIcon)
+        )
       )
     ) : activeTab === 'statuses' ? (
       emptyState('Status', 'Share photo, text and video updates with your contacts. Your statuses appear in the list on the left.', statusEmptyIcon)
