@@ -873,6 +873,25 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
     }
   });
 
+  // ✅ Delete a 1:1 chat: remove the person from THIS viewer's own address
+  //    book (persisted server-side, so the chat stays deleted after a reload
+  //    or relogin on any device) and notify every socket of this user so the
+  //    chat disappears on all currently-open devices at once. Only the
+  //    viewer's own book is touched — the other person keeps their copy.
+  socket.on("deleteChat", async ({ to }) => {
+    if (!to) return;
+    try {
+      const me = await User.findById(socket.userId).exec();
+      if (!me) return;
+      me.contacts = (me.contacts || []).filter((id) => String(id) !== String(to));
+      me.contactNames = (me.contactNames || []).filter((n) => n && String(n.user) !== String(to));
+      await me.save();
+      emitToUser(socket.userId, "chatDeleted", { to: String(to) });
+    } catch (err) {
+      console.error("deleteChat error:", err.message);
+    }
+  });
+
   // ✅ Delete a group message
   // data: { groupId, messageId, _id, forEveryone }
   socket.on("deleteGroupMessage", async (data) => {

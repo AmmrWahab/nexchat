@@ -4526,6 +4526,27 @@ setGroupMessages(prev => {
         });
       });
 
+      // ✅ 1:1 chat deleted on ANY of this user's devices: drop the contact
+      //    from the chat list and its cached messages everywhere, and close
+      //    the chat if it's currently open on this device.
+      newSocket.on('chatDeleted', ({ to }) => {
+        const id = String(to || '');
+        if (!id) return;
+        setContacts(prev => prev.filter(c => c && String(c.id) !== id));
+        setMessages(prev => {
+          if (!prev[id]) return prev;
+          const next = { ...prev };
+          delete next[id];
+          safeSetItem('chatMessages', next);
+          return next;
+        });
+        if (selectedChatRef.current && String(selectedChatRef.current.id) === id) {
+          setSelectedChat(null);
+          selectedChatRef.current = null;
+          setMobileChatOpen(false);
+        }
+      });
+
       // ✅ group message deleted-for-everyone
       newSocket.on('groupMessageDeleted', ({ groupId, _id, messageId }) => {
         const gid = String(groupId);
@@ -8535,6 +8556,17 @@ const renderRightPanel = () => {
               style={{ color: 'red' }}
               onClick={() => {
                 if (window.confirm('Delete this chat?')) {
+                  const s = socketRef.current || socket;
+                  if (s && s.connected) {
+                    s.emit('deleteChat', { to: selectedChat.id });
+                  } else {
+                    // Offline fallback: persist the removal server-side so the
+                    // chat stays deleted after a reload/relogin.
+                    fetch(`${API_URL}/api/contacts/${encodeURIComponent(selectedChat.id)}`, {
+                      method: 'DELETE',
+                      headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
+                    }).catch(() => {});
+                  }
                   setContacts((prev) => prev.filter((c) => c.id !== selectedChat.id));
                   setMessages((prev) => {
                     const newMsgs = { ...prev };
