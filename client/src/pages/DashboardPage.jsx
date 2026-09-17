@@ -3820,9 +3820,9 @@ newSocket.on('messagesHistory', ({ chatId, messages }) => {
   const cid = String(chatId);
   if (!Array.isArray(messages)) return;
   setMessages(prev => {
-    const existing = prev[cid] || [];
+    let existing = prev[cid] || [];
     healReplyTo(existing);
-    const fresh = messages.map(m => ({
+    let fresh = messages.map(m => ({
       id: m._id?.toString() || m.messageId || `dm-${m.timestamp}`,
       localId: m.messageId || null,
       text: m.message,
