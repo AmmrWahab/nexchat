@@ -10321,9 +10321,11 @@ const renderRightPanel = () => {
     return;
   }
 
+  const typedName = `${firstName} ${lastName}`.trim();
+  const customName = typedName || '';
   const newContact = {
     id: foundUser._id,
-    name: `${firstName} ${lastName}`.trim() || foundUser.name,
+    name: customName || foundUser.name,
     firstName,
     lastName,
     email: foundUser.email,
@@ -10333,29 +10335,30 @@ const renderRightPanel = () => {
     online: false
   };
 
-  // Inside onClick
-setContacts(prev => {
-  const exists = prev.some(c => c.id === newContact.id);
-  if (exists) return prev;
-
-  // ✅ Initialize empty messages for this contact
-  setMessages(prevMsgs => ({
-    ...prevMsgs,
-    [newContact.id]: []
-  }));
-
-  const updated = [newContact, ...prev];
-  // Persist to this user's server-side address book (per-account)
+  const exists = (contactsRef.current || []).some(c => String(c.id) === String(newContact.id));
+  if (!exists) {
+    setMessages(prevMsgs => ({
+      ...prevMsgs,
+      [newContact.id]: []
+    }));
+    setContacts(prev => {
+      if (prev.some(c => String(c.id) === String(newContact.id))) return prev;
+      return [newContact, ...prev];
+    });
+  }
+  // Persist server-side with the typed custom name so a later rename of the
+  // account keeps resolving to what the viewer saved (empty name = no entry).
   fetch(`${API_URL}/api/contacts`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${localStorage.getItem('token')}`,
     },
-    body: JSON.stringify({ userId: foundUser._id }),
+    body: JSON.stringify({ userId: foundUser._id, name: customName }),
   }).catch(err => console.error('Failed to save contact to server', err));
-  return updated;
-});
+  // Mirror into savedNamesRef so nameOf/pencil resolve it immediately, before
+  // any contacts refetch adopts the server-stored custom name.
+  persistSavedName(foundUser._id, customName);
 
   alert(`Contact added: ${newContact.name}`);
   goBackPage();
@@ -11678,6 +11681,7 @@ setContacts(prev => {
               : [newContact, ...cur];
             contactsRef.current = next;
             setContacts(next);
+            if (customName) persistSavedName(newContact.id, customName);
 
             if (!exists) {
               setMessages(prevMsgs => ({
