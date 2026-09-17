@@ -4703,13 +4703,22 @@ setGroupMessages(prev => {
             setGroupsReady(true);
             return;
           }
-          (async () => {
+          // The loading spinner must stay up until the groups ACTUALLY come
+          // back (a failed/empty response must not end the spinner early while
+          // the contact list is already rendered). Retry a few times on error,
+          // and only mark groups as ready once a valid list — even an empty one —
+          // arrives, or after the retries give up.
+          let cancelled = false;
+          let attempt = 0;
+          const loadGroups = async () => {
+            if (cancelled) return;
             try {
               const res = await fetch(`${API_URL}/api/groups`, {
                 headers: { Authorization: `Bearer ${token}` },
               });
-              const data = await res.json();
-              if (data && Array.isArray(data.groups)) {
+              const data = await res.json().catch(() => null);
+              if (cancelled) return;
+              if (res.ok && data && Array.isArray(data.groups)) {
                 setGroupsList(prev => {
                   const map = new Map();
                   prev.forEach(g => map.set(String(g.id), g));
@@ -4748,12 +4757,24 @@ setGroupMessages(prev => {
                   }));
                   return [...map.values()];
                 });
+                setGroupsReady(true);
+                return;
               }
+              throw new Error(`groups request failed: ${res.status}`);
             } catch (err) {
               console.error('Failed to fetch groups', err);
+              attempt += 1;
+              if (attempt < 4 && !cancelled) {
+                setTimeout(loadGroups, 1500 * attempt);
+              } else {
+                setGroupsReady(true);
+              }
             }
-            setGroupsReady(true);
-          })();
+          };
+          loadGroups();
+          return () => {
+            cancelled = true;
+          };
         }, [user.id, profileRefreshTick, groupEventLabel]);
 
         // ✅ Load/sync this user's private address book from the server
