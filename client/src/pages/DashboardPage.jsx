@@ -4765,7 +4765,7 @@ setGroupMessages(prev => {
           const poll = () => { if (document.visibilityState === 'visible') fetchContacts(); };
           const onFocus = () => fetchContacts();
           const onVis = () => { if (document.visibilityState === 'visible') fetchContacts(); };
-          const id = setInterval(poll, 30000);
+          const id = setInterval(poll, 20000);
           window.addEventListener('focus', onFocus);
           document.addEventListener('visibilitychange', onVis);
           return () => {
@@ -8657,7 +8657,17 @@ const renderRightPanel = () => {
                   fetch(`${API_URL}/api/contacts/${encodeURIComponent(selectedChat.id)}`, {
                     method: 'DELETE',
                     headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
-                  }).catch(() => {});
+                  })
+                    .then((res) => {
+                      if (!res.ok) {
+                        console.warn('Delete chat: server returned', res.status);
+                        return;
+                      }
+                      // Confirm the server list on THIS device immediately so the
+                      // remove is never a purely-local illusion.
+                      fetchContacts();
+                    })
+                    .catch((err) => console.warn('Delete chat failed on server', err));
                   applyChatDeleted(selectedChat.id);
                 }
                 setShowDropdown(false);
