@@ -283,6 +283,17 @@ export default function DashboardPage() {
     groupClearedRef.current = { ...(groupClearedRef.current || {}), [String(gid ?? '')]: ts };
     try { localStorage.setItem(accountScopedKey('groupCleared'), JSON.stringify(groupClearedRef.current)); } catch { /* ignore quota errors */ }
   };
+  // Same "cleared at" persistence for 1:1 DM chats. Without this, a "Clear
+  // chat" only empties the in-memory list, and the next refresh re-fetches the
+  // server history and resurrects the cleared conversation.
+  const dmClearedRef = useRef((() => {
+    try { return JSON.parse(localStorage.getItem(accountScopedKey('dmCleared')) || '{}') || {}; } catch { return {}; }
+  })());
+  const dmClearedAt = (cid) => dmClearedRef.current[String(cid ?? '')] || 0;
+  const persistDmCleared = (cid, ts) => {
+    dmClearedRef.current = { ...(dmClearedRef.current || {}), [String(cid ?? '')]: ts };
+    try { localStorage.setItem(accountScopedKey('dmCleared'), JSON.stringify(dmClearedRef.current)); } catch { /* ignore quota errors */ }
+  };
   const selectedGroupRef = useRef(null);
   const prefetchedGroupHistoryRef = useRef(new Set());
   const prefetchedHistoryRef = useRef(new Set());
@@ -1496,6 +1507,9 @@ export default function DashboardPage() {
       setGroupMessages(prev => ({ ...prev, [String(t.chatId)]: [] }));
     } else {
       socketRef.current?.emit('clearChat', { to: t.chatId, forEveryone: false });
+      // Remember this user's clearing point so a refresh doesn't restore the
+      // older history (the server keeps the messages for the other member).
+      persistDmCleared(t.chatId, Date.now());
       setMessages(prev => {
         const next = { ...prev, [String(t.chatId)]: [] };
         safeSetItem('chatMessages', next);
@@ -3833,6 +3847,14 @@ newSocket.on('messagesHistory', ({ chatId, messages }) => {
       isForwarded: !!m.isForwarded,
     }));
     healReplyTo(fresh);
+    // Respect this user's persisted "Clear chat" point: history older than it
+    // never comes back on a refresh (the server keeps the messages for the
+    // other member, so new ones received after clearing still appear).
+    const dmClearedTs = dmClearedAt(cid);
+    if (dmClearedTs) {
+      if (existing.length) existing = existing.filter(m => (m.timestamp || 0) > dmClearedTs);
+      if (fresh.length) fresh = fresh.filter(m => (m.timestamp || 0) > dmClearedTs);
+    }
     // Merge: server copies (fresh) win over local copies with the same id/localId.
     const seen = new Map();
     existing.forEach(m => seen.set(m.localId || m.id, m));
@@ -3934,6 +3956,10 @@ newSocket.on("receiveMessage", (data) => {
   const chatKey = isOwn ? String(data.to) : senderId;
   const displayName = isOwn ? "You" : data.fromName || "Someone";
   if (!chatKey) return;
+
+  // A live message older than this user's clearing point (persisted "Clear
+  // chat") must not resurrect itself into the cleared conversation.
+  if (dmClearedAt(chatKey) && (data.timestamp || 0) <= dmClearedAt(chatKey)) return;
 
   // If this DM chat is currently open and the user is at the bottom of it,
   // treat the incoming message as read right away (WhatsApp behavior) —
