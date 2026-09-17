@@ -4756,6 +4756,25 @@ setGroupMessages(prev => {
           return () => socket.off('connect', onConnect);
         }, [socket, fetchContacts]);
 
+        // Keep every device of this account agreeing with the server: poll
+        // periodically and on window focus/visibility, so a chat deleted on
+        // another device disappears here even if the realtime event is missed
+        // and the device never reconnects. The reconcile inside fetchContacts
+        // only ever removes ids the server no longer lists, so this is safe.
+        useEffect(() => {
+          const poll = () => { if (document.visibilityState === 'visible') fetchContacts(); };
+          const onFocus = () => fetchContacts();
+          const onVis = () => { if (document.visibilityState === 'visible') fetchContacts(); };
+          const id = setInterval(poll, 30000);
+          window.addEventListener('focus', onFocus);
+          document.addEventListener('visibilitychange', onVis);
+          return () => {
+            clearInterval(id);
+            window.removeEventListener('focus', onFocus);
+            document.removeEventListener('visibilitychange', onVis);
+          };
+        }, [fetchContacts]);
+
         // When the Contact Info panel opens, pull the target user's latest
         // profile (name/photo/about) from the database so the About line is
         // never stale or hardcoded. Refetches when user:profileUpdated arrives
@@ -8629,16 +8648,16 @@ const renderRightPanel = () => {
               onClick={() => {
                 if (window.confirm('Delete this chat?')) {
                   const s = socketRef.current || socket;
-                  if (s && s.connected) {
-                    s.emit('deleteChat', { to: selectedChat.id });
-                  } else {
-                    // Offline fallback: persist the removal server-side so the
-                    // chat stays deleted after a reload/relogin.
-                    fetch(`${API_URL}/api/contacts/${encodeURIComponent(selectedChat.id)}`, {
-                      method: 'DELETE',
-                      headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
-                    }).catch(() => {});
-                  }
+                  // Socket broadcast tells this account's other devices to drop
+                  // the chat instantly (when the handler is deployed).
+                  if (s && s.connected) s.emit('deleteChat', { to: selectedChat.id });
+                  // REST DELETE guarantees the removal is persisted server-side
+                  // even if the socket handler isn't deployed yet; every device
+                  // picks it up through the address-book refetch/reconcile.
+                  fetch(`${API_URL}/api/contacts/${encodeURIComponent(selectedChat.id)}`, {
+                    method: 'DELETE',
+                    headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
+                  }).catch(() => {});
                   applyChatDeleted(selectedChat.id);
                 }
                 setShowDropdown(false);
