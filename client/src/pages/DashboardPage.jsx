@@ -8,6 +8,15 @@ import { io } from 'socket.io-client';
 import { Search, X, CornerUpRight, CornerUpLeft, Phone, Video, Paperclip, Camera, Mic, User, FileText, Trash2, Copy, Forward, Reply, ArrowLeft, ChevronUp, ChevronDown, ChevronRight, Info, MessageCircle, Users, Settings, Menu, SquarePen, Images, Image, PencilLine, Check, MicOff, VideoOff, Volume2, Headset } from "lucide-react";
 import { API_URL } from '../config.js';
 
+// Bump this marker whenever the sync/delete behavior changes so a stale cached
+// bundle is immediately detectable on any device.
+const CLIENT_BUILD = 'sync-v5';
+
+// Prints on every load so it's immediately obvious which client build a device
+// is running (hard-refresh issues / stale bundles are a common cause of
+// "chat deleted on laptop but still visible on my phone").
+console.info(`[nexchat] DashboardPage build ${CLIENT_BUILD} · API ${API_URL}`);
+
 const BLUE_TICK = '#53bdeb';
 
 // Hollow/profile-anonymous avatar shown when a user has BLOCKED you — per
@@ -1586,7 +1595,10 @@ export default function DashboardPage() {
       if (!data || !Array.isArray(data.contacts)) return;
       const serverIds = new Set(data.contacts.map((c) => String(c._id)));
       [...serverContactsSeenRef.current].forEach((id) => {
-        if (!serverIds.has(id)) applyChatDeleted(id);
+        if (!serverIds.has(id)) {
+          console.info('[nexchat] reconcile: contact vanished from server list -> removing', id);
+          applyChatDeleted(id);
+        }
       });
       serverContactsSeenRef.current = serverIds;
       // Reconcile block state from the server (authoritative).
@@ -4646,6 +4658,7 @@ setGroupMessages(prev => {
       //    from the chat list + caches, close it if open, then self-heal with
       //    a refreshed address book (also covers deletions made while offline).
       newSocket.on('chatDeleted', ({ to }) => {
+        console.info('[nexchat] chatDeleted received', to);
         applyChatDeleted(to);
         fetchContacts();
       });
@@ -8648,6 +8661,7 @@ const renderRightPanel = () => {
               onClick={() => {
                 if (window.confirm('Delete this chat?')) {
                   const s = socketRef.current || socket;
+                  console.info('[nexchat] delete dispatched', selectedChat.id);
                   // Socket broadcast tells this account's other devices to drop
                   // the chat instantly (when the handler is deployed).
                   if (s && s.connected) s.emit('deleteChat', { to: selectedChat.id });
@@ -8659,6 +8673,7 @@ const renderRightPanel = () => {
                     headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
                   })
                     .then((res) => {
+                      console.info('[nexchat] delete server responded', res.status);
                       if (!res.ok) {
                         console.warn('Delete chat: server returned', res.status);
                         return;
