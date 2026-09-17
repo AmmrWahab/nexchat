@@ -4699,10 +4699,15 @@ setGroupMessages(prev => {
         // ✅ Fetch my groups from the backend on load
         useEffect(() => {
           const token = localStorage.getItem('token');
-          if (!token || !user.id) {
+          if (!token) {
             setLastGroupsCount(0);
             return;
           }
+          // user.id is set by a separate session effect shortly after first
+          // render. Do NOT mark the groups as empty/loaded while it's missing —
+          // return and let the [user.id] dep re-run this effect for real, so
+          // the buffering spinner stays up until the list actually arrives.
+          if (!user.id) return;
           // The loading spinner must stay up until the groups ACTUALLY come
           // back (a failed/empty response must not end the spinner early while
           // the contact list is already rendered). Retry a few times on error,
