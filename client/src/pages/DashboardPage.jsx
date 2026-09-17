@@ -721,6 +721,11 @@ export default function DashboardPage() {
   const onlineUsersRef = useRef(new Set());
   const lastStatusUpdate = useRef({});
   const [showClearChatConfirm, setShowClearChatConfirm] = useState(false);
+  // Prompt shown when "Chat privately" opens a DM for a group member who is
+  // NOT saved as a contact: warns the chat would disappear after reload and
+  // offers to open the existing Add Contact form (email pre-filled).
+  const [showUnsavedContactPrompt, setShowUnsavedContactPrompt] = useState(false);
+  const [pendingPrivateContact, setPendingPrivateContact] = useState(null);
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [selectedMessages, setSelectedMessages] = useState(new Set());
   const [mobileSearch, setMobileSearch] = useState(false);
@@ -5375,6 +5380,7 @@ setGroupMessages(prev => {
         const statusCameraOnRef = useRef(false);
         const statusCaptureOnRef = useRef(false);
         const clearConfirmOnRef = useRef(false);
+        const unsavedPromptOnRef = useRef(false);
         const newContactOnRef = useRef(false);
         const memberProfileOnRef = useRef(false);
 
@@ -5443,6 +5449,9 @@ setGroupMessages(prev => {
           } else if (showForwardModal) {
             setShowForwardModal(false);
             forwardOnRef.current = false;
+          } else if (showUnsavedContactPrompt) {
+            setShowUnsavedContactPrompt(false);
+            unsavedPromptOnRef.current = false;
           } else if (selectedChat?.id || selectedGroup?.id) {
             setSelectedChat(null);
             setSelectedGroup(null);
@@ -5493,6 +5502,7 @@ setGroupMessages(prev => {
           }
           if (f.showNewContactModal) return 'newcontact';
           if (f.showAddContact) return 'addcontact';
+          if (f.showUnsavedContactPrompt) return 'unsavedprompt';
           if (f.showForwardModal) return 'forward';
           if (f.selectedChat?.id) return `chat:dm:${f.selectedChat.id}`;
           if (f.selectedGroup?.id) return `chat:grp:${f.selectedGroup.id}`;
@@ -5527,6 +5537,7 @@ setGroupMessages(prev => {
             case 'groupinfo': return 5;
             case 'newcontact': return 4.5;
             case 'addcontact': return 4;
+            case 'unsavedprompt': return 2.5;
             case 'forward': return 3;
             default: return 1;
           }
@@ -5581,6 +5592,8 @@ setGroupMessages(prev => {
           setStatusCameraOpen(!!saved.statusCameraOpen);
           setStatusCapture(saved.statusCapture || null);
           setShowClearChatConfirm(!!saved.showClearChatConfirm);
+          setShowUnsavedContactPrompt(!!saved.showUnsavedContactPrompt);
+          setPendingPrivateContact(saved.pendingPrivateContact || null);
           chatOnRef.current = !!(saved.selectedChat?.id || saved.selectedGroup?.id);
           contactInfoOnRef.current = !!saved.showContactInfo;
           groupInfoOnRef.current = !!saved.showGroupInfo;
@@ -5598,6 +5611,7 @@ setGroupMessages(prev => {
           statusCameraOnRef.current = !!saved.statusCameraOpen;
           statusCaptureOnRef.current = !!saved.statusCapture;
           clearConfirmOnRef.current = !!saved.showClearChatConfirm;
+          unsavedPromptOnRef.current = !!saved.showUnsavedContactPrompt;
           prevNavRef.current = { view: saved.view, activeTab: saved.activeTab };
           lastNavKeyRef.current = composeNavKey(saved);
           lastNavFlagsRef.current = saved;
@@ -5669,6 +5683,8 @@ setGroupMessages(prev => {
               statusCameraOpen,
               statusCapture,
               showClearChatConfirm,
+              showUnsavedContactPrompt,
+              pendingPrivateContact,
             };
             const key = composeNavKey(flags);
             // Keep the page on/off refs truthful for closeTopLive/hydrate cleanup.
@@ -5689,6 +5705,7 @@ setGroupMessages(prev => {
             statusCameraOnRef.current = !!statusCameraOpen;
             statusCaptureOnRef.current = !!statusCapture;
             clearConfirmOnRef.current = !!showClearChatConfirm;
+            unsavedPromptOnRef.current = !!showUnsavedContactPrompt;
             if (firstNavRunRef.current) {
               firstNavRunRef.current = false;
               lastNavKeyRef.current = key;
@@ -5728,7 +5745,7 @@ setGroupMessages(prev => {
               lastNavKeyRef.current = key;
             }
             lastNavFlagsRef.current = flags;
-          }, [isMobile, view, activeTab, profileRoute, selectedChat, selectedGroup, mobileChatOpen, memberProfile, showContactInfo, contactEditOpen, showGroupInfo, groupSettingsOpen, addMembersOpen, showAddContact, showNewContactModal, showForwardModal, showGroupFlow, showCameraModal, mediaViewer, previewImage, statusViewer, statusAddSheet, statusComposerOpen, statusCameraOpen, statusCapture, showClearChatConfirm]);
+          }, [isMobile, view, activeTab, profileRoute, selectedChat, selectedGroup, mobileChatOpen, memberProfile, showContactInfo, contactEditOpen, showGroupInfo, groupSettingsOpen, addMembersOpen, showAddContact, showNewContactModal, showForwardModal, showGroupFlow, showCameraModal, mediaViewer, previewImage, statusViewer, statusAddSheet, statusComposerOpen, statusCameraOpen, statusCapture, showClearChatConfirm, showUnsavedContactPrompt, pendingPrivateContact]);
 
         // Handle the system/hardware back button
         useEffect(() => {
@@ -5932,9 +5949,13 @@ setGroupMessages(prev => {
         selectedGroupRef.current = null;
       };
 
-      // "Chat privately" from a member profile: opens a DM with that member
-      // (upserted into the user's local chat list without touching their
-      // server address book).
+      // "Chat privately" from a member profile: opens a DM with that member.
+      // When the member is NOT a saved contact the DM is opened but NOT folded
+      // into the contact list yet — a prompt warns it will disappear after a
+      // reload and offers to open the existing Add Contact flow. Declining
+      // (Cancel) folds the local entry in (existing unsaved-contact behavior);
+      // accepting adds the person through the normal Add Contact form (which
+      // owns dedupe + persistence + custom-name priority).
       const chatPrivatelyWithMember = () => {
         if (!memberProfile) return;
         const mid = String(memberProfile.id);
@@ -5947,11 +5968,18 @@ setGroupMessages(prev => {
           email: memberProfile.email || '',
         };
         const exists = (contactsRef.current || []).some(c => c && String(c.id) === mid);
-        const nextContacts = exists
-          ? (contactsRef.current || []).map(c => String(c.id) === mid ? { ...c, ...entry } : c)
-          : [entry, ...(contactsRef.current || [])];
-        contactsRef.current = nextContacts;
-        setContacts(nextContacts);
+        if (exists) {
+          // Already saved: merge any fresh profile data, no prompt.
+          const nextContacts = (contactsRef.current || []).map(c => String(c.id) === mid ? { ...c, ...entry } : c);
+          contactsRef.current = nextContacts;
+          setContacts(nextContacts);
+          setShowUnsavedContactPrompt(false);
+          setPendingPrivateContact(null);
+        } else {
+          // Not saved: open the chat, then ask whether to add the contact.
+          setPendingPrivateContact(entry);
+          setShowUnsavedContactPrompt(true);
+        }
         setMemberProfile(null);
         setShowGroupInfo(false);
         setGroupSettingsOpen(false);
@@ -5962,6 +5990,41 @@ setGroupMessages(prev => {
         selectedGroupRef.current = null;
         setMobileChatOpen(true);
         setActiveTab('chats');
+      };
+
+      // Prompt -> Cancel: keep the private chat open WITHOUT saving the person.
+      // The member is folded into the local list like any unsaved random chat,
+      // so it survives this session but disappears after a reload.
+      const cancelUnsavedPrivatePrompt = () => {
+        const target = pendingPrivateContact;
+        setShowUnsavedContactPrompt(false);
+        if (target) {
+          const cur = contactsRef.current || [];
+          if (!cur.some(c => String(c.id) === String(target.id))) {
+            const next = [target, ...cur];
+            contactsRef.current = next;
+            setContacts(next);
+          }
+        }
+      };
+
+      // Prompt -> Add Contact: reuse the EXISTING Add Contact UI (desktop
+      // modal / mobile drawer). The person's email is pre-filled so the email
+      // lookup resolves automatically and the user only types the name. The
+      // prompt is dismissed first, then the modal opens a moment later, so the
+      // modal's Back snapshot rebuilds the chat (never this prompt again).
+      const addContactFromUnsavedPrompt = () => {
+        const target = pendingPrivateContact;
+        setShowUnsavedContactPrompt(false);
+        if (!target) return;
+        setTimeout(() => {
+          const parts = String(target.name || '').split(' ').filter(Boolean);
+          setEmail(String(target.email || '').trim());
+          setFirstName(parts[0] || '');
+          setLastName(parts.slice(1).join(' '));
+          if (isMobile) setShowAddContact(true);
+          else setShowNewContactModal(true);
+        }, 150);
       };
 
       const createGroup = () => {
@@ -10726,6 +10789,7 @@ setContacts(prev => {
             nameOf(memberId, m?.name) ||
             'Someone';
           const memberPhoto = m?.photo || 'https://via.placeholder.com/40';
+          const memberEmail = m?.email || '';
           const gAdmin = String(selectedGroup?.admin || '');
           const gAdmins = Array.isArray(selectedGroup?.admins) ? selectedGroup.admins.map(String) : [];
           const isCreator = gAdmin === memberId;
@@ -10763,7 +10827,7 @@ setContacts(prev => {
                 }
                 // The viewer's own row is not openable (no profile/menu).
                 if (isSelf) return;
-                setMemberProfile({ id: memberId, name: memberName, photo: memberPhoto, isAdmin });
+                setMemberProfile({ id: memberId, name: memberName, photo: memberPhoto, isAdmin, email: memberEmail });
               }}
               onPointerDown={() => {
                 if (isMobile && canManage) {
@@ -11137,7 +11201,43 @@ setContacts(prev => {
   </div>
 )}
 
-{/* Clear Chat Confirmation Modal */}
+{/* Unsaved private-chat prompt: shown after "Chat privately" opened a DM
+          with a group member who is NOT a saved contact. */}
+      {showUnsavedContactPrompt && (
+        <div
+          style={{
+            position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh',
+            background: 'rgba(0, 0, 0, 0.5)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 20000,
+          }}
+          onClick={cancelUnsavedPrivatePrompt}
+        >
+          <div
+            style={{ background: 'white', padding: '24px', borderRadius: '12px', width: '90%', maxWidth: '400px', boxShadow: '0 4px 20px rgba(0,0,0,0.2)' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 style={{ marginBottom: '12px', color: '#333' }}>Add Contact</h3>
+            <p style={{ color: '#555', lineHeight: '1.5' }}>
+              Please add this contact otherwise it will disappear after reload.
+            </p>
+            <div style={{ display: 'flex', gap: '12px', marginTop: '24px', justifyContent: 'flex-end' }}>
+              <button
+                onClick={cancelUnsavedPrivatePrompt}
+                style={{ padding: '10px 16px', background: '#eef1f4', color: '#333', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 600 }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={addContactFromUnsavedPrompt}
+                style={{ padding: '10px 16px', background: '#075e54', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 600 }}
+              >
+                Add Contact
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Clear Chat Confirmation Modal */}
 {showClearChatConfirm && (
   <div
     style={{

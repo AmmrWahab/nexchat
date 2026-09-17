@@ -65,8 +65,8 @@ router.get('/groups', auth, async (req, res) => {
     const groups = await Group.find({
       $or: [{ members: req.userId }, { 'removedMembers.user': req.userId }],
     })
-      .populate('admin', 'name photo about')
-      .populate('members', 'name photo about')
+.populate('admin', 'name photo about')
+      .populate('members', 'name photo about email')
       .sort({ createdAt: -1 });
 
     // Attach the last message + time of each group so the list preview
