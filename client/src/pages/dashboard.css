@@ -167,6 +167,33 @@
   flex: 1;
 }
 
+/* Buffering animation while the chat/group list loads (refresh). Fills the
+   left panel on desktop / the screen center on mobile and spins until the
+   first contacts + groups fetch resolves. */
+.chat-list-loading {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  min-height: 160px;
+}
+
+.chat-list-spinner {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 3px solid rgba(18, 140, 126, 0.2);
+  border-top-color: #128c7e;
+  animation: chat-list-spin 0.9s linear infinite;
+}
+
+@keyframes chat-list-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .chat-item {
   padding: 12px;
   display: flex;

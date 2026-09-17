@@ -246,6 +246,7 @@ export default function DashboardPage() {
   const [showCallsMenu, setShowCallsMenu] = useState(false);
   const [showAddContact, setShowAddContact] = useState(false);
   const [dataReady, setDataReady] = useState(false);
+  const [groupsReady, setGroupsReady] = useState(false);
   const [showNewChatDropdown, setShowNewChatDropdown] = useState(false);
   const [showNewContactModal, setShowNewContactModal] = useState(false);
   // ✅ Group creation flow state
@@ -4698,7 +4699,10 @@ setGroupMessages(prev => {
         // ✅ Fetch my groups from the backend on load
         useEffect(() => {
           const token = localStorage.getItem('token');
-          if (!token || !user.id) return;
+          if (!token || !user.id) {
+            setGroupsReady(true);
+            return;
+          }
           (async () => {
             try {
               const res = await fetch(`${API_URL}/api/groups`, {
@@ -4748,6 +4752,7 @@ setGroupMessages(prev => {
             } catch (err) {
               console.error('Failed to fetch groups', err);
             }
+            setGroupsReady(true);
           })();
         }, [user.id, profileRefreshTick, groupEventLabel]);
 
@@ -6353,6 +6358,19 @@ setGroupMessages(prev => {
         }
         if (activeTab === 'profile') {
           return renderProfileArea();
+        }
+
+        // Buffering animation while the chat/group list finishes its first
+        // load (refresh). It only shows during that fetch — once loading is
+        // done, an account with zero contacts/groups shows its normal empty
+        // state with no animation. Flex-centered: the whole screen on mobile,
+        // the left list panel on desktop.
+        if (!dataReady || !groupsReady) {
+          return (
+            <div className="chat-list-loading" role="status" aria-label="Loading chats">
+              <div className="chat-list-spinner" />
+            </div>
+          );
         }
 
    
