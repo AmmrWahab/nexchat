@@ -246,7 +246,7 @@ export default function DashboardPage() {
   const [showCallsMenu, setShowCallsMenu] = useState(false);
   const [showAddContact, setShowAddContact] = useState(false);
   const [dataReady, setDataReady] = useState(false);
-  const [groupsReady, setGroupsReady] = useState(false);
+  const [lastGroupsCount, setLastGroupsCount] = useState(null);
   const [showNewChatDropdown, setShowNewChatDropdown] = useState(false);
   const [showNewContactModal, setShowNewContactModal] = useState(false);
   // ✅ Group creation flow state
@@ -4700,7 +4700,7 @@ setGroupMessages(prev => {
         useEffect(() => {
           const token = localStorage.getItem('token');
           if (!token || !user.id) {
-            setGroupsReady(true);
+            setLastGroupsCount(0);
             return;
           }
           // The loading spinner must stay up until the groups ACTUALLY come
@@ -4719,6 +4719,8 @@ setGroupMessages(prev => {
               const data = await res.json().catch(() => null);
               if (cancelled) return;
               if (res.ok && data && Array.isArray(data.groups)) {
+                console.info('[nexchat] groups loaded', data.groups.length, `(attempt ${attempt + 1}, status ${res.status})`);
+                setLastGroupsCount(data.groups.length);
                 setGroupsList(prev => {
                   const map = new Map();
                   prev.forEach(g => map.set(String(g.id), g));
@@ -4757,7 +4759,7 @@ setGroupMessages(prev => {
                   }));
                   return [...map.values()];
                 });
-                setGroupsReady(true);
+                setLastGroupsCount(data.groups.length);
                 return;
               }
               throw new Error(`groups request failed: ${res.status}`);
@@ -4767,7 +4769,7 @@ setGroupMessages(prev => {
               if (attempt < 4 && !cancelled) {
                 setTimeout(loadGroups, 1500 * attempt);
               } else {
-                setGroupsReady(true);
+                setLastGroupsCount(0);
               }
             }
           };
@@ -6382,11 +6384,17 @@ setGroupMessages(prev => {
         }
 
         // Buffering animation while the chat/group list finishes its first
-        // load (refresh). It only shows during that fetch — once loading is
-        // done, an account with zero contacts/groups shows its normal empty
-        // state with no animation. Flex-centered: the whole screen on mobile,
-        // the left list panel on desktop.
-        if (!dataReady || !groupsReady) {
+        // load (refresh): shows until (a) the address book arrived, (b) the
+        // groups fetch confirmed a result, and (c) if the account HAS groups,
+        // until those rows are actually rendered. An account with zero
+        // contacts/groups shows its normal empty state, no animation.
+        // Flex-centered: the whole screen on mobile, the left list panel on
+        // desktop.
+        const listLoading =
+          !dataReady ||
+          lastGroupsCount === null ||
+          (lastGroupsCount > 0 && groupsList.length === 0);
+        if (listLoading) {
           return (
             <div className="chat-list-loading" role="status" aria-label="Loading chats">
               <div className="chat-list-spinner" />
