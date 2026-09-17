@@ -7159,7 +7159,10 @@ onClick={() => {
                   </div>
                 )}
                 {(() => {
-                  const grpCalls = (calls || []).filter(c => String(c.groupId) === String(selectedGroup.id));
+                  const grpCalls = (calls || []).filter(c =>
+                    String(c.groupId) === String(selectedGroup.id) &&
+                    (Number(c.time) || Number(c.timestamp) || 0) > groupClearedAt(selectedGroup?.id)
+                  );
                   const grpEntries = [
                     ...groupMsgs.map(m => ({ kind: 'msg', msg: m, t: Number(m.timestamp) || 0 })),
                     ...grpCalls.map(c => ({ kind: 'call', call: c, t: Number(c.time) || Number(c.timestamp) || 0 })),
@@ -8330,6 +8333,7 @@ Only admins can send messages
             <button
               className="dropdown-item"
               onClick={() => {
+                setClearTarget({ chatType: 'dm', chatId: selectedChat?.id, name: nameOf(selectedChat?.id, selectedChat?.name) });
                 setShowClearChatConfirm(true);
                 setShowDropdown(false);
               }}
@@ -8427,7 +8431,10 @@ Only admins can send messages
     {/* Messages */}
     <div className="messages" ref={messagesScrollRef} onScroll={handleChatScroll}>
       {(() => {
-        const dmCalls = (calls || []).filter(c => String(c.userId) === String(selectedChat.id));
+        const dmCalls = (calls || []).filter(c =>
+          String(c.userId) === String(selectedChat.id) &&
+          (Number(c.time) || Number(c.timestamp) || 0) > dmClearedAt(selectedChat?.id)
+        );
         const dmEntries = [
           ...chatMessages.map(m => ({ kind: 'msg', msg: m, t: Number(m.timestamp) || 0 })),
           ...dmCalls.map(c => ({ kind: 'call', call: c, t: Number(c.time) || Number(c.timestamp) || 0 })),
@@ -9396,9 +9403,9 @@ Only admins can send messages
       cursor: 'pointer',
     }}
     onClick={() => {
-      if (window.confirm(`Clear chat with ${nameOf(selectedChat?.id, selectedChat?.name)}?`)) {
-        setMessages((prev) => ({ ...prev, [selectedChat.id]: [] }));
-      }
+      setClearTarget({ chatType: 'dm', chatId: selectedChat?.id, name: nameOf(selectedChat?.id, selectedChat?.name) });
+      setShowClearChatConfirm(true);
+      setShowContactInfo(false);
     }}
   >
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -10458,8 +10465,9 @@ setContacts(prev => {
           onClick={() => {
             if (selectedGroup) {
               const gid = String(selectedGroup.id || selectedGroup._id);
-              setClearTarget({ chatType: 'group', chatId: gid, name: selectedGroup.name });
+              setClearTarget({ chatType: 'group', chatId: gid, name: selectedGroup?.name });
               setShowClearChatConfirm(true);
+              setShowGroupInfo(false);
             }
           }}
         >
