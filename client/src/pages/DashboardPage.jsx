@@ -10693,11 +10693,11 @@ const renderRightPanel = () => {
                     </svg>
                   </span>
                   {contact.photo ? (
-                    <img className="add-members-avatar" src={contact.photo} alt={contactName} onError={(e) => { e.target.onerror = null; e.target.src = skeletonAvatar(); }} />
+                    <img className="add-members-avatar" src={contact.photo} alt={contactName} onError={(e) => { e.target.onerror = null; e.target.src = skeletonAvatar(); }} style={{ width: 40, height: 40, minWidth: 40, minHeight: 40, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
                   ) : (
-                    <img className="add-members-avatar" src={skeletonAvatar()} alt={contactName} />
+                    <img className="add-members-avatar" src={skeletonAvatar()} alt={contactName} style={{ width: 40, height: 40, minWidth: 40, minHeight: 40, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
                   )}
-                  <span className="group-contact-name" style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{contactName}</span>
+                  <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{contactName}</span>
                 </div>
               );
             })}
