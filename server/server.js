@@ -1484,6 +1484,39 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
       const leaverId = String(socket.userId);
       if (!group.members.map(String).includes(leaverId)) return; // already out
 
+      // --- Admin guard: never allow a group to lose its last admin ----------
+      const adminsList = (group.admins || []).map(String);
+      const isSuperAdmin = String(group.admin) === leaverId;
+      const isPromotedAdmin = adminsList.includes(leaverId);
+      const isLeaverAdmin = isSuperAdmin || isPromotedAdmin;
+
+      if (isLeaverAdmin) {
+        // Count admins that would remain after the leaver is removed.
+        const remainingAdmins = isSuperAdmin
+          ? adminsList.length           // promoted admins that stay
+          : adminsList.length - 1;      // minus the leaving promoted admin
+        // The super admin (group.admin) is always counted as one admin;
+        // if the leaver is NOT the super admin, the super admin stays.
+        const totalRemainingAdmins = remainingAdmins + (isSuperAdmin ? 0 : 1);
+
+        if (totalRemainingAdmins === 0) {
+          // Sole admin trying to leave — reject so the UI can show the info popup.
+          return emitToUser(leaverId, 'groupLeaveRejected', {
+            groupId,
+            reason: 'soleAdmin',
+          });
+        }
+
+        // Super admin leaving while other admins exist → promote the earliest
+        // promoted admin (first in the admins array = earliest promotion order)
+        // to the new super admin.
+        if (isSuperAdmin && adminsList.length > 0) {
+          const successorId = adminsList[0];
+          group.admin = successorId;
+          group.admins = adminsList.filter((id) => id !== successorId);
+        }
+      }
+
       group.members = group.members.filter((id) => String(id) !== leaverId);
       group.admins = (group.admins || []).filter((id) => String(id) !== leaverId);
       group.removedMembers = group.removedMembers || [];

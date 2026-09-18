@@ -286,6 +286,9 @@ export default function DashboardPage() {
   // { kind: 'dm'|'group', id, name }. Replaces the old window.confirm so the
   // destructive step gets a proper Confirm/Cancel popup on every screen size.
   const [deleteConfirm, setDeleteConfirm] = useState(null);
+  // Sole-admin info popup: shown when the only admin tries to leave.
+  // null or { name }.
+  const [soleAdminWarning, setSoleAdminWarning] = useState(null);
   // Per-user "cleared at" timestamps for group chats, persisted in localStorage
   // so a "Clear chat" survives a refresh. Messages older than the stamp stay
   // hidden; anything received after clearing shows normally.
@@ -4498,6 +4501,16 @@ newSocket.on("receiveMessage", (data) => {
         closeMemberMenu();
       });
 
+      // Server rejected a leave attempt (sole admin). Show the info popup so
+      // the user knows why they can't leave.
+      newSocket.on('groupLeaveRejected', (data) => {
+        if (data?.reason === 'soleAdmin') {
+          const gid = String(data.groupId || '');
+          const g = groupsListRef.current?.find((x) => String(x.id) === gid);
+          setSoleAdminWarning({ name: g?.name || 'this group' });
+        }
+      });
+
       // Group permissions/photo changed by an admin (every member receives the
       // updated snapshot + a "changed the group info" history entry).
       newSocket.on('groupInfoUpdated', (data) => {
@@ -5519,6 +5532,8 @@ setGroupMessages(prev => {
           } else if (showClearChatConfirm) {
             setShowClearChatConfirm(false);
             clearConfirmOnRef.current = false;
+          } else if (soleAdminWarning) {
+            setSoleAdminWarning(null);
           } else if (memberProfile) {
             setMemberProfile(null);
             memberProfileOnRef.current = false;
@@ -11043,6 +11058,24 @@ const renderRightPanel = () => {
           onClick={() => {
             if (selectedGroup) {
               const gid = String(selectedGroup.id || selectedGroup._id);
+              // Sole-admin guard: if this user is the only admin, block the
+              // leave and show an info popup instead. Mirror the server-side
+              // check so the UI stays consistent.
+              const viewerId = String(user.id);
+              const gAdmin = String(selectedGroup.admin || '');
+              const gAdmins = Array.isArray(selectedGroup.admins) ? selectedGroup.admins.map(String) : [];
+              const isViewerSuperAdmin = gAdmin === viewerId;
+              const isViewerPromotedAdmin = gAdmins.includes(viewerId);
+              if (isViewerSuperAdmin || isViewerPromotedAdmin) {
+                // Count admins that would remain after the viewer leaves.
+                const remaining = isViewerSuperAdmin
+                  ? gAdmins.length
+                  : gAdmins.length - 1 + 1; // minus self, plus super admin stays
+                if (remaining === 0) {
+                  setSoleAdminWarning({ name: selectedGroup.name });
+                  return;
+                }
+              }
               setConfirmLeave({ groupId: gid, name: selectedGroup.name });
             }
           }}
@@ -11400,6 +11433,35 @@ const renderRightPanel = () => {
           style={{ padding: '10px 16px', background: '#e02f5b', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 600 }}
         >
           Leave
+        </button>
+      </div>
+    </div>
+  </div>
+)}
+
+{/* Sole-admin info popup: shown when the only admin tries to leave. */}
+{soleAdminWarning && (
+  <div
+    style={{
+      position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh',
+      background: 'rgba(0, 0, 0, 0.5)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 20015,
+    }}
+    onClick={() => setSoleAdminWarning(null)}
+  >
+    <div
+      style={{ background: 'white', padding: '24px', borderRadius: '12px', width: '90%', maxWidth: '400px', boxShadow: '0 4px 20px rgba(0,0,0,0.2)' }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <h3 style={{ marginBottom: '12px', color: '#333' }}>Cannot leave group</h3>
+      <p style={{ color: '#555', lineHeight: '1.5' }}>
+        You are currently the only admin of <strong>{soleAdminWarning.name || 'this group'}</strong>. Please assign another member as an admin before leaving the group.
+      </p>
+      <div style={{ display: 'flex', gap: '12px', marginTop: '24px', justifyContent: 'flex-end' }}>
+        <button
+          onClick={() => setSoleAdminWarning(null)}
+          style={{ padding: '10px 16px', background: '#075e54', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 600 }}
+        >
+          OK
         </button>
       </div>
     </div>
