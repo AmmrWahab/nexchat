@@ -21,12 +21,29 @@ const BLUE_TICK = '#53bdeb';
 
 // Hollow/profile-anonymous avatar shown when a user has BLOCKED you — per
 // privacy rules they get the default silhouette instead of the real photo.
-const HOLLOW_AVATAR = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(
-  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">' +
-  '  <circle cx="50" cy="38" r="24" fill="#cfd4d8"/>' +
-  '  <path d="M22 90a28 28 0 0 1 56 0z" fill="#cfd4d8"/>' +
-  '</svg>'
-);
+const HOLLOW_AVATAR = skeletonAvatar();
+
+// Skeleton avatar: a clean gray circle with a white person silhouette and
+// transparent "donut" hole. Used everywhere a profile picture is missing or
+// hasn't loaded yet.
+function skeletonAvatar() {
+  return (
+    'data:image/svg+xml;charset=utf-8,' +
+    encodeURIComponent(
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">' +
+      '<circle cx="50" cy="50" r="50" fill="#dfe4ea"/>' +
+      '<circle cx="50" cy="38" r="16" fill="#fff"/>' +
+      '<path d="M26 82c0-13.255 10.745-24 24-24s24 10.745 24 24" fill="#fff"/>' +
+      '</svg>'
+    )
+  );
+}
+
+// Avatar helper: returns the real photo if available, otherwise the skeleton.
+function avatarSrc(photo, size) {
+  if (photo && !photo.includes('placeholder')) return photo;
+  return skeletonAvatar(size);
+}
 
 // WhatsApp-style delivery ticks: single grey = sent, double tick = delivered, blue = read.
 function WhatsAppTicks({ read, delivered }) {
@@ -369,7 +386,7 @@ export default function DashboardPage() {
   // silhouette instead of their real profile photo (WhatsApp-style).
   const avatarFor = (id, photo, fallback) => {
     if (blockedMeSet.has(String(id ?? ''))) return HOLLOW_AVATAR;
-    return photo || fallback || 'https://via.placeholder.com/50';
+    return photo || fallback || skeletonAvatar();
   };
   // True when the email-lookup user is already in the private address book
   // (matched by user id or by email), so adding them is blocked as a duplicate.
@@ -458,7 +475,7 @@ export default function DashboardPage() {
         firstName: clean || '',
         lastName: '',
         email: selectedChat?.email || '',
-        photo: selectedChat?.photo || 'https://via.placeholder.com/50',
+        photo: avatarSrc(selectedChat?.photo, 50),
         blockedByMe: (cur.find((c) => c && String(c.id) === id))?.blockedByMe || false,
       };
       const next = cur.some((c) => c && String(c.id) === id)
@@ -1066,7 +1083,7 @@ export default function DashboardPage() {
   // then the first (newest) posted status image once the user has statuses.
   const myStatusPhoto = myStatuses[0]?.file ||
     user.photo ||
-    `https://via.placeholder.com/50/25D366/fff?text=${encodeURIComponent((user.name || '?')[0])}`;
+    skeletonAvatar();
 
   const postStatus = (type, text, bg, file) => {
     if (!socket || !socket.connected) {
@@ -1724,7 +1741,7 @@ export default function DashboardPage() {
             firstName: c.firstName || '',
             lastName: c.lastName || '',
             email: c.email,
-            photo: c.photo || 'https://via.placeholder.com/50',
+            photo: avatarSrc(c.photo, 50),
             lastMsg: '',
             time: '',
             online: false,
@@ -3091,7 +3108,7 @@ const startCall = async (type, chat) => {
     return;
   }
   const callId = `call-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-  const peer = chat.photo && !chat.photo.includes('placeholder') ? chat.photo : 'https://via.placeholder.com/50';
+  const peer = avatarSrc(chat.photo, 50);
   callPeerIdRef.current = String(chat.id);
   callIdRef.current = callId;
   // Start media + peer connection immediately (like WhatsApp).
@@ -3164,7 +3181,7 @@ const startGroupCall = async (type, group) => {
     groupId: group.id,
     peerId: null,
     peerName: group.name,
-    peerPhoto: group.dp || 'https://via.placeholder.com/50',
+    peerPhoto: avatarSrc(group.dp, 50),
     callerId: user.id,
   });
   // Nobody joined within 30s -> cancel the ring (logs a missed group call).
@@ -3426,7 +3443,7 @@ useEffect(() => {
       callId: data.callId,
       peerId: String(data.from),
       peerName: data.fromName,
-      peerPhoto: data.fromPhoto || 'https://via.placeholder.com/50',
+      peerPhoto: avatarSrc(data.fromPhoto, 50),
     });
   };
 
@@ -3537,7 +3554,7 @@ useEffect(() => {
       callerId: String(data.from),
       peerId: null,
       peerName: data.groupName || 'Group call',
-      peerPhoto: data.fromPhoto || 'https://via.placeholder.com/50',
+      peerPhoto: avatarSrc(data.fromPhoto, 50),
     });
   };
 
@@ -5414,7 +5431,7 @@ setGroupMessages(prev => {
                         id: String(data.user.id),
                         name: data.user.name || 'You',
                         email: data.user.email || '',
-                        photo: data.user.photo || 'https://via.placeholder.com/50',
+                        photo: avatarSrc(data.user.photo, 50),
                         about: data.user.about || '',
                         blockedUsers: data.user.blockedUsers || [],
                       });
@@ -6074,7 +6091,7 @@ setGroupMessages(prev => {
         const entry = {
           id: mid,
           name: nameOf(mid, memberProfile.name || 'Someone'),
-          photo: memberProfile.photo || 'https://via.placeholder.com/50',
+          photo: avatarSrc(memberProfile.photo, 50),
           firstName: String(memberProfile.name || '').split(' ')[0] || '',
           lastName: '',
           email: memberProfile.email || '',
@@ -6448,7 +6465,7 @@ setGroupMessages(prev => {
       };
 
       // ==================== Profile page state + actions ====================
-      const profileDefaultPhoto = 'https://via.placeholder.com/150';
+      const profileDefaultPhoto = skeletonAvatar();
       const profileDefaultAbout = 'Hey there! I am using NexChat.';
       const profileToken = () => localStorage.getItem('token');
 
@@ -6675,7 +6692,7 @@ setGroupMessages(prev => {
         }}
         style={{ cursor: 'pointer' }}
       >
-          <img src={avatarFor(chat.id, chat.photo, 'https://via.placeholder.com/50')} alt={nameOf(chat.id, chat.name)} />
+          <img src={avatarFor(chat.id, chat.photo, skeletonAvatar())} alt={nameOf(chat.id, chat.name)} onError={(e) => { e.target.onerror = null; e.target.src = skeletonAvatar(); }} />
           <div className="chat-info">
             <h4>{nameOf(chat.id, chat.name)}</h4>
             <p className={hasUnread ? 'unread-preview' : ''}>{preview}</p>
@@ -6759,8 +6776,9 @@ setGroupMessages(prev => {
                     }}
                   >
                     <img
-                      src={group.dp || 'https://via.placeholder.com/50/4a00e0/fff?text=G'}
+                      src={group.dp || skeletonAvatar()}
                       alt={group.name}
+                      onError={(e) => { e.target.onerror = null; e.target.src = skeletonAvatar(); }}
                     />
                     <div className="chat-info">
                       <h4>{group.name}</h4>
@@ -6787,7 +6805,7 @@ setGroupMessages(prev => {
                       return {
                         key: chat.id,
                         name: chat.name,
-                        photo: avatarFor(chat.id, chat.photo, 'https://via.placeholder.com/50'),
+                        photo: avatarFor(chat.id, chat.photo, skeletonAvatar()),
                         count: un.length + missedUnread,
                         text,
                         open: () => {
@@ -6812,7 +6830,7 @@ setGroupMessages(prev => {
                       return {
                         key: gid,
                         name: g.name,
-                        photo: g.photo || 'https://via.placeholder.com/50',
+                        photo: avatarSrc(g.photo, 50),
                         count: un.length,
                         text: 'Group',
                         open: () => {
@@ -6840,7 +6858,7 @@ setGroupMessages(prev => {
                 })()}
 {activeTab === 'calls' && calls.map(call => (
                   <div key={call.id} className="chat-item" style={{ cursor: 'pointer' }}>
-                    <img src={call.groupId ? 'https://via.placeholder.com/50/4a00e0/fff?text=G' : (call.photo || 'https://via.placeholder.com/50')} alt={nameOf(call.userId, call.name)} />
+                    <img src={call.groupId ? skeletonAvatar() : avatarSrc(call.photo, 50)} alt={nameOf(call.userId, call.name)} />
                     <div className="chat-info">
                       <h4>{call.groupId ? (groupsList.find(g => String(g.id) === String(call.groupId))?.name || 'Group call') : nameOf(call.userId, call.name)}</h4>
                       <p><span className={`call-dir ${call.direction === 'missed' ? 'missed' : ''}`}>{call.direction === 'outgoing' ? '↗' : (call.direction === 'rejected' ? '↔' : '↘')}</span> {call.direction === 'outgoing' ? 'Outgoing' : call.direction === 'rejected' ? 'Declined' : call.direction === 'missed' ? 'Missed' : 'Incoming'} {call.video ? 'video' : 'voice'} {call.groupId ? 'group ' : ''}call{call.durationSec ? ` • ${fmtCallTime(call.durationSec)}` : ''}</p>
@@ -6874,7 +6892,7 @@ setGroupMessages(prev => {
                       return (
                         <div key={String(status.user.id)} className={`chat-item ${hasUnseen ? 'unseen' : 'seen'}`} onClick={() => setStatusViewer({ userId: String(status.user.id), index: 0 })}>
                           <StatusAvatar
-                            src={status.statuses[0]?.file || status.user.photo || 'https://via.placeholder.com/50'}
+                            src={status.statuses[0]?.file || avatarSrc(status.user.photo, 50)}
                             count={status.statuses.length}
                             seen={!hasUnseen}
                           />
@@ -8620,8 +8638,9 @@ const renderRightPanel = () => {
             </button>
           )}
           <img
-            src={avatarFor(selectedChat?.id, selectedChat?.photo, 'https://via.placeholder.com/40')}
+            src={avatarFor(selectedChat?.id, selectedChat?.photo, skeletonAvatar())}
             alt={nameOf(selectedChat?.id, selectedChat?.name)}
+            onError={(e) => { e.target.onerror = null; e.target.src = skeletonAvatar(); }}
           />
           <div className="user-info">
             <h4>{nameOf(selectedChat?.id, selectedChat?.name)}</h4>
@@ -9720,8 +9739,9 @@ const renderRightPanel = () => {
           }}
         >
           <img
-            src={avatarFor(selectedChat?.id, selectedChat?.photo, 'https://via.placeholder.com/80')}
+            src={avatarFor(selectedChat?.id, selectedChat?.photo, skeletonAvatar())}
             alt="Profile"
+            onError={(e) => { e.target.onerror = null; e.target.src = skeletonAvatar(); }}
             style={{
               width: '80px',
               height: '80px',
@@ -9868,7 +9888,7 @@ const renderRightPanel = () => {
                       }}
                     >
                       <img
-                        src={g.dp || 'https://via.placeholder.com/40/4a00e0/fff?text=G'}
+                        src={g.dp || skeletonAvatar()}
                         alt=""
                         style={{ width: '40px', height: '40px', borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }}
                       />
@@ -10337,7 +10357,7 @@ const renderRightPanel = () => {
               setShowNewChatDropdown(false);
             }}
           >
-            <img src="https://via.placeholder.com/40" alt={nameOf(chat.id, chat.name)} />
+            <img src={skeletonAvatar()} alt={nameOf(chat.id, chat.name)} />
             <span>{nameOf(chat.id, chat.name)}</span>
           </div>
         ))}
@@ -10440,7 +10460,7 @@ const renderRightPanel = () => {
     firstName,
     lastName,
     email: foundUser.email,
-    photo: foundUser.photo || 'https://via.placeholder.com/50',
+    photo: avatarSrc(foundUser.photo, 50),
     lastMsg: '',
     time: '',
     online: false
@@ -10673,9 +10693,9 @@ const renderRightPanel = () => {
                     </svg>
                   </span>
                   {contact.photo ? (
-                    <img className="add-members-avatar" src={contact.photo} alt={contactName} style={{ width: 40, height: 40, minWidth: 40, minHeight: 40, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
+                    <img className="add-members-avatar" src={contact.photo} alt={contactName} onError={(e) => { e.target.onerror = null; e.target.src = skeletonAvatar(); }} style={{ width: 40, height: 40, minWidth: 40, minHeight: 40, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
                   ) : (
-                    <span className="add-members-avatar" style={{ width: 40, height: 40, minWidth: 40, minHeight: 40 }}>{(contactName || '?').charAt(0).toUpperCase()}</span>
+                    <img className="add-members-avatar" src={skeletonAvatar()} alt={contactName} style={{ width: 40, height: 40, minWidth: 40, minHeight: 40, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
                   )}
                   <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{contactName}</span>
                 </div>
@@ -10822,8 +10842,9 @@ const renderRightPanel = () => {
           onClick={() => { if (!selectedGroup.removedAt) setGroupDpMenuOpen(true); }}
         >
           <img
-            src={selectedGroup.dp || 'https://via.placeholder.com/80?text=G'}
+            src={selectedGroup.dp || skeletonAvatar()}
             alt="Group"
+            onError={(e) => { e.target.onerror = null; e.target.src = skeletonAvatar(); }}
             style={{
               width: '80px',
               height: '80px',
@@ -10902,7 +10923,7 @@ const renderRightPanel = () => {
           const memberName =
             nameOf(memberId, m?.name) ||
             'Someone';
-          const memberPhoto = m?.photo || 'https://via.placeholder.com/40';
+          const memberPhoto = avatarSrc(m?.photo, 40);
           const memberEmail = m?.email || '';
           const gAdmin = String(selectedGroup?.admin || '');
           const gAdmins = Array.isArray(selectedGroup?.admins) ? selectedGroup.admins.map(String) : [];
@@ -10967,6 +10988,7 @@ const renderRightPanel = () => {
                   <img
                     src={memberPhoto}
                     alt={memberName}
+                    onError={(e) => { e.target.onerror = null; e.target.src = skeletonAvatar(); }}
                     style={{
                       width: '40px',
                       height: '40px',
@@ -11218,8 +11240,9 @@ const renderRightPanel = () => {
         style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '24px', gap: '12px' }}
       >
         <img
-          src={memberProfile.photo || 'https://via.placeholder.com/80'}
+          src={avatarSrc(memberProfile.photo, 80)}
           alt={nameOf(memberProfile.id, memberProfile.name || 'Someone')}
+          onError={(e) => { e.target.onerror = null; e.target.src = skeletonAvatar(); }}
           style={{ width: '80px', height: '80px', borderRadius: '50%', objectFit: 'cover', border: '2px solid #ddd' }}
         />
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -11621,7 +11644,7 @@ const renderRightPanel = () => {
                   onClick={() => setStatusViewer({ userId: String(g.user.id), index: 0 })}
                 >
                   <StatusAvatar
-                    src={first.file || g.user.photo || 'https://via.placeholder.com/50'}
+                    src={first.file || avatarSrc(g.user.photo, 50)}
                     count={g.statuses.length}
                     seen={!hasUnseen}
                   />
@@ -11669,7 +11692,7 @@ const renderRightPanel = () => {
     {calls.length === 0 && <p style={{ padding: '12px 16px', color: '#8a8f99', fontSize: '0.9rem' }}>No calls yet</p>}
     {calls.map(call => (
       <div key={call.id} className="call-item" style={{ cursor: 'pointer' }}>
-        <img src={call.groupId ? 'https://via.placeholder.com/50/4a00e0/fff?text=G' : (call.photo || 'https://via.placeholder.com/50')} alt={nameOf(call.userId, call.name)} />
+        <img src={call.groupId ? skeletonAvatar() : avatarSrc(call.photo, 50)} alt={nameOf(call.userId, call.name)} />
        <div className="call-info">
   <h4>{call.groupId ? (groupsList.find(g => String(g.id) === String(call.groupId))?.name || 'Group call') : nameOf(call.userId, call.name)}</h4>
   <p>
@@ -11856,7 +11879,7 @@ const renderRightPanel = () => {
               firstName: firstName.trim(),
               lastName: lastName.trim(),
               email: foundUser.email,
-              photo: foundUser.photo || 'https://via.placeholder.com/50',
+              photo: avatarSrc(foundUser.photo, 50),
               lastMsg: '',
               time: '',
               online: false,
@@ -12234,7 +12257,7 @@ const renderRightPanel = () => {
                     {isChecked && <span style={{ color: 'white', fontSize: '13px' }}>✓</span>}
                   </span>
                   <img
-                    src={contact.photo || 'https://via.placeholder.com/50'}
+                    src={avatarSrc(contact.photo, 50)}
                     alt={contact.name}
                     style={{ width: '40px', height: '40px', borderRadius: '50%', objectFit: 'cover' }}
                   />
@@ -12308,7 +12331,7 @@ const renderRightPanel = () => {
                     {isChecked && <span style={{ color: 'white', fontSize: '13px' }}>✓</span>}
                   </span>
                   <img
-                    src={group.dp || 'https://via.placeholder.com/50/4a00e0/fff?text=G'}
+                    src={group.dp || skeletonAvatar()}
                     alt={group.name}
                     style={{ width: '40px', height: '40px', borderRadius: '50%', objectFit: 'cover' }}
                   />
@@ -12532,7 +12555,7 @@ const renderRightPanel = () => {
       <img
         src={
           viewerUser.user.photo ||
-          `https://via.placeholder.com/40/25D366/fff?text=${encodeURIComponent((nameOf(viewerUser.user.id, viewerUser.user.name) || '?')[0])}`
+          skeletonAvatar()
         }
         alt={nameOf(viewerUser.user.id, viewerUser.user.name)}
       />
@@ -12638,7 +12661,7 @@ const renderRightPanel = () => {
             })}
             {pageTiles.length === 0 && (
               <div className="call-peer-fallback">
-                <img src={activeCall.peerPhoto} alt={nameOf(activeCall.peerId, activeCall.peerName)} />
+                <img src={activeCall.peerPhoto} alt={nameOf(activeCall.peerId, activeCall.peerName)} onError={(e) => { e.target.onerror = null; e.target.src = skeletonAvatar(); }} />
               </div>
             )}
             {pages > 1 && (
@@ -12666,7 +12689,7 @@ const renderRightPanel = () => {
               {activeCall.peerCameraOn === false ? (
                 <div className="call-cam-off">Video is off</div>
               ) : (
-                <img src={activeCall.peerPhoto} alt={nameOf(activeCall.peerId, activeCall.peerName)} />
+                <img src={activeCall.peerPhoto} alt={nameOf(activeCall.peerId, activeCall.peerName)} onError={(e) => { e.target.onerror = null; e.target.src = skeletonAvatar(); }} />
               )}
             </div>
           )}
@@ -12709,7 +12732,7 @@ const renderRightPanel = () => {
     {(activeCall.type === 'voice' || activeCall.mode !== 'active') && (
       <div className={`call-avatar-zone ${activeCall.mode !== 'active' && activeCall.type === 'video' && localStreamRef.current ? 'with-preview' : ''}`}>
         <div className="call-avatar-ring">
-          <img src={activeCall.peerPhoto} alt={nameOf(activeCall.peerId, activeCall.peerName)} />
+          <img src={activeCall.peerPhoto} alt={nameOf(activeCall.peerId, activeCall.peerName)} onError={(e) => { e.target.onerror = null; e.target.src = skeletonAvatar(); }} />
         </div>
         <h2>{nameOf(activeCall.peerId, activeCall.peerName)}</h2>
         <p>
