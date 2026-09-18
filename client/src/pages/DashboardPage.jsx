@@ -282,6 +282,10 @@ export default function DashboardPage() {
   const [addMembersSelected, setAddMembersSelected] = useState(new Set());
   // Leave-group confirmation: null or { groupId, name }.
   const [confirmLeave, setConfirmLeave] = useState(null);
+  // In-app "Delete chat" / "Delete group" confirmation: null or
+  // { kind: 'dm'|'group', id, name }. Replaces the old window.confirm so the
+  // destructive step gets a proper Confirm/Cancel popup on every screen size.
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
   // Per-user "cleared at" timestamps for group chats, persisted in localStorage
   // so a "Clear chat" survives a refresh. Messages older than the stamp stay
   // hidden; anything received after clearing shows normally.
@@ -1547,6 +1551,55 @@ export default function DashboardPage() {
     goBackPage();
   };
 
+  // Confirm popup for Delete chat (DM) / Delete group.
+  // DM: removes the contact from the viewer's address book + custom name on the
+  // server (so the person must be added again to chat), drops the local chat,
+  // and mirrors it to the viewer's other devices. Group: only reachable after
+  // the viewer has exited the group; permanently removes the group from their
+  // list (server drops the reference, or deletes the group for everyone when
+  // nobody references it anymore).
+  const confirmDeleteChat = () => {
+    const t = deleteConfirm;
+    if (!t) return;
+    const s = socketRef.current || socket;
+    if (t.kind === 'group') {
+      if (s && s.connected) {
+        console.info('[nexchat] delete group dispatched', t.id);
+        s.emit('deleteGroupChat', { groupId: t.id });
+      }
+      fetch(`${API_URL}/api/groups/${encodeURIComponent(t.id)}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
+      })
+        .then((res) => {
+          console.info('[nexchat] delete group server responded', res.status);
+          if (!res.ok) console.warn('Delete group: server returned', res.status);
+        })
+        .catch((err) => console.warn('Delete group failed on server', err));
+      applyGroupDeleted(t.id);
+    } else {
+      console.info('[nexchat] delete dispatched', t.id);
+      if (s && s.connected) s.emit('deleteChat', { to: t.id });
+      fetch(`${API_URL}/api/contacts/${encodeURIComponent(t.id)}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
+      })
+        .then((res) => {
+          console.info('[nexchat] delete server responded', res.status);
+          if (!res.ok) {
+            console.warn('Delete chat: server returned', res.status);
+            return;
+          }
+          fetchContacts();
+        })
+        .catch((err) => console.warn('Delete chat failed on server', err));
+      applyChatDeleted(t.id);
+    }
+    setDeleteConfirm(null);
+    setShowDropdown(false);
+    setGroupShowDropdown(false);
+  };
+
 
 
 
@@ -1561,6 +1614,13 @@ export default function DashboardPage() {
     if (!id) return;
     deletedChatsRef.current.add(id);
     try { localStorage.setItem(accountScopedKey('deletedChats'), JSON.stringify([...deletedChatsRef.current])); } catch { /* ignore quota errors */ }
+    // A deleted contact's saved custom name goes with it: drop the viewer's
+    // per-contact entry so re-adding the person starts clean (the account
+    // name is the fallback again until a new name is saved).
+    const savedNamesNow = { ...(savedNamesRef.current || {}) };
+    delete savedNamesNow[id];
+    savedNamesRef.current = savedNamesNow;
+    try { localStorage.setItem('nexchatSavedNames', JSON.stringify(savedNamesNow)); } catch { /* ignore quota/private-mode errors */ }
     setContacts((prev) => prev.filter((c) => c && String(c.id) !== id));
     setMessages((prev) => {
       if (!prev[id]) return prev;
@@ -1581,6 +1641,36 @@ export default function DashboardPage() {
     try {
       localStorage.removeItem(accountScopedKey('selectedChat'));
       localStorage.removeItem(accountScopedKey('selectedGroup'));
+      localStorage.setItem(accountScopedKey('dashboardChatOpen'), 'false');
+    } catch { /* ignore */ }
+  }, []);
+
+  // Remove a deleted group from EVERY surface + cache on this device and close
+  // it if open. Invoked from the realtime 'groupChatDeleted' event (any of this
+  // user's devices) and from the Delete-group menu action.
+  const applyGroupDeleted = useCallback((rawId) => {
+    const id = String(rawId || '');
+    if (!id) return;
+    setGroupsList((prev) => prev.filter((g) => g && String(g.id) !== id));
+    setGroupMessages((prev) => {
+      if (!prev[id]) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    if (selectedGroupRef.current && String(selectedGroupRef.current.id) === id) {
+      setSelectedGroup(null);
+      selectedGroupRef.current = null;
+      setGroupSettingsOpen(false);
+      setShowGroupInfo(false);
+      setGroupDpMenuOpen(false);
+      setGroupMobileSearch(false);
+      setGroupMobileSearchQuery('');
+      setMobileChatOpen(false);
+    }
+    try {
+      localStorage.removeItem(accountScopedKey('selectedGroup'));
+      localStorage.removeItem(accountScopedKey('selectedChat'));
       localStorage.setItem(accountScopedKey('dashboardChatOpen'), 'false');
     } catch { /* ignore */ }
   }, []);
@@ -4669,6 +4759,13 @@ setGroupMessages(prev => {
         fetchContacts();
       });
 
+      // ✅ group deleted on ANY of this user's devices (after exiting it):
+      //    drop it from the groups list + caches and close it if open.
+      newSocket.on('groupChatDeleted', ({ groupId }) => {
+        console.info('[nexchat] groupChatDeleted received', groupId);
+        applyGroupDeleted(groupId);
+      });
+
       // ✅ group message deleted-for-everyone
       newSocket.on('groupMessageDeleted', ({ groupId, _id, messageId }) => {
         const gid = String(groupId);
@@ -7503,6 +7600,19 @@ onClick={() => {
                         <Trash2 size={18} strokeWidth={1.8} />
                         <span>Clear chat</span>
                       </button>
+                      {selectedGroup?.removedAt && (
+                        <button
+                          className="dropdown-item"
+                          style={{ color: 'red', fontWeight: 600 }}
+                          onClick={() => {
+                            setDeleteConfirm({ kind: 'group', id: gid, name: selectedGroup?.name });
+                            setGroupShowDropdown(false);
+                          }}
+                        >
+                          <X size={18} strokeWidth={1.8} />
+                          <span>Delete group</span>
+                        </button>
+                      )}
                     </div>
                   </div>
                 )}
@@ -8714,6 +8824,17 @@ const renderRightPanel = () => {
                   <Trash2 size={18} strokeWidth={2.2} style={{ color: '#e02f5b' }} />
                   <span>Clear chat</span>
                 </button>
+                <button
+                  className="dropdown-item"
+                  style={{ color: 'red' }}
+                  onClick={() => {
+                    setDeleteConfirm({ kind: 'dm', id: selectedChat.id, name: nameOf(selectedChat.id, selectedChat.name) });
+                    setShowDropdown(false);
+                  }}
+                >
+                  <X size={18} strokeWidth={1.8} />
+                  <span>Delete chat</span>
+                </button>
               </>
             ) : (
               <>
@@ -8774,32 +8895,7 @@ const renderRightPanel = () => {
               className="dropdown-item"
               style={{ color: 'red' }}
               onClick={() => {
-                if (window.confirm('Delete this chat?')) {
-                  const s = socketRef.current || socket;
-                  console.info('[nexchat] delete dispatched', selectedChat.id);
-                  // Socket broadcast tells this account's other devices to drop
-                  // the chat instantly (when the handler is deployed).
-                  if (s && s.connected) s.emit('deleteChat', { to: selectedChat.id });
-                  // REST DELETE guarantees the removal is persisted server-side
-                  // even if the socket handler isn't deployed yet; every device
-                  // picks it up through the address-book refetch/reconcile.
-                  fetch(`${API_URL}/api/contacts/${encodeURIComponent(selectedChat.id)}`, {
-                    method: 'DELETE',
-                    headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
-                  })
-                    .then((res) => {
-                      console.info('[nexchat] delete server responded', res.status);
-                      if (!res.ok) {
-                        console.warn('Delete chat: server returned', res.status);
-                        return;
-                      }
-                      // Confirm the server list on THIS device immediately so the
-                      // remove is never a purely-local illusion.
-                      fetchContacts();
-                    })
-                    .catch((err) => console.warn('Delete chat failed on server', err));
-                  applyChatDeleted(selectedChat.id);
-                }
+                setDeleteConfirm({ kind: 'dm', id: selectedChat.id, name: nameOf(selectedChat.id, selectedChat?.name) });
                 setShowDropdown(false);
               }}
             >
@@ -11304,6 +11400,45 @@ const renderRightPanel = () => {
           style={{ padding: '10px 16px', background: '#e02f5b', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 600 }}
         >
           Leave
+        </button>
+      </div>
+    </div>
+  </div>
+)}
+
+{/* In-app Delete chat / Delete group confirmation popup. Replaces the old
+    window.confirm so the destructive step is a proper Confirm/Cancel modal
+    that works on every screen size (mobile included). */}
+{deleteConfirm && (
+  <div
+    style={{
+      position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh',
+      background: 'rgba(0, 0, 0, 0.5)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 20010,
+    }}
+    onClick={() => setDeleteConfirm(null)}
+  >
+    <div
+      style={{ background: 'white', padding: '24px', borderRadius: '12px', width: '90%', maxWidth: '400px', boxShadow: '0 4px 20px rgba(0,0,0,0.2)' }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <h3 style={{ marginBottom: '12px', color: '#333' }}>
+        {deleteConfirm.kind === 'da' || deleteConfirm.kind === 'group' ? 'Delete group' : 'Delete chat'}
+      </h3>
+      <p style={{ color: '#555', lineHeight: '1.5' }}>
+        Are you sure you want to permanently delete <strong>{deleteConfirm.name || 'this chat'}</strong>? This will remove the saved contact from your address book on every device — <strong>{deleteConfirm.kind === 'dm' ? 'you will need to save' : 'the group will be gone from your list'}</strong> before you can chat again.
+      </p>
+      <div style={{ display: 'flex', gap: '12px', marginTop: '24px', justifyContent: 'flex-end' }}>
+        <button
+          onClick={() => setDeleteConfirm(null)}
+          style={{ padding: '10px 16px', background: '#f0f0f0', border: '1px solid #ddd', borderRadius: '6px', color: '#333', cursor: 'pointer', fontWeight: 500 }}
+        >
+          Cancel
+        </button>
+        <button
+          onClick={confirmDeleteChat}
+          style={{ padding: '10px 16px', background: '#e02f5b', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 600 }}
+        >
+          Delete
         </button>
       </div>
     </div>

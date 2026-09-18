@@ -892,6 +892,34 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
     }
   });
 
+  // ✅ Permanently remove a group from the viewer's own chat list. Only valid
+  //    after the viewer has already LEFT the group (still-active members are
+  //    refused, mirroring the UI that hides Delete group while a member). When
+  //    the group ends up with no members and no removedMembers it is deleted
+  //    for everyone; otherwise just the viewer's reference is dropped. All of
+  //    this user's devices drop the group via the groupChatDeleted event.
+  socket.on("deleteGroupChat", async ({ groupId }) => {
+    if (!groupId) return;
+    try {
+      const group = await Group.findById(groupId).exec();
+      if (!group) return;
+      const uid = String(socket.userId);
+      if ((group.members || []).map(String).includes(uid)) return; // still a member
+      group.members = (group.members || []).filter((id) => String(id) !== uid);
+      group.admins = (group.admins || []).filter((id) => String(id) !== uid);
+      group.removedMembers = (group.removedMembers || []).filter((r) => r && String(r.user) !== uid);
+      if (!group.members.length && !group.removedMembers.length) {
+        await GroupMessage.deleteMany({ group: group._id }).exec();
+        await Group.deleteOne({ _id: group._id }).exec();
+      } else {
+        await group.save();
+      }
+      emitToUser(socket.userId, "groupChatDeleted", { groupId: String(group._id) });
+    } catch (err) {
+      console.error("deleteGroupChat error:", err.message);
+    }
+  });
+
   // ✅ Delete a group message
   // data: { groupId, messageId, _id, forEveryone }
   socket.on("deleteGroupMessage", async (data) => {

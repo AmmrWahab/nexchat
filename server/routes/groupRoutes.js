@@ -253,4 +253,40 @@ router.delete('/contacts/:contactId', auth, async (req, res) => {
   }
 });
 
+// DELETE /api/groups/:groupId — permanently remove a group from the CURRENT
+// viewer's list (and chats). Only allowed after the viewer already exited the
+// group (still-active members get 409); the server-side guard mirrors the UI,
+// which hides the Delete group button until the group is marked removedAt.
+// When nobody references the group anymore (no members, no removedMembers) the
+// group + its message history are deleted for everyone; otherwise just this
+// viewer's reference is dropped and other members keep the group.
+router.delete('/groups/:groupId', auth, async (req, res) => {
+  const groupId = req.params?.groupId;
+  if (!groupId) return res.status(400).json({ message: 'groupId required' });
+  try {
+    const group = await Group.findById(groupId);
+    if (!group) return res.status(404).json({ message: 'Group not found' });
+    const uid = String(req.userId);
+    if ((group.members || []).some((m) => String(m) === uid)) {
+      return res.status(409).json({ message: 'Exit the group first' });
+    }
+    if (!(group.removedMembers || []).some((r) => r && String(r.user) === uid)) {
+      return res.status(404).json({ message: 'Group not found' });
+    }
+    group.members = (group.members || []).filter((m) => String(m) !== uid);
+    group.admins = (group.admins || []).filter((a) => String(a) !== uid);
+    group.removedMembers = (group.removedMembers || []).filter((r) => r && String(r.user) !== uid);
+    if (!group.members.length && !group.removedMembers.length) {
+      await GroupMessage.deleteMany({ group: group._id });
+      await Group.deleteOne({ _id: group._id });
+    } else {
+      await group.save();
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Delete group error:', err.message);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 export default router;
