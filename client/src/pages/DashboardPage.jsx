@@ -10670,14 +10670,14 @@ const renderRightPanel = () => {
               onChange={(e) => setAddMembersQuery(e.target.value)}
             />
           </div>
-          <div>
+          <div className="group-contacts-list">
             {groupMembersForAdd.map((contact) => {
               const isTicked = addMembersSelected.has(String(contact.id));
               const contactName = nameOf(contact.id, contact.name || 'Someone');
               return (
                 <div
                   key={contact.id}
-                  className={`add-members-contact ${isTicked ? 'ticked' : ''}`}
+                  className={`group-contact-item ${isTicked ? 'ticked' : ''}`}
                   onClick={() => {
                     setAddMembersSelected(prev => {
                       const next = new Set(prev);
@@ -10687,17 +10687,19 @@ const renderRightPanel = () => {
                     });
                   }}
                 >
-                  <span className="add-members-check">
+                  <span className={`group-contact-check ${isTicked ? 'checked' : ''}`}>
                     <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
                       <path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
                     </svg>
                   </span>
-                  {contact.photo ? (
-                    <img className="add-members-avatar" src={contact.photo} alt={contactName} onError={(e) => { e.target.onerror = null; e.target.src = skeletonAvatar(); }} style={{ width: 40, height: 40, minWidth: 40, minHeight: 40, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
-                  ) : (
-                    <img className="add-members-avatar" src={skeletonAvatar()} alt={contactName} style={{ width: 40, height: 40, minWidth: 40, minHeight: 40, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
-                  )}
-                  <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{contactName}</span>
+                  <span className="group-contact-avatar">
+                    {contact.photo ? (
+                      <img src={contact.photo} alt={contactName} onError={(e) => { e.target.onerror = null; e.target.src = skeletonAvatar(); }} />
+                    ) : (
+                      <span>{(contactName || '?').charAt(0).toUpperCase()}</span>
+                    )}
+                  </span>
+                  <span className="group-contact-name">{contactName}</span>
                 </div>
               );
             })}
