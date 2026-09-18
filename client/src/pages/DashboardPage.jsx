@@ -6294,14 +6294,14 @@ setGroupMessages(prev => {
                     <div className="group-perm-toggle" style={{ display: 'flex', gap: '8px' }}>
                       <button
                         type="button"
-                        style={{ flex: 1, padding: '8px 10px', borderRadius: '8px', border: '1px solid #dde1e5', background: groupAddPref === 'everyone' ? '#075e54' : '#f6f7f8', color: groupAddPref === 'everyone' ? '#fff' : '#5a6066', fontSize: '0.85rem', fontWeight: 500, cursor: 'pointer' }}
+                        className={groupAddPref === 'everyone' ? 'active' : ''}
                         onClick={() => setGroupAddPref('everyone')}
                       >
                         Everyone
                       </button>
                       <button
                         type="button"
-                        style={{ flex: 1, padding: '8px 10px', borderRadius: '8px', border: '1px solid #dde1e5', background: groupAddPref === 'admins' ? '#075e54' : '#f6f7f8', color: groupAddPref === 'admins' ? '#fff' : '#5a6066', fontSize: '0.85rem', fontWeight: 500, cursor: 'pointer' }}
+                        className={groupAddPref === 'admins' ? 'active' : ''}
                         onClick={() => setGroupAddPref('admins')}
                       >
                         Admins only
@@ -6317,14 +6317,14 @@ setGroupMessages(prev => {
                     <div className="group-perm-toggle" style={{ display: 'flex', gap: '8px' }}>
                       <button
                         type="button"
-                        style={{ flex: 1, padding: '8px 10px', borderRadius: '8px', border: '1px solid #dde1e5', background: groupSendPref === 'everyone' ? '#075e54' : '#f6f7f8', color: groupSendPref === 'everyone' ? '#fff' : '#5a6066', fontSize: '0.85rem', fontWeight: 500, cursor: 'pointer' }}
+                        className={groupSendPref === 'everyone' ? 'active' : ''}
                         onClick={() => setGroupSendPref('everyone')}
                       >
                         Everyone
                       </button>
                       <button
                         type="button"
-                        style={{ flex: 1, padding: '8px 10px', borderRadius: '8px', border: '1px solid #dde1e5', background: groupSendPref === 'admins' ? '#075e54' : '#f6f7f8', color: groupSendPref === 'admins' ? '#fff' : '#5a6066', fontSize: '0.85rem', fontWeight: 500, cursor: 'pointer' }}
+                        className={groupSendPref === 'admins' ? 'active' : ''}
                         onClick={() => setGroupSendPref('admins')}
                       >
                         Admins only
@@ -10724,14 +10724,14 @@ const renderRightPanel = () => {
             <div className="group-perm-toggle" style={{ display: 'flex', gap: '8px', alignItems: 'center', filter: pendingGroupSettings.has('sendMessages') ? 'blur(1.5px)' : 'none', opacity: pendingGroupSettings.has('sendMessages') ? 0.55 : 1, pointerEvents: pendingGroupSettings.has('sendMessages') ? 'none' : 'auto' }}>
               <button
                 type="button"
-                style={{ flex: 1, padding: '8px 10px', borderRadius: '8px', border: '1px solid #dde1e5', background: selectedGroup.sendMessages === 'everyone' ? '#075e54' : '#f6f7f8', color: selectedGroup.sendMessages === 'everyone' ? '#fff' : '#5a6066', fontSize: '0.85rem', fontWeight: 500, cursor: 'pointer' }}
+                className={selectedGroup.sendMessages === 'everyone' ? 'active' : ''}
                 onClick={() => updateGroupSetting('sendMessages', 'everyone')}
               >
                 Everyone
               </button>
               <button
                 type="button"
-                style={{ flex: 1, padding: '8px 10px', borderRadius: '8px', border: '1px solid #dde1e5', background: selectedGroup.sendMessages === 'admins' ? '#075e54' : '#f6f7f8', color: selectedGroup.sendMessages === 'admins' ? '#fff' : '#5a6066', fontSize: '0.85rem', fontWeight: 500, cursor: 'pointer' }}
+                className={selectedGroup.sendMessages === 'admins' ? 'active' : ''}
                 onClick={() => updateGroupSetting('sendMessages', 'admins')}
               >
                 Admins only
@@ -10757,14 +10757,14 @@ const renderRightPanel = () => {
             <div className="group-perm-toggle" style={{ display: 'flex', gap: '8px', alignItems: 'center', filter: pendingGroupSettings.has('addMembers') ? 'blur(1.5px)' : 'none', opacity: pendingGroupSettings.has('addMembers') ? 0.55 : 1, pointerEvents: pendingGroupSettings.has('addMembers') ? 'none' : 'auto' }}>
               <button
                 type="button"
-                style={{ flex: 1, padding: '8px 10px', borderRadius: '8px', border: '1px solid #dde1e5', background: selectedGroup.addMembers === 'everyone' ? '#075e54' : '#f6f7f8', color: selectedGroup.addMembers === 'everyone' ? '#fff' : '#5a6066', fontSize: '0.85rem', fontWeight: 500, cursor: 'pointer' }}
+                className={selectedGroup.addMembers === 'everyone' ? 'active' : ''}
                 onClick={() => updateGroupSetting('addMembers', 'everyone')}
               >
                 Everyone
               </button>
               <button
                 type="button"
-                style={{ flex: 1, padding: '8px 10px', borderRadius: '8px', border: '1px solid #dde1e5', background: selectedGroup.addMembers === 'admins' ? '#075e54' : '#f6f7f8', color: selectedGroup.addMembers === 'admins' ? '#fff' : '#5a6066', fontSize: '0.85rem', fontWeight: 500, cursor: 'pointer' }}
+                className={selectedGroup.addMembers === 'admins' ? 'active' : ''}
                 onClick={() => updateGroupSetting('addMembers', 'admins')}
               >
                 Admins only
