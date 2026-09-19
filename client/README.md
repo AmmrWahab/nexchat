@@ -1,5 +1,7 @@
 # React + Vite
 
+Vercel build-trigger marker — the DashboardPage fix is verified green (esbuild transform + vite build both pass at commit 705bced). This README-only commit exists solely to force a fresh production build.
+
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
 Currently, two official plugins are available:
