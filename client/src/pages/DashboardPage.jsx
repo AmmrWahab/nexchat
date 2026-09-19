@@ -754,8 +754,12 @@ export default function DashboardPage() {
   const [selectedMessages, setSelectedMessages] = useState(new Set());
   const [mobileSearch, setMobileSearch] = useState(false);
   const [mobileSearchQuery, setMobileSearchQuery] = useState('');
-  const [mobileSearchResults, setMobileSearchResults] = useState([]);
   const [mobileSearchIndex, setMobileSearchIndex] = useState(-1);
+  // Dedicated "filter the active list" query. Distinct from in-rail
+  // find-in-conversation searches (mobileSearch*/chatSearchQuery) and the
+  // group *create* picker (groupSearchQuery): this one filters whichever
+  // rail is active — Chats/Unread by name OR email, Groups by name.
+  const [listFilterQuery, setListFilterQuery] = useState('');
   const [groupMobileSearch, setGroupMobileSearch] = useState(false);
   const [groupMobileSearchQuery, setGroupMobileSearchQuery] = useState('');
   const [groupMobileSearchResults, setGroupMobileSearchResults] = useState([]);
@@ -6605,10 +6609,21 @@ setGroupMessages(prev => {
     return (
       <>
         <div className="search-bar">
-          <input type="text" placeholder="Search" />
+          <input
+            type="text"
+            placeholder="Search"
+            value={listFilterQuery}
+            onChange={(e) => setListFilterQuery(e.target.value)}
+          />
         </div>
         <div className="items-list">
           {activeTab === 'chats' && [...contacts, ...chats]
+            .filter(item => {
+              const qf = listFilterQuery.trim().toLowerCase();
+              if (!qf) return true;
+              return String(item.name || '').toLowerCase().includes(qf) ||
+                String(item.email || '').toLowerCase().includes(qf);
+            })
             .sort((a, b) => {
               const latestActivity = (chat) => {
                 // A "Clear chat" removes the row's preview/date: activity older
@@ -6704,7 +6719,13 @@ setGroupMessages(prev => {
         </div>
             );
           })}
-                {activeTab === 'groups' && groupsList.map(group => {
+                {activeTab === 'groups' && groupsList
+            .filter(group => {
+              const qf = listFilterQuery.trim().toLowerCase();
+              if (!qf) return true;
+              return String(group.name || '').toLowerCase().includes(qf);
+            })
+            .map(group => {
                   // Respect this viewer's "Clear chat" point: older activity and
                   // the stale last-message/date fallbacks stay hidden after clear.
                   const clearedTs = groupClearedAt(group._id || group.id);
@@ -6793,6 +6814,12 @@ setGroupMessages(prev => {
                 })}
                                 {activeTab === 'unread' && (() => {
                   const unreadDms = [...contacts, ...chats]
+                    .filter(item => {
+                      const qf = listFilterQuery.trim().toLowerCase();
+                      if (!qf) return true;
+                      return String(item.name || '').toLowerCase().includes(qf) ||
+                        String(item.email || '').toLowerCase().includes(qf);
+                    })
                     .map(chat => {
                       const chatMsgs = messages[chat.id] || [];
                       const un = chatMsgs.filter(m => m.sender !== 'You' && !m.read);
@@ -11778,11 +11805,16 @@ const renderRightPanel = () => {
   )}
 </div>
           </div>
-          {/* Search Bar */}
-          <div className="mobile-search">
-            <input type="text" placeholder="Search" />
-          </div>
-          {/* Tabs */}
+      {/* Search Bar */}
+      <div className="mobile-search">
+        <input
+          type="text"
+          placeholder="Search"
+          value={listFilterQuery}
+          onChange={(e) => setListFilterQuery(e.target.value)}
+        />
+      </div>
+      {/* Tabs */}
           <div className="mobile-tabs">
             <button
               className={activeTab === 'chats' ? 'active' : ''}
