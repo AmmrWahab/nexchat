@@ -4807,18 +4807,15 @@
   padding: 4px 8px;
   max-width: 100%;
   min-width: 0;
-  cursor: default;
-}
-.quote-pill.status {
   cursor: pointer;
 }
-.quote-pill.status:hover {
+.quote-pill:hover {
   background: #e3e7eb;
 }
 .message.sent .quote-pill {
   background: #e5f3d8;
 }
-.message.sent .quote-pill.status:hover {
+.message.sent .quote-pill:hover {
   background: #dbefca;
 }
 .quote-badge {

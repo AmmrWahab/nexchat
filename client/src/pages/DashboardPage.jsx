@@ -1067,6 +1067,31 @@ export default function DashboardPage() {
     else alert('This status is no longer available.');
   }, [statusFeed, user.id]);
 
+  // Quote pill click where the quote points at an ordinary message instead of
+  // a status: scroll the conversation to that message and flash-highlight it
+  // (same visual cue as the Global Search message jump).
+  const scrollToQuote = (replyTo) => {
+    if (!replyTo) return;
+    if (replyTo.statusId) {
+      openStatusFromReply(replyTo.statusId);
+      return;
+    }
+    const mid = replyTo.messageId || replyTo.id;
+    if (!mid) return;
+    const list = selectedChat?.id
+      ? (messages[selectedChat.id] || [])
+      : selectedGroup?.id
+        ? (groupMessages[selectedGroup.id] || [])
+        : [];
+    const found = list.find(m => String(m.id) === String(mid) || String(m.localId) === String(mid));
+    const targetId = String(found ? found.id : mid);
+    const el = document.querySelector(`.message[data-msgid="${CSS.escape(targetId)}"]`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    el.classList.add('gs-jump-hit');
+    window.setTimeout(() => el.classList.remove('gs-jump-hit'), 2600);
+  };
+
   // Keep the feed fresh: on first load and every time the Status view opens.
   useEffect(() => {
     if (!user.id) return;
@@ -8239,11 +8264,9 @@ onClick={() => {
                           className={`quote-pill${msg.replyTo.statusId ? ' status' : ''}`}
                           onClick={(e) => {
                             e.stopPropagation();
-                            if (msg.replyTo.statusId) {
-                              openStatusFromReply(msg.replyTo.statusId);
-                            }
+                            scrollToQuote(msg.replyTo);
                           }}
-                          title={msg.replyTo.statusId ? 'Open the original status' : undefined}
+                          title={msg.replyTo.statusId ? 'Open the original status' : 'Scroll to the original message'}
                         >
                           {msg.replyTo.statusId && (
                             <span className="quote-badge">
@@ -9507,11 +9530,9 @@ const renderRightPanel = () => {
                 className={`quote-pill${msg.replyTo.statusId ? ' status' : ''}`}
                 onClick={(e) => {
                   e.stopPropagation();
-                  if (msg.replyTo.statusId) {
-                    openStatusFromReply(msg.replyTo.statusId);
-                  }
+                  scrollToQuote(msg.replyTo);
                 }}
-                title={msg.replyTo.statusId ? 'Open the original status' : undefined}
+                title={msg.replyTo.statusId ? 'Open the original status' : 'Scroll to the original message'}
               >
                 {msg.replyTo.statusId && (
                   <span className="quote-badge">
