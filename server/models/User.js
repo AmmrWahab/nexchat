@@ -48,6 +48,29 @@ const userSchema = new mongoose.Schema({
       trim: true
     }
   }],
+  // Per-account "Clear chat (for me)" points. A cleared DM/group stores the
+  // timestamp at which THIS user cleared it, so every device of the same
+  // account hides history older than the stamp (while messages received after
+  // clearing still appear). Messages are NOT deleted from the DB — only the
+  // viewer's view of them is reset.
+  clearedDms: [{
+    user: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
+    clearedAt: {
+      type: Date
+    }
+  }],
+  clearedGroups: [{
+    group: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Group'
+    },
+    clearedAt: {
+      type: Date
+    }
+  }],
     lastSeen: { type: Date, default: Date.now }, // ← Add this
   about: {
     type: String,

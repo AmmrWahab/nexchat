@@ -397,8 +397,16 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
       }));
 
       // Emit to every one of this user's sockets so all synced devices get the
-      // same authoritative history.
-      emitToUser(me, "messagesHistory", { chatId: String(chatId), messages: msgs });
+      // same authoritative history. `clearedAt` (this user's per-account "Clear
+      // chat for me" point for this conversation) lets a fresh device hide the
+      // already-cleared history instead of resurrecting it from the server.
+      const meCleared = await User.findById(me).select('clearedDms').lean().exec();
+      const clearedEntry = (meCleared?.clearedDms || []).find(c => String(c.user) === String(chatId));
+      emitToUser(me, "messagesHistory", {
+        chatId: String(chatId),
+        messages: msgs,
+        clearedAt: clearedEntry?.clearedAt ? new Date(clearedEntry.clearedAt).getTime() : null,
+      });
     } catch (err) {
       console.error("fetchMessages error:", err.message);
     }
@@ -811,7 +819,13 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
         };
       });
 
-      io.to(socket.id).emit("groupMessagesHistory", { groupId, messages: msgs });
+      const meClearedG = await User.findById(socket.userId).select('clearedGroups').lean().exec();
+      const clearedGEntry = (meClearedG?.clearedGroups || []).find(c => String(c.group) === String(groupId));
+      io.to(socket.id).emit("groupMessagesHistory", {
+        groupId,
+        messages: msgs,
+        clearedAt: clearedGEntry?.clearedAt ? new Date(clearedGEntry.clearedAt).getTime() : null,
+      });
     } catch (err) {
       console.error("fetchGroupMessages error:", err.message);
     }
@@ -854,10 +868,17 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
 
   // ✅ Clear a 1:1 chat
   // data: { to, forEveryone }
+  //   forEveryone=true  -> delete the whole conversation from the DB for both
+  //                        sides, and notify the other user + every caller device.
+  //   forEveryone=false -> "Clear for me": record a per-ACCOUNT clearedAt stamp
+  //                        on the caller's User and notify EVERY device of this
+  //                        user, so cleared chats stay cleared everywhere (not
+  //                        just on the device that tapped it) and across reloads.
   socket.on("clearChat", async (data) => {
     const { to, forEveryone } = data || {};
+    if (!to) return;
     try {
-      if (forEveryone && to) {
+      if (forEveryone) {
         const uid = socket.userId;
         await Message.deleteMany({
           $or: [
@@ -865,9 +886,18 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
             { from: to, to: uid }
           ]
         }).exec();
-        emitToUser(to, "chatCleared", { by: uid });
+        emitToUser(to, "chatCleared", { to: uid, forMe: false });
+        emitToUser(uid, "chatCleared", { to, forMe: true, clearedAt: Date.now() });
+      } else {
+        const me = await User.findById(socket.userId).exec();
+        if (!me) return;
+        const now = new Date();
+        const map = new Map((me.clearedDms || []).map((c) => [String(c.user), c.clearedAt]));
+        map.set(String(to), now);
+        me.clearedDms = [...map.entries()].map(([user, clearedAt]) => ({ user, clearedAt }));
+        await me.save();
+        emitToUser(socket.userId, "chatCleared", { to, forMe: true, clearedAt: now.getTime() });
       }
-      socket.emit("chatCleared", { to, forMe: true });
     } catch (err) {
       console.error("clearChat error:", err.message);
     }
@@ -955,6 +985,8 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
 
   // ✅ Clear a group chat
   // data: { groupId, forEveryone }
+  //   forEveryone=true  -> delete every group message for all members.
+  //   forEveryone=false -> per-account clearedAt stamp synced to every device.
   socket.on("clearGroupChat", async (data) => {
     const { groupId, forEveryone } = data || {};
     if (!groupId) return;
@@ -964,10 +996,17 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
       if (forEveryone) {
         await GroupMessage.deleteMany({ group: groupId }).exec();
         group.members.forEach((memberId) => {
-          emitToUser(memberId, "groupChatCleared", { groupId }, [socket.id]);
+          emitToUser(memberId, "groupChatCleared", { groupId, forMe: false }, [socket.id]);
         });
       } else {
-        socket.emit("groupChatCleared", { groupId, forMe: true });
+        const me = await User.findById(socket.userId).exec();
+        if (!me) return;
+        const now = new Date();
+        const map = new Map((me.clearedGroups || []).map((c) => [String(c.group), c.clearedAt]));
+        map.set(String(groupId), now);
+        me.clearedGroups = [...map.entries()].map(([group, clearedAt]) => ({ group, clearedAt }));
+        await me.save();
+        emitToUser(socket.userId, "groupChatCleared", { groupId, forMe: true, clearedAt: now.getTime() });
       }
     } catch (err) {
       console.error("clearGroupChat error:", err.message);
@@ -1922,6 +1961,22 @@ console.log("💾 [DB] Attempting to save message..."); // 🔥
         }
       }
       io.to(socket.id).emit('userStatusSnapshot', onlineSnapshot);
+
+      // ✅ Per-account "Clear chat for me" points: a fresh/reconnecting device
+      //    adopts the same cleared-chat stamps as the rest of the account's
+      //    devices, so cleared chats stay cleared everywhere and old history is
+      //    never resurrected from the server after a reconnect.
+      const clearedMe = await User.findById(socket.userId).select('clearedDms clearedGroups').lean().exec();
+      if (clearedMe) {
+        io.to(socket.id).emit('clearedChats', {
+          dms: (clearedMe.clearedDms || [])
+            .filter(c => c && c.user)
+            .map(c => ({ user: String(c.user), clearedAt: c.clearedAt ? new Date(c.clearedAt).getTime() : null })),
+          groups: (clearedMe.clearedGroups || [])
+            .filter(c => c && c.group)
+            .map(c => ({ group: String(c.group), clearedAt: c.clearedAt ? new Date(c.clearedAt).getTime() : null })),
+        });
+      }
 
       // ✅ Deliver undelivered messages
       //    blocked:true messages are sender-only (single tick) and must NEVER

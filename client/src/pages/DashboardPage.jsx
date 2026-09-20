@@ -4306,9 +4306,16 @@ newSocket.on('messageBlocked', ({ to }) => {
 
 // ✅ 1:1 conversation history (server-authoritative) — lets every device of
 //    the same account rebuild identical conversation state on connect/open.
-newSocket.on('messagesHistory', ({ chatId, messages }) => {
+newSocket.on('messagesHistory', ({ chatId, messages, clearedAt }) => {
   const cid = String(chatId);
   if (!Array.isArray(messages)) return;
+  // Adopt the server's authoritative per-account "Clear chat for me" stamp for
+  // this conversation so THIS device hides the same cleared history as every
+  // other device of this account (a fresh device must not resurrect it).
+  if (clearedAt) {
+    const ts = new Date(clearedAt).getTime();
+    if (ts > (dmClearedAt(cid) || 0)) persistDmCleared(cid, ts);
+  }
   setMessages(prev => {
     let existing = prev[cid] || [];
     healReplyTo(existing);
@@ -4931,9 +4938,15 @@ newSocket.on('groupMessageDelivered', ({ groupId, messageId, _id, allDelivered }
       });
 
       // ✅ Load group message history when opening a group
-      newSocket.on('groupMessagesHistory', ({ groupId, messages }) => {
+      newSocket.on('groupMessagesHistory', ({ groupId, messages, clearedAt }) => {
         const gid = String(groupId);
         if (!Array.isArray(messages)) return;
+        // Adopt the server's per-account cleared stamp for this group so every
+        // device hides the same cleared history (not just the clearing device).
+        if (clearedAt) {
+          const ts = new Date(clearedAt).getTime();
+          if (ts > (groupClearedAt(gid) || 0)) persistGroupCleared(gid, ts);
+        }
 setGroupMessages(prev => {
         let existing = prev[gid] || [];
         healReplyTo(existing);
@@ -5014,7 +5027,7 @@ setGroupMessages(prev => {
       });
 
       // ✅ 1:1 chat cleared
-      newSocket.on('chatCleared', ({ to, forMe }) => {
+      newSocket.on('chatCleared', ({ to, clearedAt }) => {
         setMessages(prev => {
           const key = to !== undefined && to !== null ? String(to) : null;
           if (key !== null && prev[key]) {
@@ -5026,8 +5039,29 @@ setGroupMessages(prev => {
         });
         // Remember the clearing point on THIS device too (even for a remote
         // clear-for-everyone) so the chats-list row drops its old preview/date
-        // instead of showing the last pre-clear message + timestamp.
-        if (to !== undefined && to !== null) persistDmCleared(String(to), Date.now());
+        // instead of showing the last pre-clear message + timestamp. The server
+        // includes its own `clearedAt` (single source of truth across devices)
+        // so all of this account's devices agree on the same stamp.
+        if (to !== undefined && to !== null) {
+          persistDmCleared(String(to), clearedAt ? new Date(clearedAt).getTime() : Date.now());
+        }
+      });
+
+      // ✅ Per-account "Clear chat for me" points delivered on (re)connect: a
+      //    fresh/refreshing device adopts the same cleared-chat stamps as every
+      //    other device of this account, so a clear done elsewhere never gets
+      //    resurrected here after a reload. Newer stamps always win.
+      newSocket.on('clearedChats', ({ dms, groups }) => {
+        (dms || []).forEach(({ user, clearedAt }) => {
+          if (user == null || !clearedAt) return;
+          const ts = new Date(clearedAt).getTime();
+          if (ts > (dmClearedAt(String(user)) || 0)) persistDmCleared(String(user), ts);
+        });
+        (groups || []).forEach(({ group, clearedAt }) => {
+          if (group == null || !clearedAt) return;
+          const ts = new Date(clearedAt).getTime();
+          if (ts > (groupClearedAt(String(group)) || 0)) persistGroupCleared(String(group), ts);
+        });
       });
 
       // ✅ 1:1 chat deleted on ANY of this user's devices: drop the contact
@@ -5056,12 +5090,13 @@ setGroupMessages(prev => {
         });
       });
 
-      // ✅ group chat cleared
-      newSocket.on('groupChatCleared', ({ groupId, forMe }) => {
+      // ✅ group chat cleared. The server's per-account `clearedAt` keeps every
+      //    device of this account on the same clearing point.
+      newSocket.on('groupChatCleared', ({ groupId, forMe, clearedAt }) => {
         const gid = String(groupId);
-        // Record the clearing point for THIS user so a refresh doesn't restore
-        // the older history (only their own view is affected).
-        if (forMe === true) persistGroupCleared(gid, Date.now());
+        if (forMe === true) {
+          persistGroupCleared(gid, clearedAt ? new Date(clearedAt).getTime() : Date.now());
+        }
         setGroupMessages(prev => ({ ...prev, [gid]: [] }));
       });
 
