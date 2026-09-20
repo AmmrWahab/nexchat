@@ -8236,20 +8236,30 @@ onClick={() => {
 
                       {msg.replyTo && (
                         <div
-                          style={{
-                            padding: '6px 12px',
-                            backgroundColor: isYou ? '#06544c' : '#b9e8dc',
-                            color: 'black',
-                            borderRadius: '6px 6px 0 0',
-                            fontSize: '0.8rem',
-                            cursor: 'pointer',
+                          className={`quote-pill${msg.replyTo.statusId ? ' status' : ''}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (msg.replyTo.statusId) {
+                              openStatusFromReply(msg.replyTo.statusId);
+                            }
                           }}
+                          title={msg.replyTo.statusId ? 'Open the original status' : undefined}
                         >
-                          ↪{' '}
-                          {String(msg.replyTo.senderId) === String(user.id)
-                            ? 'You'
-                            : nameOf(msg.replyTo.senderId, msg.replyTo.sender || 'Someone')}
-                          : {msg.replyTo.text || 'Attachment'}
+                          {msg.replyTo.statusId && (
+                            <span className="quote-badge">
+                              {msg.replyTo.statusType === 'video' ? '🎥' : msg.replyTo.statusType === 'image' ? '📷' : '💬'}
+                            </span>
+                          )}
+                          <span className="quote-body">
+                            <span className="quote-name">
+                              {String(msg.replyTo.senderId) === String(user.id)
+                                ? 'You'
+                                : nameOf(msg.replyTo.senderId, msg.replyTo.sender || 'Someone')}
+                            </span>
+                            <span className="quote-text">
+                              {msg.replyTo.text || 'Attachment'}
+                            </span>
+                          </span>
                         </div>
                       )}
 
@@ -8502,40 +8512,19 @@ You are no longer a participant of this group
 Only admins can send messages
                 </div>
               ) : (
-              <div className="message-input" style={{ display: isMobile ? 'none' : 'flex' }}>
+              <div className="message-input" style={{ display: isMobile ? 'none' : 'flex', flexDirection: 'column' }}>
+                {groupReplyTo && (
+                  <div className="composer-reply">
+                    <CornerUpRight size={16} strokeWidth={2} />
+                    <span className="cr-body">
+                      <span className="cr-title">Replying to {nameOf(groupReplyTo.from || groupReplyTo.senderId, groupReplyTo.sender)}</span>
+                      <span className="cr-text">{groupReplyTo.text || 'Attachment'}</span>
+                    </span>
+                    <button type="button" className="cr-close" onClick={() => setGroupReplyTo(null)} aria-label="Cancel reply">×</button>
+                  </div>
+                )}
                 <form onSubmit={handleSendGroupMessage}>
                   <div className="input-wrapper">
-                    {groupReplyTo && (
-                      <div
-                        style={{
-                          padding: '8px 12px',
-                          backgroundColor: '#075e54',
-                          color: 'white',
-                          borderRadius: '6px',
-                          fontSize: '0.85rem',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '8px',
-                          marginBottom: '4px',
-                        }}
-                      >
-                        ↪ Replying to {nameOf(groupReplyTo.from || groupReplyTo.senderId, groupReplyTo.sender)}: "{groupReplyTo.text || 'Attachment'}"
-                        <button
-                          type="button"
-                          onClick={() => setGroupReplyTo(null)}
-                          style={{
-                            background: 'none',
-                            border: 'none',
-                            color: 'white',
-                            cursor: 'pointer',
-                            fontSize: '1.2rem',
-                          }}
-                        >
-                          ×
-                        </button>
-                      </div>
-                    )}
-
                     <button
                       type="button"
                       className="attachment-btn"
@@ -8664,9 +8653,13 @@ Only admins can send messages
                   </div>
 
                   {groupReplyTo && (
-                    <div className="mobile-reply-banner">
-                      ↪ Replying to {nameOf(groupReplyTo.from || groupReplyTo.senderId, groupReplyTo.sender)}: "{groupReplyTo.text || 'Attachment'}"
-                      <button type="button" onClick={() => setGroupReplyTo(null)}>×</button>
+                    <div className="composer-reply">
+                      <CornerUpRight size={16} strokeWidth={2} />
+                      <span className="cr-body">
+                        <span className="cr-title">Replying to {nameOf(groupReplyTo.from || groupReplyTo.senderId, groupReplyTo.sender)}</span>
+                        <span className="cr-text">{groupReplyTo.text || 'Attachment'}</span>
+                      </span>
+                      <button type="button" className="cr-close" onClick={() => setGroupReplyTo(null)} aria-label="Cancel reply">×</button>
                     </div>
                   )}
 
@@ -9508,9 +9501,10 @@ const renderRightPanel = () => {
               </div>
             )}
 
-            {/* Reply Indicator */}
+            {/* Reply/Quote Indicator */}
             {msg.replyTo && (
               <div
+                className={`quote-pill${msg.replyTo.statusId ? ' status' : ''}`}
                 onClick={(e) => {
                   e.stopPropagation();
                   if (msg.replyTo.statusId) {
@@ -9518,31 +9512,26 @@ const renderRightPanel = () => {
                   }
                 }}
                 title={msg.replyTo.statusId ? 'Open the original status' : undefined}
-                style={{
-                  padding: '6px 12px',
-                  backgroundColor: isYou ? '#06544c' : '#b9e8dc',
-                  color: 'black',
-                  borderRadius: '6px 6px 0 0',
-                  fontSize: '0.8rem',
-                  cursor: msg.replyTo.statusId ? 'pointer' : 'default',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                }}
               >
                 {msg.replyTo.statusId && (
-                  <span style={{ fontSize: '0.85rem', lineHeight: 1 }}>
+                  <span className="quote-badge">
                     {msg.replyTo.statusType === 'video' ? '🎥' : msg.replyTo.statusType === 'image' ? '📷' : '💬'}
                   </span>
                 )}
-                ↪{' '}
-                {String(msg.replyTo.senderId) === String(user.id)
-                  ? 'You'
-                  : nameOf(msg.replyTo.senderId, msg.replyTo.sender || 'Someone')}
-                : {msg.replyTo.text || 'Attachment'}
-                {msg.replyTo.statusId && (
-                  <span style={{ fontStyle: 'italic', opacity: 0.7 }}> · tap to open</span>
-                )}
+                <span className="quote-body">
+                  <span className="quote-name">
+                    {msg.replyTo.statusId
+                      ? nameOf(msg.replyTo.senderId, msg.replyTo.sender || 'Status')
+                      : String(msg.replyTo.senderId) === String(user.id)
+                        ? 'You'
+                        : nameOf(msg.replyTo.senderId, msg.replyTo.sender || 'Someone')}
+                  </span>
+                  <span className="quote-text">
+                    {msg.replyTo.statusId
+                      ? (msg.replyTo.text || '').replace(/^Status:\s*/i, '') || 'Status'
+                      : (msg.replyTo.text || 'Attachment')}
+                  </span>
+                </span>
               </div>
             )}
 
@@ -9847,9 +9836,13 @@ const renderRightPanel = () => {
           </div>
 
           {replyTo && (
-            <div className="mobile-reply-banner">
-              ↪ Replying to {nameOf(replyTo.statusOwnerId || replyTo.senderId, replyTo.sender === 'You' ? 'You' : replyTo.sender)}: "{replyTo.text || 'Attachment'}"
-              <button type="button" onClick={() => setReplyTo(null)}>×</button>
+            <div className="composer-reply">
+              <CornerUpRight size={16} strokeWidth={2} />
+              <span className="cr-body">
+                <span className="cr-title">Replying to {nameOf(replyTo.statusOwnerId || replyTo.senderId, replyTo.sender === 'You' ? 'You' : replyTo.sender)}</span>
+                <span className="cr-text">{replyTo.text || 'Attachment'}</span>
+              </span>
+              <button type="button" className="cr-close" onClick={() => setReplyTo(null)} aria-label="Cancel reply">×</button>
             </div>
           )}
 
@@ -9910,39 +9903,18 @@ const renderRightPanel = () => {
         </div>
       ) : (
       <div className="message-input">
+        {replyTo && (
+          <div className="composer-reply">
+            <CornerUpRight size={16} strokeWidth={2} />
+            <span className="cr-body">
+              <span className="cr-title">Replying to {nameOf(replyTo.statusOwnerId || replyTo.senderId, replyTo.sender === 'You' ? 'You' : replyTo.sender)}</span>
+              <span className="cr-text">{replyTo.text || 'Attachment'}</span>
+            </span>
+            <button type="button" className="cr-close" onClick={() => setReplyTo(null)} aria-label="Cancel reply">×</button>
+          </div>
+        )}
         <form onSubmit={handleSendMessage}>
           <div className="input-wrapper">
-            {replyTo && (
-              <div
-                style={{
-                  padding: '8px 12px',
-                  backgroundColor: '#075e54',
-                  color: 'white',
-                  borderRadius: '6px',
-                  fontSize: '0.85rem',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                  marginBottom: '4px',
-                }}
-              >
-                ↪ Replying to {nameOf(replyTo.statusOwnerId || replyTo.senderId, replyTo.sender === 'You' ? 'You' : replyTo.sender)}: "{replyTo.text || 'Attachment'}"
-                <button
-                  type="button"
-                  onClick={() => setReplyTo(null)}
-                  style={{
-                    background: 'none',
-                    border: 'none',
-                    color: 'white',
-                    cursor: 'pointer',
-                    fontSize: '1.2rem',
-                  }}
-                >
-                  ×
-                </button>
-              </div>
-            )}
-
             <button
               type="button"
               className="attachment-btn"
