@@ -1955,6 +1955,10 @@ function computeGlobalSearch(raw) {
     if (!m.text.toLowerCase().includes(ql)) return;
     if (m.isSystem) return;
     const isYou = m.sender === 'You' || String(m.senderId) === String(user.id);
+    // Show the conversation name only when the name itself matched the query;
+    // otherwise the row shows just the message (avoids repeating the contact's
+    // name above every matching message).
+    const nameMatched = String(chatName || '').toLowerCase().includes(ql);
     messageResults.push({
       type: 'message',
       kind,
@@ -1966,6 +1970,7 @@ function computeGlobalSearch(raw) {
       text: m.text,
       timestamp: m.timestamp,
       isYou,
+      nameMatched,
     });
   };
   Object.entries(messages || {}).forEach(([cid, list]) => {
@@ -12307,10 +12312,12 @@ const renderRightPanel = () => {
                     <div key={`m-${res.kind}-${res.chatId}-${res.msgId}-${res.timestamp}`} className="gs-msg-row" onClick={() => openMsgFromSearch(res)} style={{ cursor: 'pointer' }}>
                       <img className="gs-msg-avatar" src={res.chatPhoto} alt="" onError={(e) => { e.target.onerror = null; e.target.src = skeletonAvatar(); }} />
                       <div className="gs-msg-body">
-                        <div className="gs-msg-top">
-                          <span className="gs-msg-name">{res.chatName}</span>
-                          <span className="gs-msg-time">{msgTimeLabel(res.timestamp)}</span>
-                        </div>
+                        {res.nameMatched && (
+                          <div className="gs-msg-top">
+                            <span className="gs-msg-name">{res.chatName}</span>
+                            <span className="gs-msg-time">{msgTimeLabel(res.timestamp)}</span>
+                          </div>
+                        )}
                         <div className="gs-msg-preview">
                           {res.isYou && <span className="gs-sender-you">You: </span>}
                           {!res.isYou && res.kind === 'group' && <span className="gs-sender">{res.senderName}: </span>}
