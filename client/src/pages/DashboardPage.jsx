@@ -760,6 +760,18 @@ export default function DashboardPage() {
   // group *create* picker (groupSearchQuery): this one filters whichever
   // rail is active — Chats/Unread by name OR email, Groups by name.
   const [listFilterQuery, setListFilterQuery] = useState('');
+  // Dedicated mobile GLOBAL search page: searches contacts + groups + messages
+  // from one full-screen page. State is kept for the session so leaving and
+  // returning (via back navigation) restores the previous query/results/scroll.
+  const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
+  const [globalSearchQuery, setGlobalSearchQuery] = useState('');
+  const [globalSearchResults, setGlobalSearchResults] = useState({ contacts: [], groups: [], messages: [] });
+  const globalSearchInputRef = useRef(null);
+  const globalSearchListRef = useRef(null);
+  const globalSearchScrollRef = useRef(0);
+  // Pending "open this chat and scroll to exactly this message" target set
+  // when a message result is picked from Global Search: { kind, chatId, msgId }.
+  const jumpToMsgRef = useRef(null);
   const [groupMobileSearch, setGroupMobileSearch] = useState(false);
   const [groupMobileSearchQuery, setGroupMobileSearchQuery] = useState('');
   const [groupMobileSearchResults, setGroupMobileSearchResults] = useState([]);
@@ -1841,6 +1853,172 @@ function formatRelativeTime(value) {
 
   const years = Math.floor(months / 12);
   return years === 1 ? "a year ago" : `${years} years ago`;
+}
+
+// Build every result for the mobile GLOBAL search page. A pure in-memory scan
+// of data this user already can see (contacts, groups, loaded messages) — no
+// extra server requests and always within the existing permission boundaries.
+// Results are kept grouped so the page renders Contacts → Groups → Messages.
+function computeGlobalSearch(raw) {
+  const q = String(raw || '').trim();
+  if (!q) return { contacts: [], groups: [], messages: [] };
+  const ql = q.toLowerCase();
+  const truncate = (t) => (t && t.length > 35 ? `${t.slice(0, 35)}…` : t || '');
+
+  const contactResults = (contacts || [])
+    .filter(c => c && (
+      String(c.name || '').toLowerCase().includes(ql) ||
+      String(c.email || '').toLowerCase().includes(ql)
+    ))
+    .map(c => {
+      const clearedTs = dmClearedAt(c.id);
+      const active = (ts) => !clearedTs || (Number(ts) || 0) > clearedTs;
+      const chatMsgs = (messages[c.id] || []).filter(m => active(m.timestamp));
+      const last = chatMsgs[chatMsgs.length - 1];
+      const unreadMsgs = chatMsgs.filter(m => m.sender !== 'You' && !m.read);
+      const chatCalls = calls.filter(cl => !cl.groupId && String(cl.userId) === String(c.id) && active(cl.time));
+      const unreadMissed = chatCalls.filter(cl => cl.missedCallUnread).length;
+      const hasUnread = unreadMsgs.length + unreadMissed > 0;
+      const previewMsg = hasUnread ? unreadMsgs[0] : last;
+      const latestCall = chatCalls.length
+        ? chatCalls.reduce((a, b) => ((b.time || 0) > (a.time || 0) ? b : a))
+        : null;
+      const msgTime = previewMsg ? previewMsg.timestamp : (c.time || null);
+      const useCall = !!latestCall && (msgTime == null || (latestCall.time || 0) > msgTime);
+      let preview = '';
+      let time = '';
+      if (useCall) {
+        const missedShow = latestCall.direction === 'missed' && !latestCall.iCalled && !latestCall.rejected;
+        preview = `${latestCall.video ? '📹' : '📞'} ${missedShow ? 'Missed ' : ''}${latestCall.video ? (missedShow ? 'video' : 'Video') : (missedShow ? 'voice' : 'Voice')} call`;
+        time = formatRelativeTime(latestCall.time) || c.timestamp;
+      } else if (previewMsg) {
+        if (previewMsg.file) {
+          preview = previewMsg.fileType?.startsWith('image/') ? '[Photo]' : previewMsg.fileType?.startsWith('audio/') ? '🎤 Voice message' : '[File]';
+        } else if (previewMsg.text) {
+          preview = truncate(previewMsg.text);
+        }
+        if (previewMsg.sender === 'You' && preview) preview = `You: ${preview}`;
+        time = previewMsg ? (formatRelativeTime(previewMsg.timestamp) || c.timestamp) : c.timestamp;
+      } else {
+        preview = clearedTs ? '' : truncate(c.lastMsg || '');
+      }
+      return {
+        type: 'contact',
+        id: c.id,
+        name: nameOf(c.id, c.name),
+        photo: avatarFor(c.id, c.photo, skeletonAvatar()),
+        preview,
+        time,
+        hasUnread,
+      };
+    });
+
+  const groupResults = (groupsList || [])
+    .filter(g => g && String(g.name || '').toLowerCase().includes(ql))
+    .map(g => {
+      const gid = g._id || g.id;
+      const clearedTs = groupClearedAt(gid);
+      const gMsgs = (groupMessages[gid] || []).filter(m => !clearedTs || (Number(m.timestamp) || 0) > clearedTs);
+      const last = gMsgs[gMsgs.length - 1];
+      const unreadMsgs = gMsgs.filter(m => m.sender !== 'You' && !m.read);
+      const previewMsg = unreadMsgs.length ? unreadMsgs[0] : last;
+      let preview = '';
+      if (previewMsg) {
+        const senderName = String(previewMsg.senderId) === String(user.id)
+          ? 'You'
+          : nameOf(previewMsg.senderId, previewMsg.sender || 'Someone');
+        if (previewMsg.file) {
+          preview = previewMsg.fileType?.startsWith('image/') ? '[Photo]' : previewMsg.fileType?.startsWith('audio/') ? '🎤 Voice message' : '[File]';
+        } else if (previewMsg.text) {
+          preview = truncate(previewMsg.text);
+        }
+        if (preview) preview = `${senderName}: ${preview}`;
+      } else {
+        preview = clearedTs ? '' : truncate(g.lastMsg || 'No messages yet');
+      }
+      return {
+        type: 'group',
+        id: gid,
+        name: nameOf(gid, g.name),
+        photo: g.dp || skeletonAvatar(),
+        preview,
+        time: previewMsg
+          ? (formatRelativeTime(previewMsg.timestamp) || g.lastTime)
+          : (clearedTs ? '' : g.lastTime),
+        hasUnread: unreadMsgs.length > 0,
+      };
+    });
+
+  const messageResults = [];
+  const addMessage = (kind, chatId, chatName, chatPhoto, m) => {
+    if (!m || !m.text) return;
+    if (!m.text.toLowerCase().includes(ql)) return;
+    if (m.isSystem) return;
+    const isYou = m.sender === 'You' || String(m.senderId) === String(user.id);
+    messageResults.push({
+      type: 'message',
+      kind,
+      chatId: String(chatId),
+      chatName,
+      chatPhoto,
+      msgId: m.id || `${kind}-${chatId}-${m.timestamp}`,
+      senderName: isYou ? 'You' : nameOf(m.senderId, m.sender || m.fromName || 'Someone'),
+      text: m.text,
+      timestamp: m.timestamp,
+      isYou,
+    });
+  };
+  Object.entries(messages || {}).forEach(([cid, list]) => {
+    const c = (contacts || []).find(x => String(x.id) === String(cid));
+    (list || []).forEach(m => addMessage('dm', cid, nameOf(cid, c?.name), avatarFor(cid, c?.photo, skeletonAvatar()), m));
+  });
+  Object.entries(groupMessages || {}).forEach(([gid, list]) => {
+    const grp = (groupsList || []).find(g => String(g._id || g.id) === String(gid));
+    (list || []).forEach(m => addMessage('group', gid, nameOf(gid, grp?.name), grp?.dp || skeletonAvatar(), m));
+  });
+  messageResults.sort((a, b) => (Number(b.timestamp) || 0) - (Number(a.timestamp) || 0));
+
+  return { contacts: contactResults, groups: groupResults, messages: messageResults };
+}
+
+// Short readable snippet centered on the FIRST match of the query, so long
+// message results show context instead of the whole text.
+function snippetFor(text, ql) {
+  if (!text) return '';
+  const idx = text.toLowerCase().indexOf(String(ql || '').toLowerCase());
+  if (idx === -1) return (text.length > 80 ? `${text.slice(0, 80)}…` : text);
+  const ctx = 16;
+  const start = Math.max(0, idx - ctx);
+  const end = Math.min(text.length, idx + String(ql || '').length + ctx);
+  return `${start > 0 ? '…' : ''}${text.slice(start, end)}${end < text.length ? '…' : ''}`;
+}
+
+// Split a snippet into plain / highlighted parts around every query match.
+function highlightParts(text, ql) {
+  const parts = [];
+  const lower = String(text || '');
+  const q = String(ql || '');
+  const lq = q.toLowerCase();
+  let i = 0;
+  while (i < lower.length) {
+    const j = lq ? lower.toLowerCase().indexOf(lq, i) : -1;
+    if (j === -1) { parts.push({ t: lower.slice(i), h: false }); break; }
+    if (j > i) parts.push({ t: lower.slice(i, j), h: false });
+    parts.push({ t: lower.slice(j, j + q.length), h: true });
+    i = j + q.length;
+  }
+  return parts;
+}
+
+// Message result right-aligned time: today → clock time, older → date.
+function msgTimeLabel(ts) {
+  const d = new Date(Number(ts) || 0);
+  if (isNaN(d.getTime())) return '';
+  const now = new Date();
+  if (d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate()) {
+    return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  }
+  return d.toLocaleDateString([], { month: 'numeric', day: 'numeric', year: 'numeric' });
 }
 
 
@@ -3867,6 +4045,13 @@ useEffect(() => {
     disarmDmBottom();
     return;
   }
+  // A message picked from Global Search in this chat: leave positioning to the
+  // dedicated jump effect instead of anchoring the conversation to the latest
+  // message (which would fight the target scroll).
+  if (jumpToMsgRef.current && String(jumpToMsgRef.current.chatId) === id) {
+    disarmDmBottom();
+    return;
+  }
   const end = messagesEndRef.current;
   const scroller = messagesScrollRef.current;
   if (!end || !scroller) return;
@@ -5550,6 +5735,7 @@ setGroupMessages(prev => {
         const unsavedPromptOnRef = useRef(false);
         const newContactOnRef = useRef(false);
         const memberProfileOnRef = useRef(false);
+        const globalSearchOnRef = useRef(false);
 
         const pushPage = (screen, saved) => {
           window.history.pushState({ appNav: true }, '');
@@ -5621,6 +5807,9 @@ setGroupMessages(prev => {
           } else if (showUnsavedContactPrompt) {
             setShowUnsavedContactPrompt(false);
             unsavedPromptOnRef.current = false;
+          } else if (globalSearchOpen) {
+            setGlobalSearchOpen(false);
+            globalSearchOnRef.current = false;
           } else if (selectedChat?.id || selectedGroup?.id) {
             setSelectedChat(null);
             setSelectedGroup(null);
@@ -5673,6 +5862,7 @@ setGroupMessages(prev => {
           if (f.showAddContact) return 'addcontact';
           if (f.showUnsavedContactPrompt) return 'unsavedprompt';
           if (f.showForwardModal) return 'forward';
+          if (f.globalSearchOpen) return 'globalsearch';
           if (f.selectedChat?.id) return `chat:dm:${f.selectedChat.id}`;
           if (f.selectedGroup?.id) return `chat:grp:${f.selectedGroup.id}`;
           if (f.activeTab === 'profile' && f.profileRoute !== 'page') return `profile:${f.profileRoute}`;
@@ -5686,6 +5876,7 @@ setGroupMessages(prev => {
         const rankOfNavKey = (k) => {
           if (!k) return 0;
           if (k.startsWith('chat:')) return 2;
+          if (k === 'globalsearch') return 1.5;
           if (k === 'profile:name' || k === 'profile:about') return 1.5;
           switch (k) {
             case 'preview': return 17;
@@ -5763,6 +5954,18 @@ setGroupMessages(prev => {
           setShowClearChatConfirm(!!saved.showClearChatConfirm);
           setShowUnsavedContactPrompt(!!saved.showUnsavedContactPrompt);
           setPendingPrivateContact(saved.pendingPrivateContact || null);
+          // Global Search page: only restore its query/results when the pop
+          // returns INTO the search page. When restoring the plain list below
+          // it, leave the session search state untouched so reopening Search
+          // brings back the previous query/results (WhatsApp-style).
+          if (saved.globalSearchOpen) {
+            setGlobalSearchOpen(true);
+            setGlobalSearchQuery(saved.globalSearchQuery || '');
+            setGlobalSearchResults(saved.globalSearchResults || { contacts: [], groups: [], messages: [] });
+          } else {
+            setGlobalSearchOpen(false);
+          }
+          globalSearchOnRef.current = !!saved.globalSearchOpen;
           chatOnRef.current = !!(saved.selectedChat?.id || saved.selectedGroup?.id);
           contactInfoOnRef.current = !!saved.showContactInfo;
           groupInfoOnRef.current = !!saved.showGroupInfo;
@@ -5854,6 +6057,9 @@ setGroupMessages(prev => {
               showClearChatConfirm,
               showUnsavedContactPrompt,
               pendingPrivateContact,
+              globalSearchOpen,
+              globalSearchQuery,
+              globalSearchResults,
             };
             const key = composeNavKey(flags);
             // Keep the page on/off refs truthful for closeTopLive/hydrate cleanup.
@@ -5875,6 +6081,7 @@ setGroupMessages(prev => {
             statusCaptureOnRef.current = !!statusCapture;
             clearConfirmOnRef.current = !!showClearChatConfirm;
             unsavedPromptOnRef.current = !!showUnsavedContactPrompt;
+            globalSearchOnRef.current = !!globalSearchOpen;
             if (firstNavRunRef.current) {
               firstNavRunRef.current = false;
               lastNavKeyRef.current = key;
@@ -5914,7 +6121,7 @@ setGroupMessages(prev => {
               lastNavKeyRef.current = key;
             }
             lastNavFlagsRef.current = flags;
-          }, [isMobile, view, activeTab, profileRoute, selectedChat, selectedGroup, mobileChatOpen, memberProfile, showContactInfo, contactEditOpen, showGroupInfo, groupSettingsOpen, addMembersOpen, showAddContact, showNewContactModal, showForwardModal, showGroupFlow, showCameraModal, mediaViewer, previewImage, statusViewer, statusAddSheet, statusComposerOpen, statusCameraOpen, statusCapture, showClearChatConfirm, showUnsavedContactPrompt, pendingPrivateContact]);
+          }, [isMobile, view, activeTab, profileRoute, selectedChat, selectedGroup, mobileChatOpen, memberProfile, showContactInfo, contactEditOpen, showGroupInfo, groupSettingsOpen, addMembersOpen, showAddContact, showNewContactModal, showForwardModal, showGroupFlow, showCameraModal, mediaViewer, previewImage, statusViewer, statusAddSheet, statusComposerOpen, statusCameraOpen, statusCapture, showClearChatConfirm, showUnsavedContactPrompt, pendingPrivateContact, globalSearchOpen, globalSearchQuery, globalSearchResults]);
 
         // Handle the system/hardware back button
         useEffect(() => {
@@ -5971,6 +6178,127 @@ setGroupMessages(prev => {
       const closeGroupFlow = () => {
         goBackPage();
       };
+
+      // ----- Mobile GLOBAL search page -----
+      const openGlobalSearch = () => {
+        if (!isMobile) return;
+        if (globalSearchOpen) {
+          globalSearchInputRef.current?.focus();
+          return;
+        }
+        // Re-derive results from the latest data (query state survives the
+        // session, so reopening shows the previous search immediately).
+        setGlobalSearchResults(computeGlobalSearch(globalSearchQuery));
+        setGlobalSearchOpen(true);
+      };
+
+      const closeGlobalSearch = () => {
+        saveGlobalSearchScroll();
+        goBackPage();
+      };
+
+      const saveGlobalSearchScroll = () => {
+        if (globalSearchListRef.current) {
+          globalSearchScrollRef.current = globalSearchListRef.current.scrollTop;
+        }
+      };
+
+      const openDmFromSearch = (cid) => {
+        saveGlobalSearchScroll();
+        const chat = (contacts || []).find(c => String(c.id) === String(cid)) || {
+          id: cid,
+          name: nameOf(cid, 'Unknown'),
+          photo: null,
+          time: Date.now(),
+          online: false,
+        };
+        setGlobalSearchOpen(false);
+        setSelectedChat(chat);
+        selectedChatRef.current = chat;
+        setSelectedGroup(null);
+        selectedGroupRef.current = null;
+        setMobileChatOpen(true);
+        if ((messages[cid] || []).some(m => m.sender !== 'You' && !m.read)) {
+          setTimeout(() => markAsReadRef.current(), 60);
+        }
+      };
+
+      const openGroupFromSearch = (gid, jumpMsgId) => {
+        saveGlobalSearchScroll();
+        const g = (groupsList || []).find(gr => String(gr._id || gr.id) === String(gid));
+        if (!g) return;
+        const normalized = {
+          id: g._id || g.id,
+          name: g.name,
+          dp: g.dp,
+          memberCount: g.memberCount || (g.members?.length || 0),
+          members: g.members || [],
+          admins: Array.isArray(g.admins) ? g.admins.map(String) : [],
+          admin: g.admin,
+          adminName: g.adminName || null,
+          addMembers: g.addMembers || 'everyone',
+          sendMessages: g.sendMessages || 'everyone',
+          removedAt: g.removedAt || null,
+          removedBy: g.removedBy || null,
+          removedByName: g.removedByName || '',
+        };
+        if (jumpMsgId != null) {
+          jumpToMsgRef.current = { kind: 'group', chatId: normalized.id, msgId: jumpMsgId };
+          groupUnreadScrollRef.current = jumpMsgId;
+        }
+        setGlobalSearchOpen(false);
+        setSelectedChat(null);
+        selectedChatRef.current = null;
+        selectedGroupRef.current = normalized;
+        setSelectedGroup(normalized);
+        setMobileChatOpen(true);
+        groupOpenAtRef.current = Date.now();
+        if (socket) socket.emit('fetchGroupMessages', { groupId: normalized.id });
+      };
+
+      const openMsgFromSearch = (res) => {
+        if (res.kind === 'dm') {
+          jumpToMsgRef.current = { kind: 'dm', chatId: res.chatId, msgId: res.msgId };
+          openDmFromSearch(res.chatId);
+        } else {
+          openGroupFromSearch(res.chatId, res.msgId);
+        }
+      };
+
+      // Focus the search input and restore the previous results scroll whenever
+      // the Global Search page (re)opens.
+      useEffect(() => {
+        if (!globalSearchOpen) return;
+        const raf = requestAnimationFrame(() => {
+          const el = globalSearchListRef.current;
+          if (el && globalSearchScrollRef.current) el.scrollTop = globalSearchScrollRef.current;
+          globalSearchInputRef.current?.focus();
+        });
+        return () => cancelAnimationFrame(raf);
+      }, [globalSearchOpen]);
+
+      // Open the exact message picked from Global Search: keep retrying while
+      // the conversation (and its async server history/media) renders, then
+      // scroll the target message into view and flash-highlight it.
+      useEffect(() => {
+        const t = jumpToMsgRef.current;
+        if (!t) return;
+        const openId = t.kind === 'group' ? selectedGroup?.id : selectedChat?.id;
+        if (!openId || String(openId) !== String(t.chatId)) return;
+        let el = document.querySelector(`.messages [data-msgid="${CSS.escape(String(t.msgId))}"]`);
+        if (!el) return;
+        const flash = () => {
+          const node = document.querySelector(`.messages [data-msgid="${CSS.escape(String(t.msgId))}"]`);
+          if (node) {
+            node.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            node.classList.add('gs-jump-hit');
+            window.setTimeout(() => node.classList.remove('gs-jump-hit'), 2600);
+          }
+          jumpToMsgRef.current = null;
+        };
+        const raf = requestAnimationFrame(flash);
+        return () => cancelAnimationFrame(raf);
+      }, [selectedChat, selectedGroup, messages, groupMessages, mobileChatOpen]);
 
       const advanceGroupStep = () => {
         setSlideClass('slide-in-forward');
@@ -9107,6 +9435,7 @@ const renderRightPanel = () => {
         return (
           <div
             key={msg.id}
+            data-msgid={msg.id}
             className={`message ${isYou ? 'sent' : 'received'} ${isMatch ? 'highlighted' : ''} ${isMobileHit ? 'mobile-search-hit' : ''} ${isMobileCurrent ? 'mobile-search-current' : ''} ${isMsgSelected ? 'selected-msg' : ''}`}
             ref={isMobileCurrent ? mobileCurrentMatchRef : isCurrentMatch ? currentMatchRef : null}
             onClick={() => {
@@ -11841,13 +12170,16 @@ const renderRightPanel = () => {
   )}
 </div>
           </div>
-      {/* Search Bar */}
+      {/* Search Bar — on mobile this opens the dedicated Global Search page
+          (real history-backed navigation) instead of filtering the list here */}
       <div className="mobile-search">
         <input
           type="text"
           placeholder="Search"
+          readOnly={isMobile}
           value={listFilterQuery}
-          onChange={(e) => setListFilterQuery(e.target.value)}
+          onClick={() => { if (isMobile) openGlobalSearch(); }}
+          onChange={(e) => { if (!isMobile) setListFilterQuery(e.target.value); }}
         />
       </div>
       {/* Tabs */}
@@ -11906,6 +12238,101 @@ const renderRightPanel = () => {
         <small>Profile</small>
       </button>
     </nav>
+    )}
+
+    {/* Mobile GLOBAL Search page — a real navigable screen (history-backed):
+        covers the whole app (list + bottom nav) while open, and back restores
+        the exact previous page/scroll and the Search query/results/scroll. */}
+    {isMobile && globalSearchOpen && createPortal(
+      <div className="global-search-page">
+        <div className="gs-topbar">
+          <button className="gs-back" onClick={closeGlobalSearch} aria-label="Back to chats">
+            <ArrowLeft size={24} strokeWidth={2} />
+          </button>
+          <input
+            ref={globalSearchInputRef}
+            autoFocus
+            placeholder="Search contacts, groups & messages"
+            value={globalSearchQuery}
+            onChange={(e) => {
+              const q = e.target.value;
+              setGlobalSearchQuery(q);
+              setGlobalSearchResults(computeGlobalSearch(q));
+            }}
+          />
+        </div>
+        <div className="gs-results" ref={globalSearchListRef} onScroll={saveGlobalSearchScroll}>
+          {globalSearchQuery.trim() === '' ? (
+            <div className="gs-empty">Search contacts, groups & messages</div>
+          ) : (
+            <>
+              {globalSearchResults.contacts.length > 0 && (
+                <>
+                  <div className="gs-section-title">Contacts</div>
+                  {globalSearchResults.contacts.map(res => (
+                    <div key={`c-${res.id}`} className="chat-item" onClick={() => openDmFromSearch(res.id)} style={{ cursor: 'pointer' }}>
+                      <img src={res.photo} alt={res.name} onError={(e) => { e.target.onerror = null; e.target.src = skeletonAvatar(); }} />
+                      <div className="chat-info">
+                        <h4>{res.name}</h4>
+                        <p className={res.hasUnread ? 'unread-preview' : ''}>{res.preview}</p>
+                      </div>
+                      <div className="chat-item-right">
+                        <span className={`timestamp ${res.hasUnread ? 'unread' : ''}`}>{res.time}</span>
+                      </div>
+                    </div>
+                  ))}
+                </>
+              )}
+              {globalSearchResults.groups.length > 0 && (
+                <>
+                  <div className="gs-section-title">Groups</div>
+                  {globalSearchResults.groups.map(res => (
+                    <div key={`g-${res.id}`} className="chat-item" onClick={() => openGroupFromSearch(res.id, null)} style={{ cursor: 'pointer' }}>
+                      <img src={res.photo} alt={res.name} onError={(e) => { e.target.onerror = null; e.target.src = skeletonAvatar(); }} />
+                      <div className="chat-info">
+                        <h4>{res.name}</h4>
+                        <p className={res.hasUnread ? 'unread-preview' : ''}>{res.preview}</p>
+                      </div>
+                      <div className="chat-item-right">
+                        <span className={`timestamp ${res.hasUnread ? 'unread' : ''}`}>{res.time}</span>
+                      </div>
+                    </div>
+                  ))}
+                </>
+              )}
+              {globalSearchResults.messages.length > 0 && (
+                <>
+                  <div className="gs-section-title">Messages</div>
+                  {globalSearchResults.messages.map(res => (
+                    <div key={`m-${res.kind}-${res.chatId}-${res.msgId}-${res.timestamp}`} className="gs-msg-row" onClick={() => openMsgFromSearch(res)} style={{ cursor: 'pointer' }}>
+                      <img className="gs-msg-avatar" src={res.chatPhoto} alt="" onError={(e) => { e.target.onerror = null; e.target.src = skeletonAvatar(); }} />
+                      <div className="gs-msg-body">
+                        <div className="gs-msg-top">
+                          <span className="gs-msg-name">{res.chatName}</span>
+                          <span className="gs-msg-time">{msgTimeLabel(res.timestamp)}</span>
+                        </div>
+                        <div className="gs-msg-preview">
+                          {res.isYou && <span className="gs-sender-you">You: </span>}
+                          {!res.isYou && res.kind === 'group' && <span className="gs-sender">{res.senderName}: </span>}
+                          {highlightParts(snippetFor(res.text, globalSearchQuery), globalSearchQuery).map((p, i) =>
+                            p.h ? <span key={i} className="gs-highlight">{p.t}</span> : <span key={i}>{p.t}</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </>
+              )}
+              {globalSearchResults.contacts.length === 0 &&
+                globalSearchResults.groups.length === 0 &&
+                globalSearchResults.messages.length === 0 && (
+                <div className="gs-empty">No results for “{globalSearchQuery}”</div>
+              )}
+            </>
+          )}
+        </div>
+      </div>,
+      document.body
     )}
   </div>
 {/* Add Contact Drawer */}
