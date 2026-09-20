@@ -1807,6 +1807,42 @@ function formatTime(value) {
   });
 }
 
+// WhatsApp-style "latest message" time for the chat/group list:
+// today → clock time ("8:35 am"), otherwise relative ("Yesterday",
+// "3 days ago", "2 weeks ago", "a month ago", "2 years ago" …).
+function formatRelativeTime(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (isNaN(date.getTime())) return "";
+
+  const now = new Date();
+  const startOf = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const diffDays = Math.round((startOf(now) - startOf(date)) / 86400000);
+
+  if (diffDays <= 0) {
+    return date.toLocaleTimeString([], {
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    });
+  }
+  if (diffDays === 1) return "Yesterday";
+  if (diffDays < 7) return `${diffDays} days ago`;
+  if (diffDays < 30) {
+    const weeks = Math.floor(diffDays / 7);
+    return weeks === 1 ? "a week ago" : `${weeks} weeks ago`;
+  }
+
+  const months = Math.max(
+    1,
+    (now.getFullYear() - date.getFullYear()) * 12 + (now.getMonth() - date.getMonth())
+  );
+  if (months < 12) return months === 1 ? "a month ago" : `${months} months ago`;
+
+  const years = Math.floor(months / 12);
+  return years === 1 ? "a year ago" : `${years} years ago`;
+}
+
 
 
 
@@ -6672,7 +6708,7 @@ setGroupMessages(prev => {
             if (useCall) {
               const missedShow = latestCall.direction === 'missed' && !latestCall.iCalled && !latestCall.rejected;
               preview = `${latestCall.video ? '📹' : '📞'} ${missedShow ? 'Missed ' : ''}${latestCall.video ? (missedShow ? 'video' : 'Video') : (missedShow ? 'voice' : 'Voice')} call`;
-              timeToShow = formatTime(latestCall.time) || chat.timestamp;
+              timeToShow = formatRelativeTime(latestCall.time) || chat.timestamp;
             } else if (previewMsg) {
               if (previewMsg.file) {
                 preview = previewMsg.fileType?.startsWith('image/') ? '[Photo]' : previewMsg.fileType?.startsWith('audio/') ? '🎤 Voice message' : '[File]';
@@ -6683,7 +6719,7 @@ setGroupMessages(prev => {
                 preview = `You: ${preview}`;
               }
               timeToShow = previewMsg
-                ? (formatTime(previewMsg.timestamp) || chat.timestamp)
+                ? (formatRelativeTime(previewMsg.timestamp) || chat.timestamp)
                 : chat.timestamp;
             } else {
               preview = (clearedTs ? '' : truncate(chat.lastMsg || ''));
@@ -6757,7 +6793,7 @@ setGroupMessages(prev => {
                     preview = (clearedTs ? '' : truncate(group.lastMsg || 'No messages yet'));
                   }
                   const timeToShow = previewMsg
-                    ? (formatTime(previewMsg.timestamp) || group.lastTime)
+                    ? (formatRelativeTime(previewMsg.timestamp) || group.lastTime)
                     : (clearedTs ? '' : group.lastTime);
                   return (
                   <div
